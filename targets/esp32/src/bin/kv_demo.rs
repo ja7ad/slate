@@ -15,7 +15,6 @@ use slate_core::log::HeadState;
 
 use slate_esp32::{EspFlash, EspCounter};
 use slate_crypto::sealer::CryptoSealer;
-use slate_hal::MonotonicCounter;
 
 static mut HOT_BUF: [u8; 4096] = [0; 4096];
 static mut COLD_BUF: [u8; 4096] = [0; 4096];
@@ -39,7 +38,7 @@ fn main() -> ! {
         &mut flash,
         &mut counter,
         &mut sealer,
-        unsafe { &mut CKPT_BUF },
+        unsafe { &mut *core::ptr::addr_of_mut!(CKPT_BUF) },
     ) {
         Ok((st, len)) => (st, len),
         Err(slate_core::epoch::MountError::Tampered) => {
@@ -102,14 +101,14 @@ fn main() -> ! {
         counter,
         sealer,
         engine: engine_state,
-        log_hot: slate_core::log::Log::new(unsafe { &mut HOT_BUF }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
-        log_cold: slate_core::log::Log::new(unsafe { &mut COLD_BUF }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
-        index: Index::new(unsafe { &mut INDEX_SLOTS }, 2048),
+        log_hot: slate_core::log::Log::new(unsafe { &mut *core::ptr::addr_of_mut!(HOT_BUF) }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
+        log_cold: slate_core::log::Log::new(unsafe { &mut *core::ptr::addr_of_mut!(COLD_BUF) }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
+        index: Index::new(unsafe { &mut *core::ptr::addr_of_mut!(INDEX_SLOTS) }, 2048),
         segs: SegTable::new(128),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
-        ckpt_buf: unsafe { &mut CKPT_BUF },
+        ckpt_buf: unsafe { &mut *core::ptr::addr_of_mut!(CKPT_BUF) },
         rng: slate_core::index::XorShift64::new(rng_seed),
     };
 
@@ -224,13 +223,13 @@ where
             }
         }
         Some("stats") => {
-            #[cfg(feature = "slate_core/metrics")]
+            #[cfg(feature = "metrics")]
             {
                 let m = &slate.metrics;
                 println!("stats: commits={} wakes={} user_bytes={} gc_bytes={} parity_bytes={} ckpt_bytes={} erases={}",
                     m.commits, m.wakes, m.user_bytes, m.gc_bytes, m.parity_bytes, m.ckpt_bytes, m.erases);
             }
-            #[cfg(not(feature = "slate_core/metrics"))]
+            #[cfg(not(feature = "metrics"))]
             {
                 println!("stats: commits=0 wakes=0");
             }

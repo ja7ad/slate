@@ -20,3 +20,4 @@ chip-esp32c3 = ["esp-hal/esp32c3", "esp-hal/rt", "esp-backtrace/esp32c3", "esp-p
 counter-flash = []
 counter-efuse = []
 counter-none = []
+metrics = ["slate-core/metrics"]
