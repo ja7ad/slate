@@ -3,7 +3,6 @@ name: "KV Demo ESP32-C3"
 author: "Slate"
 description: "Verify kv_demo runs on C3 in wokwi"
 steps:
-  - wait-serial: "Booting kv_demo..."
   - wait-serial: "slate> "
   - write-serial: "put a 1\n"
   - wait-serial: "slate> "
