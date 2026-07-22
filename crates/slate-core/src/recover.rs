@@ -16,7 +16,7 @@ pub struct RecoverInfo {
 
 /// A batch of pending record sequence numbers.
 pub struct PendingBatch {
-    records: [u64; 100], // Adjust size if B_COMMIT is larger
+    records: [(u64, u32); 100], // Adjust size if B_COMMIT is larger
     count: usize,
     last_seq: u64,
 }
@@ -25,16 +25,16 @@ impl PendingBatch {
     /// Creates a new pending batch.
     pub fn new() -> Self {
         Self {
-            records: [0; 100],
+            records: [(0, 0); 100],
             count: 0,
             last_seq: 0,
         }
     }
 
     /// Pushes a sequence number.
-    pub fn push(&mut self, seq: u64) {
+    pub fn push(&mut self, seq: u64, off: u32) {
         if self.count < self.records.len() {
-            self.records[self.count] = seq;
+            self.records[self.count] = (seq, off);
             self.count += 1;
         }
         self.last_seq = seq;
@@ -46,7 +46,7 @@ impl PendingBatch {
     }
 
     /// Drains the pending batch.
-    pub fn drain(&mut self) -> &[u64] {
+    pub fn drain(&mut self) -> &[(u64, u32)] {
         let res = &self.records[0..self.count];
         self.count = 0;
         res
@@ -76,7 +76,7 @@ pub fn scan_segment_headers<F: Flash>(_flash: &mut F) -> Result<[u32; 1], Error>
 pub fn recover<F: Flash>(
     flash: &mut F,
     s: &mut impl Sealer,
-    mut apply: impl FnMut(u64),
+    mut apply: impl FnMut((u64, u32)),
 ) -> Result<RecoverInfo, Error> {
     let segs = scan_segment_headers(flash)?;
     let mut committed_upto = 0;
@@ -125,7 +125,7 @@ pub fn recover<F: Flash>(
                         ) {
                             Ok(()) => {
                                 s.chain_fold(&rec_bytes[..total_len]);
-                                pending.push(hdr.seq);
+                                pending.push(hdr.seq, off);
                             }
                             Err(_) => {
                                 return Ok(finish_truncate(off, committed_upto));

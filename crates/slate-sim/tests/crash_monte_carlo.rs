@@ -84,7 +84,7 @@ fn test_crash_monte_carlo() {
 
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();
-        let info = recover(&mut flash, &mut sealer, |seq| recovered_seqs.push(seq)).unwrap();
+        let info = recover(&mut flash, &mut sealer, |(seq, _off)| recovered_seqs.push(seq)).unwrap();
 
         // 3. Verify exactly acknowledged prefix or fully committed batch
         assert!(info.committed_upto == acked || info.committed_upto == 5, "Seed {} failed: recovered seq {} neither {} nor 5", seed, info.committed_upto, acked);

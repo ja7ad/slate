@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod error;
+pub mod index;
 pub mod log;
 pub mod record;
 pub mod recover;

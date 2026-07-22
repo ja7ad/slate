@@ -12,4 +12,5 @@ pub enum Error {
     CounterExhausted,
     Io,
     FormatError,
+    IndexFull,
 }

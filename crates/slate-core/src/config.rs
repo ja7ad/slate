@@ -16,3 +16,11 @@ pub const ERASED_BYTE: u8 = 0xFF;
 pub const MAX_KEY_LEN: usize = 256;
 pub const MAX_VAL_LEN: usize = 1024;
 pub const B_COMMIT: usize = 27;
+
+// Index constants (ESP32 default 8 k-key config)
+pub const BUCKET_SLOTS: usize = 4;
+pub const STASH_SIZE: usize = 8;
+pub const FP_BITS: usize = 8;
+pub const OFF_BITS: usize = 24;
+pub const MAX_KICKS: usize = 500;
+pub const N_BUCKETS: usize = 2048;
