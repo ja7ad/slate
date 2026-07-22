@@ -14,6 +14,7 @@ if [ "${1:-}" == "--fresh" ] || [ ! -f "$IMAGE" ]; then
     echo "Creating fresh $IMAGE"
     # Needs espflash installed: cargo install espflash
     espflash save-image --ignore-app-descriptor --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/$BIN $IMAGE
+    truncate -s 4194304 "$IMAGE" 2>/dev/null || dd if=/dev/zero of="$IMAGE" bs=1 count=1 seek=4194303 conv=notrunc 2>/dev/null
 fi
 
 qemu-system-riscv32 -nographic \
@@ -21,3 +22,4 @@ qemu-system-riscv32 -nographic \
     -drive file=$IMAGE,if=mtd,format=raw \
     -serial pty \
     -monitor none
+
