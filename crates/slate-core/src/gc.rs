@@ -111,7 +111,9 @@ pub fn compact_one<
     let mut off = seg_base + page_size; // Skip segment header
 
     let mut buf = [0u8; 1];
-    let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD + crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN];
+    let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD
+        + crate::config::MAX_KEY_LEN
+        + crate::config::MAX_VAL_LEN];
     let mut scratch = [0u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN];
 
     while off < seg_base + crate::config::SEG_BYTES as u32 {
@@ -140,11 +142,23 @@ pub fn compact_one<
                     break;
                 }
                 if let Ok(hdr) = crate::record::RecordHeader::decode(&hdr_bytes) {
-                    let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
-                    if total_len <= rec_bytes.len() && st.flash.read(off, &mut rec_bytes[..total_len]).is_ok() {
-                        if st.sealer.open_record(&hdr_bytes, &rec_bytes[crate::config::REC_HDR_LEN..total_len], &mut scratch).is_ok() {
+                    let total_len =
+                        crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                    if total_len <= rec_bytes.len()
+                        && st.flash.read(off, &mut rec_bytes[..total_len]).is_ok()
+                    {
+                        if st
+                            .sealer
+                            .open_record(
+                                &hdr_bytes,
+                                &rec_bytes[crate::config::REC_HDR_LEN..total_len],
+                                &mut scratch,
+                            )
+                            .is_ok()
+                        {
                             let key = &scratch[..hdr.klen as usize];
-                            let val = &scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize];
+                            let val =
+                                &scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize];
 
                             if hdr.op == crate::config::OP_PUT {
                                 let mut is_live = false;
@@ -180,7 +194,9 @@ pub fn compact_one<
     st.commit()?;
 
     for b in 0..(crate::config::SEG_BLOCKS_DATA + crate::config::SEG_BLOCKS_PARITY) {
-        st.flash.erase(seg_base + (b as u32) * st.flash.block_size() as u32).map_err(|_| Error::Io)?;
+        st.flash
+            .erase(seg_base + (b as u32) * st.flash.block_size() as u32)
+            .map_err(|_| Error::Io)?;
     }
     st.segs.entries[victim as usize].reset_to_free();
     Ok(())

@@ -24,19 +24,29 @@ pub enum DbError {
 }
 
 impl From<slate_core::error::Error> for DbError {
-    fn from(e: slate_core::error::Error) -> Self { DbError::Core(e) }
+    fn from(e: slate_core::error::Error) -> Self {
+        DbError::Core(e)
+    }
 }
 impl From<slate_core::epoch::MountError> for DbError {
-    fn from(e: slate_core::epoch::MountError) -> Self { DbError::Mount(e) }
+    fn from(e: slate_core::epoch::MountError) -> Self {
+        DbError::Mount(e)
+    }
 }
 impl From<std::io::Error> for DbError {
-    fn from(e: std::io::Error) -> Self { DbError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        DbError::Io(e)
+    }
 }
 impl From<String> for DbError {
-    fn from(e: String) -> Self { DbError::Config(e) }
+    fn from(e: String) -> Self {
+        DbError::Config(e)
+    }
 }
 impl From<&str> for DbError {
-    fn from(e: &str) -> Self { DbError::Config(e.to_string()) }
+    fn from(e: &str) -> Self {
+        DbError::Config(e.to_string())
+    }
 }
 
 pub enum KeySource {
@@ -110,7 +120,6 @@ struct OwnedEngine {
 // SAFETY: OwnedEngine encapsulates exclusively owned data and is protected by Mutex in Db.
 unsafe impl Send for OwnedEngine {}
 
-
 pub struct Db {
     inner: Mutex<OwnedEngine>,
 }
@@ -157,14 +166,14 @@ impl Db {
             .truncate(false)
             .open(counter_path)?;
 
-        let mut flash =
-            FileFlash::new(flash_file, opts.capacity, 256, 4096, opts.durability).map_err(|e| DbError::Config(e.to_string()))?;
+        let mut flash = FileFlash::new(flash_file, opts.capacity, 256, 4096, opts.durability)
+            .map_err(|e| DbError::Config(e.to_string()))?;
         let device_key = slate_crypto::keys::DeviceKey(root_key);
         let keyset = slate_crypto::keys::KeySet::derive(&device_key, 1);
         let k_ctr = keyset.k_ctr;
 
-        let mut counter =
-            FileCounter::new(counter_file, k_ctr, u64::MAX).map_err(|e| DbError::Config(format!("{:?}", e)))?;
+        let mut counter = FileCounter::new(counter_file, k_ctr, u64::MAX)
+            .map_err(|e| DbError::Config(format!("{:?}", e)))?;
 
         let mut sealer = CryptoSealer::new(keyset);
 
@@ -317,7 +326,9 @@ impl Db {
     }
 
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), DbError> {
-        if key.len() > slate_core::config::MAX_KEY_LEN || val.len() > slate_core::config::MAX_VAL_LEN {
+        if key.len() > slate_core::config::MAX_KEY_LEN
+            || val.len() > slate_core::config::MAX_VAL_LEN
+        {
             return Err(DbError::InvalidArg("key or value too large".into()));
         }
         let mut inner = self.inner.lock().unwrap();
@@ -328,21 +339,17 @@ impl Db {
             .as_millis() as u64;
 
         let seq = slate.engine.next_seq;
-        let (_seq, offset) = slate
-            .log_hot
-            .append(
-                seq,
-                OP_PUT,
-                key,
-                val,
-                &mut slate.sealer,
-                &mut slate.engine.chain,
-            )?;
+        let (_seq, offset) = slate.log_hot.append(
+            seq,
+            OP_PUT,
+            key,
+            val,
+            &mut slate.sealer,
+            &mut slate.engine.chain,
+        )?;
         slate.engine.next_seq += 1;
         let mut rng = slate_core::index::XorShift64::new(42);
-        slate
-            .index
-            .upsert(key, offset, &mut rng, |_| false)?;
+        slate.index.upsert(key, offset, &mut rng, |_| false)?;
         slate
             .metrics
             .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len() + val.len()) as u64);
@@ -353,7 +360,9 @@ impl Db {
     }
 
     pub fn put_durable(&self, key: &[u8], val: &[u8]) -> Result<(), DbError> {
-        if key.len() > slate_core::config::MAX_KEY_LEN || val.len() > slate_core::config::MAX_VAL_LEN {
+        if key.len() > slate_core::config::MAX_KEY_LEN
+            || val.len() > slate_core::config::MAX_VAL_LEN
+        {
             return Err(DbError::InvalidArg("key or value too large".into()));
         }
         self.put(key, val)?;
@@ -386,7 +395,9 @@ impl Db {
                         &hot_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
                     );
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD
+                            + hdr.klen as usize
+                            + hdr.vlen as usize;
                         if rec_off + total_len <= hot_data.len() {
                             rec_bytes =
                                 Some((hdr_bytes, hot_data[rec_off..rec_off + total_len].to_vec()));
@@ -409,7 +420,9 @@ impl Db {
                         &cold_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
                     );
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD
+                            + hdr.klen as usize
+                            + hdr.vlen as usize;
                         if rec_off + total_len <= cold_data.len() {
                             rec_bytes =
                                 Some((hdr_bytes, cold_data[rec_off..rec_off + total_len].to_vec()));
@@ -424,7 +437,9 @@ impl Db {
                 let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
                 if inner.slate.flash.read(off, &mut hdr_bytes).is_ok() {
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD
+                            + hdr.klen as usize
+                            + hdr.vlen as usize;
                         let mut rb = vec![0u8; total_len];
                         if inner.slate.flash.read(off, &mut rb).is_ok() {
                             rec_bytes = Some((hdr_bytes, rb));
@@ -481,20 +496,20 @@ impl Db {
             .as_millis() as u64;
 
         let seq = slate.engine.next_seq;
-        let _ = slate
-            .log_hot
-            .append(
-                seq,
-                OP_DEL,
-                key,
-                &[],
-                &mut slate.sealer,
-                &mut slate.engine.chain,
-            )?;
+        let _ = slate.log_hot.append(
+            seq,
+            OP_DEL,
+            key,
+            &[],
+            &mut slate.sealer,
+            &mut slate.engine.chain,
+        )?;
         slate.engine.next_seq += 1;
 
         slate.index.remove(key, |_| true);
-        slate.metrics.add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
+        slate
+            .metrics
+            .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }
@@ -513,20 +528,20 @@ impl Db {
             .as_millis() as u64;
 
         let seq = slate.engine.next_seq;
-        let _ = slate
-            .log_hot
-            .append(
-                seq,
-                OP_DEL,
-                key,
-                &[],
-                &mut slate.sealer,
-                &mut slate.engine.chain,
-            )?;
+        let _ = slate.log_hot.append(
+            seq,
+            OP_DEL,
+            key,
+            &[],
+            &mut slate.sealer,
+            &mut slate.engine.chain,
+        )?;
         slate.engine.next_seq += 1;
 
         slate.index.remove(key, |_| true);
-        slate.metrics.add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
+        slate
+            .metrics
+            .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }

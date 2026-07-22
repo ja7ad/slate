@@ -168,10 +168,14 @@ pub fn recover<F: Flash>(
                                     let mut hdr_bytes = [0u8; REC_HDR_LEN];
                                     if flash.read(apply_off, &mut hdr_bytes).is_ok() {
                                         if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
-                                            let total_len =
-                                                crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                                            let total_len = crate::config::REC_OVERHEAD
+                                                + hdr.klen as usize
+                                                + hdr.vlen as usize;
                                             if flash
-                                                .read(apply_off, &mut workspace.rec_bytes[..total_len])
+                                                .read(
+                                                    apply_off,
+                                                    &mut workspace.rec_bytes[..total_len],
+                                                )
                                                 .is_ok()
                                             {
                                                 if s.open_record(
@@ -225,8 +229,12 @@ pub fn recover<F: Flash>(
                             return Ok(finish_truncate(off, committed_upto));
                         }
                         if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
-                            let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
-                            if flash.read(off, &mut workspace.rec_bytes[..total_len]).is_err() {
+                            let total_len =
+                                crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                            if flash
+                                .read(off, &mut workspace.rec_bytes[..total_len])
+                                .is_err()
+                            {
                                 return Ok(finish_truncate(off, committed_upto));
                             }
 

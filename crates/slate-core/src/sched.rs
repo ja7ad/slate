@@ -92,14 +92,10 @@ impl Scheduler {
             let t_ms = self.cfg.staleness_budget_ms as u64;
             // c_nj = (A_uj * 1000 * 1024 * 1000000) / (2 * lam_q10 * t_ms^2)
             // c_nj = (A_uj * 512_000_000_000) / (lam_q10 * t_ms^2)
-            let c_nj = (self.cfg.fixed_cost_uj.saturating_mul(512_000_000_000)) / 
-                       (self.rate.lam_q10.max(1) * t_ms.saturating_mul(t_ms).max(1));
+            let c_nj = (self.cfg.fixed_cost_uj.saturating_mul(512_000_000_000))
+                / (self.rate.lam_q10.max(1) * t_ms.saturating_mul(t_ms).max(1));
 
-            let bs = b_star(
-                self.rate.lam_q10,
-                self.cfg.fixed_cost_uj,
-                c_nj,
-            );
+            let bs = b_star(self.rate.lam_q10, self.cfg.fixed_cost_uj, c_nj);
             // deadline clamp B ≤ λD (Thm 8.1 constrained case), λD in ops:
             let lam_d = (self.rate.lam_q10 * self.cfg.deadline_ms as u64) / (1024 * 1000);
             bs.min(lam_d.max(1) as u32)

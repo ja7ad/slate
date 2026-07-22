@@ -21,19 +21,16 @@ fn main() {
     let mut chain = Chain::default();
     let mut log = Log::new(&mut buf, head);
 
-    let mut last_ticket = 0;
-
     for i in 1..=3 {
         let key = format!("key{}", i).into_bytes();
         let val = format!("val{}", i).into_bytes();
-        last_ticket = log
+        let _ = log
             .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
             .unwrap()
             .0;
     }
     log.commit(&mut flash, &mut sealer, &chain, 1, 3).unwrap();
 
-    let mut rec_chain = Chain::default();
     let mut rec_chain = Chain::default();
     let mut workspace = slate_core::recover::RecoverWorkspace::new();
     let info = recover(
@@ -42,7 +39,7 @@ fn main() {
         &mut rec_chain,
         1,
         &mut workspace,
-        |seq, off, op, key| {
+        |seq, off, _op, _key| {
             println!("Recovered seq: {} off: {}", seq, off);
         },
     )

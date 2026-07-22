@@ -43,21 +43,32 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         let sealer = &mut self.sealer;
         let _ = self.index.upsert(key, new_off, &mut self.rng, |cand_off| {
             let mut hdr_bytes = [0u8; REC_HDR_LEN];
-            if flash.read(cand_off, &mut hdr_bytes).is_err() { return false; }
+            if flash.read(cand_off, &mut hdr_bytes).is_err() {
+                return false;
+            }
             let hdr = match crate::record::RecordHeader::decode(&hdr_bytes) {
                 Ok(h) => h,
                 Err(_) => return false,
             };
-            if hdr.klen as usize != key.len() { return false; }
+            if hdr.klen as usize != key.len() {
+                return false;
+            }
             let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
             // Bound check just in case, though klen/vlen max checks are in decode
-            if total_len > crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN { return false; }
-            
+            if total_len > crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN {
+                return false;
+            }
+
             let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN];
-            if flash.read(cand_off, &mut rec_bytes[..total_len]).is_err() { return false; }
-            
+            if flash.read(cand_off, &mut rec_bytes[..total_len]).is_err() {
+                return false;
+            }
+
             let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
-            if sealer.open_record(&hdr_bytes, &rec_bytes[REC_HDR_LEN..total_len], &mut scratch).is_err() {
+            if sealer
+                .open_record(&hdr_bytes, &rec_bytes[REC_HDR_LEN..total_len], &mut scratch)
+                .is_err()
+            {
                 return false;
             }
             &scratch[..hdr.klen as usize] == key
