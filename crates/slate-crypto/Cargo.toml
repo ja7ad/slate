@@ -1,0 +1,6 @@
+[package]
+name = "slate-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

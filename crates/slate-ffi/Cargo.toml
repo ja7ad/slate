@@ -1,0 +1,6 @@
+[package]
+name = "slate-ffi"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

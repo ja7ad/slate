@@ -1,0 +1,9 @@
+[package]
+name = "slate-sim"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+slate-hal = { path = "../slate-hal" }
+rand = "0.8"
+proptest = "1.5"

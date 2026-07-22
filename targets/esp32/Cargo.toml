@@ -1,0 +1,6 @@
+[package]
+name = "slate-esp32"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

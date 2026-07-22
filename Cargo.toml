@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/*",
+]
+exclude = [
+    "targets/esp32",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.lints.clippy]
+all = "deny"
