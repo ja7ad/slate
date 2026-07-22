@@ -12,26 +12,27 @@ use slate_crypto::sealer::CryptoSealer;
 
 #[test]
 fn test_crash_monte_carlo() {
-    let mut rng = SmallRng::seed_from_u64(42);
     // Run N=100 iterations for the unit test context. Real CI might run 5000.
     for seed in 0..100 {
-        let mut flash = SimFlash::new(SEG_BYTES as u32, 256, 4096);
-        let dk = DeviceKey([42; 32]);
-        let mut sealer = CryptoSealer::new(KeySet::derive(&dk, 1));
-        let mut buf = std::vec![0u8; 65536]; // Batch buffer
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut flash = SimFlash::new(4096 * 10, 256, 4096);
+        let dev_key = DeviceKey([0; 32]);
+        let keyset = KeySet::derive(&dev_key, 1);
+        let mut sealer = CryptoSealer::new(keyset);
 
-        // 1. Initial write of some records
-        let head = HeadState {
-            seg_seq: 0,
-            write_offset: 256,
-            block_idx: 0,
-        }; // After segment header
-        let mut chain = Chain::default();
-        let mut log = Log::new(&mut buf, head);
+        let mut log_buf = [0u8; 65536];
+        let mut log = Log::new(
+            &mut log_buf,
+            HeadState {
+                seg_seq: 1,
+                write_offset: 0,
+                block_idx: 0,
+            },
+        );
 
+        // 1. Write batch 1
+        let mut chain = Chain::anchor(1, &[0u8; 32]);
         let mut last_ticket = 0;
-
-        // Write 3 records
         for i in 1..=3 {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
@@ -64,7 +65,7 @@ fn test_crash_monte_carlo() {
 
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();
-        let mut rec_chain = Chain::default();
+        let mut rec_chain = Chain::anchor(1, &[0u8; 32]);
         let mut workspace = slate_core::recover::RecoverWorkspace::new();
         let info = recover(
             &mut flash,

@@ -121,9 +121,14 @@ pub fn recover<F: Flash>(
     let mut scratch_chain = chain.clone();
 
     let page_size = flash.page_size() as u32;
+    let mut off = 0;
 
     for &seg_addr in &segs {
-        let mut off = seg_addr + page_size; // Skip segment header
+        let mut hdr_check = [0u8; 1];
+        off = seg_addr;
+        if flash.read(seg_addr, &mut hdr_check).is_ok() && hdr_check[0] == MAGIC_SEG {
+            off += page_size;
+        }
         let mut buf = [0u8; 1];
 
         loop {
@@ -160,7 +165,7 @@ pub fn recover<F: Flash>(
                         Ok(f) => {
                             if f.seq_max == workspace.pending.last_seq()
                                 && f.chi == scratch_chain.chi
-                                && f.epoch == epoch
+                                && f.epoch >= epoch
                             {
                                 *chain = scratch_chain.clone();
                                 let batch = workspace.pending.drain();
@@ -191,6 +196,8 @@ pub fn recover<F: Flash>(
                                                         hdr.op,
                                                         &workspace.scratch[..hdr.klen as usize],
                                                     );
+                                                } else {
+                                                    panic!("open_record failed during batch apply at apply_off {}", apply_off);
                                                 }
                                             }
                                         }
@@ -207,22 +214,15 @@ pub fn recover<F: Flash>(
                     }
                     off += page_size * 2;
                 }
-                _ => {
-                    // Before parsing, if we are at a page boundary, check if this is the XOR page
+                MAGIC_XOR => {
                     let rem = off % page_size;
-                    if rem == 0 {
-                        let mut next_cm = [0u8; CM_LEN];
-                        if flash.read(off + page_size, &mut next_cm).is_ok()
-                            && next_cm[0] == MAGIC_CM
-                        {
-                            if s.verify_marker(&next_cm).is_ok() {
-                                // This page is the XOR parity page. Skip it.
-                                off += page_size;
-                                continue;
-                            }
-                        }
+                    if rem != 0 {
+                        off += page_size - rem;
+                    } else {
+                        off += page_size;
                     }
-
+                }
+                _ => {
                     if buf[0] == MAGIC_REC {
                         let mut hdr_bytes = [0u8; REC_HDR_LEN];
                         if flash.read(off, &mut hdr_bytes).is_err() {
@@ -262,5 +262,5 @@ pub fn recover<F: Flash>(
         }
     }
 
-    Ok(finish_truncate(segs[0], committed_upto))
+    Ok(finish_truncate(off, committed_upto))
 }

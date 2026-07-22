@@ -164,6 +164,9 @@ impl Db {
             }
         };
 
+        use slate_core::log::Sealer;
+        std::fs::create_dir_all(path)?;
+
         let flash_path = path.join("data.bin");
         let counter_path = path.join("counter.bin");
 
@@ -191,7 +194,15 @@ impl Db {
 
         let mut sealer = CryptoSealer::new(keyset);
 
-        let ckpt_box = vec![0u8; 65536].into_boxed_slice();
+        // Allocate buffers
+        let hot_box = vec![0u8; 65536].into_boxed_slice();
+        let cold_box = vec![0u8; 65536].into_boxed_slice();
+        let index_slots_count = (opts.n_keys.max(2048) as f64 / 0.95) as usize; // rough capacity
+        let index_slots_count = index_slots_count.next_power_of_two() * 4; // BUCKET_SLOTS
+        let index_box = vec![0u32; index_slots_count].into_boxed_slice();
+        let index_len = index_box.len();
+
+        let ckpt_box = vec![0u8; index_len + 1024].into_boxed_slice();
         let ckpt_ptr = Box::into_raw(ckpt_box);
         let ckpt_slice = unsafe { &mut *ckpt_ptr };
 
@@ -227,14 +238,7 @@ impl Db {
                 Err(e) => return Err(e.into()),
             };
 
-        // Allocate buffers
-        let hot_box = vec![0u8; 65536].into_boxed_slice();
-        let cold_box = vec![0u8; 65536].into_boxed_slice();
-        let index_slots_count = (opts.n_keys.max(2048) as f64 / 0.95) as usize; // rough capacity
-        let index_slots_count = index_slots_count.next_power_of_two() * 4; // BUCKET_SLOTS
-        let index_box = vec![0u32; index_slots_count].into_boxed_slice();
-
-        let index_len = index_box.len();
+        sealer.roll_epoch(engine_state.epoch);
 
         let hot_ptr = Box::into_raw(hot_box);
         let cold_ptr = Box::into_raw(cold_box);
@@ -312,7 +316,7 @@ impl Db {
         let mut index_upsert_error = false;
         let mut rng = slate_core::index::XorShift64::new(42);
         let mut workspace = Box::new(slate_core::recover::RecoverWorkspace::new());
-        slate_core::recover::recover(
+        let rec_info = slate_core::recover::recover(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
@@ -329,6 +333,10 @@ impl Db {
             },
         )
         .map_err(|e| DbError::Config(format!("{:?}", e)))?;
+
+        slate.log_hot.head.write_offset = rec_info.head_pos;
+        slate.engine.acked_seq = rec_info.committed_upto;
+        slate.engine.next_seq = rec_info.committed_upto + 1;
 
         if index_upsert_error {
             return Err("Index capacity exceeded during recovery".into());

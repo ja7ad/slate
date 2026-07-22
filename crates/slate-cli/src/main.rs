@@ -10,11 +10,11 @@ fn print_usage() {
     eprintln!("    slate-cli <SUBCOMMAND> <DB_DIR> [ARGS...]");
     eprintln!();
     eprintln!("SUBCOMMANDS:");
-    eprintln!("    get   <db_dir> <key>          Read value for key");
-    eprintln!("    put   <db_dir> <key> <val>    Write key-value pair and commit");
-    eprintln!("    del   <db_dir> <key>          Delete key and commit");
-    eprintln!("    stats <db_dir>                Show database statistics");
-    eprintln!("    help                          Show help information");
+    eprintln!("    get   <db_dir> <key> [hex_key]       Read value for key");
+    eprintln!("    put   <db_dir> <key> <val> [hex_key] Write key-value pair and commit");
+    eprintln!("    del   <db_dir> <key> [hex_key]       Delete key and commit");
+    eprintln!("    stats <db_dir> [hex_key]             Show database statistics");
+    eprintln!("    help                                 Show help information");
 }
 
 fn parse_key_bytes(hex_or_str: Option<&String>) -> [u8; 32] {
@@ -40,6 +40,15 @@ fn hex_decode(s: &str) -> Result<[u8; 32], ()> {
     Ok(out)
 }
 
+fn open_db(db_path_str: &str, dev_key_arg: Option<&String>) -> Db {
+    let db_path = Path::new(db_path_str);
+    let dev_key = parse_key_bytes(dev_key_arg);
+    Db::open(db_path, KeySource::Bytes(dev_key), Options::default()).unwrap_or_else(|e| {
+        eprintln!("Failed to open database '{:?}': {e:?}", db_path);
+        exit(1);
+    })
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -57,14 +66,8 @@ fn main() {
                 eprintln!("Error: 'get' requires <db_dir> and <key>");
                 exit(1);
             }
-            let db_path = Path::new(&args[2]);
+            let db = open_db(&args[2], args.get(4));
             let key = args[3].as_bytes();
-            let dev_key = parse_key_bytes(args.get(4));
-
-            let db = Db::open(db_path, KeySource::Bytes(dev_key), Options::default()).unwrap_or_else(|e| {
-                eprintln!("Failed to open database '{:?}': {e:?}", db_path);
-                exit(1);
-            });
 
             match db.get(key) {
                 Ok(Some(val)) => {
@@ -85,15 +88,9 @@ fn main() {
                 eprintln!("Error: 'put' requires <db_dir>, <key>, and <val>");
                 exit(1);
             }
-            let db_path = Path::new(&args[2]);
+            let db = open_db(&args[2], args.get(5));
             let key = args[3].as_bytes();
             let val = args[4].as_bytes();
-            let dev_key = parse_key_bytes(args.get(5));
-
-            let db = Db::open(db_path, KeySource::Bytes(dev_key), Options::default()).unwrap_or_else(|e| {
-                eprintln!("Failed to open database '{:?}': {e:?}", db_path);
-                exit(1);
-            });
 
             if let Err(e) = db.put_durable(key, val) {
                 eprintln!("Failed to write key: {e:?}");
@@ -106,14 +103,8 @@ fn main() {
                 eprintln!("Error: 'del' requires <db_dir> and <key>");
                 exit(1);
             }
-            let db_path = Path::new(&args[2]);
+            let db = open_db(&args[2], args.get(4));
             let key = args[3].as_bytes();
-            let dev_key = parse_key_bytes(args.get(4));
-
-            let db = Db::open(db_path, KeySource::Bytes(dev_key), Options::default()).unwrap_or_else(|e| {
-                eprintln!("Failed to open database '{:?}': {e:?}", db_path);
-                exit(1);
-            });
 
             if let Err(e) = db.delete_durable(key) {
                 eprintln!("Failed to delete key: {e:?}");
@@ -126,13 +117,7 @@ fn main() {
                 eprintln!("Error: 'stats' requires <db_dir>");
                 exit(1);
             }
-            let db_path = Path::new(&args[2]);
-            let dev_key = parse_key_bytes(args.get(3));
-
-            let db = Db::open(db_path, KeySource::Bytes(dev_key), Options::default()).unwrap_or_else(|e| {
-                eprintln!("Failed to open database '{:?}': {e:?}", db_path);
-                exit(1);
-            });
+            let db = open_db(&args[2], args.get(3));
 
             let stats = db.stats();
             println!("Commits:       {}", stats.commits);

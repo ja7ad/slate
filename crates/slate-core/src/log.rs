@@ -222,6 +222,7 @@ impl<'a, F: Flash> Log<'a, F> {
             }
         }
 
+        xor_page[0] = crate::config::MAGIC_XOR;
         flash
             .program(self.head.write_offset, &xor_page[..page_size])
             .map_err(|_| Error::Io)?;

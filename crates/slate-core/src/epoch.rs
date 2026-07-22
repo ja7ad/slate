@@ -264,11 +264,11 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
 
     // (c) re-anchor chain from the checkpoint
     let st = EngineState {
-        epoch: ckpt.epoch,
+        epoch: ckpt.epoch + 1,
         next_seq: ckpt.seq,
         acked_seq: ckpt.seq.saturating_sub(1),
         d_ckpt,
-        chain: Chain::anchor(ckpt.epoch, &d_ckpt),
+        chain: Chain::anchor(ckpt.epoch + 1, &d_ckpt),
         records_in_epoch: 0,
         security_mode: match ctr.kind() {
             CounterKind::Hardware => SecurityMode::Full,
