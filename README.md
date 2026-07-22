@@ -137,3 +137,21 @@ Dual-licensed under either of:
 - **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
 
 at your option.
+
+---
+
+## Citation
+
+If you use SLATE or reference its formal specification, correctness proofs, or energy models in your research or system design, please cite:
+
+```bibtex
+@techreport{slate2026formal,
+  title       = {SLATE: A Provably Secure, Ultra-Light, Low-Power Key--Value Engine for Edge Devices},
+  subtitle    = {Formal model, correctness and security theorems, cost models, and a Pareto-optimal operating point},
+  author      = {SLATE Technical Team},
+  year        = {2026},
+  institution = {SLATE Project},
+  note        = {Available at docs/SLATE_FORMAL_SPECIFICATION.md}
+}
+```
+
