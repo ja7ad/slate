@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-esp32:
+    name: Build ESP32 Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
+      - name: Install espflash
+        run: cargo install espflash
+      - name: Build ESP32-C3 Firmware
+        run: |
+          cd targets/esp32
+          cargo build --release --bin kv_demo --no-default-features --features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
+          espflash save-image --ignore-app-descriptor --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/kv_demo slate-esp32c3-flash.img
+          truncate -s 4194304 slate-esp32c3-flash.img
+          tar -czvf slate-esp32c3-${{ github.ref_name }}.tar.gz slate-esp32c3-flash.img target/riscv32imc-unknown-none-elf/release/kv_demo
+      - name: Upload ESP32 Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            targets/esp32/slate-esp32c3-${{ github.ref_name }}.tar.gz
+
+  build-ffi:
+    name: Build C FFI (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: slate-ffi-linux-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: slate-ffi-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: slate-ffi-windows-amd64
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      - name: Build FFI Library
+        run: cargo build --release -p slate-ffi --target ${{ matrix.target }}
+      - name: Package FFI Artifacts (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p dist
+          cp crates/slate-ffi/slate.h dist/
+          cp target/${{ matrix.target }}/release/libslate_ffi.* dist/ 2>/dev/null || true
+          tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
+      - name: Package FFI Artifacts (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp crates/slate-ffi/slate.h dist/
+          cp target/${{ matrix.target }}/release/slate_ffi.* dist/ 2>/dev/null || true
+          tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
+      - name: Upload FFI Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz
