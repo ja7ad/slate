@@ -82,6 +82,16 @@ fn create_slate<'a>(
         index: Index::new(index_slots, N_BUCKETS),
         segs: SegTable::new(128), // 128 max segments
         ckpt_seg_seq: 10,         // fake checkpoint time
+        sched: slate_core::sched::Scheduler::new(slate_core::config::SchedCfg {
+            auto_b: false,
+            fixed_cost_uj: 400,
+            holding_nj_per_op_s: 1000,
+            deadline_ms: 1000,
+            b_min: 1,
+            b_max: 128,
+            b_commit: 27,
+        }),
+        metrics: Default::default(),
     }
 }
 
@@ -140,7 +150,7 @@ fn test_wa_accounting() {
 
     // Write a cold put
     st.flash.is_gc_write = true;
-    st.append_cold(b"key2", b"val2").unwrap();
+    st.append_cold(b"key2", b"val2", 0).unwrap();
     st.commit().unwrap();
     st.flash.is_gc_write = false;
 

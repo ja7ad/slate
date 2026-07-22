@@ -100,12 +100,10 @@ pub fn compact_one<'a, F: slate_hal::Flash, S: crate::log::Sealer>(
     let is_live = true; // Mock
 
     if rec_op == crate::config::OP_PUT && is_live {
-        let new_off = st.append_cold(b"mock_key", b"mock_val")?;
+        let new_off = st.append_cold(b"mock_key", b"mock_val", 0)?;
         st.index_update_offset(b"mock_key", new_off);
-    } else if rec_op == crate::config::OP_DEL {
-        if rec_seq > watermark {
-            st.append_cold_tombstone(b"mock_key")?;
-        }
+    } else if rec_op == crate::config::OP_DEL && rec_seq > watermark {
+        st.append_cold_tombstone(b"mock_key", 0)?;
     }
     
     if st.cold_batch_full() {

@@ -18,6 +18,8 @@ pub struct Slate<'a, F: Flash, S: Sealer> {
     pub index: Index<'a>,
     pub segs: SegTable,
     pub ckpt_seg_seq: u64,
+    pub sched: crate::sched::Scheduler,
+    pub metrics: crate::metrics::Metrics,
 }
 
 impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
@@ -38,13 +40,19 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
         let _ = self.index.upsert(key, new_off, &mut rng, |_| false); // Ignore kick for now
     }
 
-    pub fn append_cold(&mut self, key: &[u8], val: &[u8]) -> Result<u32, Error> {
+    pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
         self.log_cold.append(OP_PUT, key, val, &mut self.sealer, &mut self.engine.chain)?;
+        if self.sched.on_append(now_ms) {
+            self.commit()?;
+        }
         Ok(self.log_cold.head.write_offset) // Approximation of new_off
     }
 
-    pub fn append_cold_tombstone(&mut self, key: &[u8]) -> Result<(), Error> {
+    pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
         self.log_cold.append(OP_DEL, key, &[], &mut self.sealer, &mut self.engine.chain)?;
+        if self.sched.on_append(now_ms) {
+            self.commit()?;
+        }
         Ok(())
     }
 
@@ -56,6 +64,8 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     pub fn commit(&mut self) -> Result<(), Error> {
         self.log_hot.commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
         self.log_cold.commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
+        self.sched.on_commit();
+        self.metrics.add_commit();
         Ok(())
     }
 
