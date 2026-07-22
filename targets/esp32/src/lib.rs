@@ -39,6 +39,21 @@ impl<'a> Flash for EspFlash<'a> {
     fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
         if addr % 256 != 0 || buf.len() % 256 != 0 { return Err(EspFlashError::Unaligned); }
         if addr + buf.len() as u32 > self.len { return Err(EspFlashError::OutOfBounds); }
+        
+        #[cfg(debug_assertions)]
+        {
+            let mut check_buf = [0u8; 256];
+            for chunk_offset in (0..buf.len()).step_by(256) {
+                if self.inner.read(self.base + addr + chunk_offset as u32, &mut check_buf).is_ok() {
+                    for &b in check_buf.iter() {
+                        if b != 0xFF {
+                            return Err(EspFlashError::ProgramWithoutErase);
+                        }
+                    }
+                }
+            }
+        }
+
         self.inner.write(self.base + addr, buf).map_err(|_| EspFlashError::StorageError)
     }
 
@@ -67,17 +82,8 @@ impl MonotonicCounter for EspCounter {
     type Error = EspCounterError;
 
     fn kind(&self) -> CounterKind {
-        #[cfg(feature = "counter-flash")]
-        return CounterKind::BestEffort;
-        
-        #[cfg(feature = "counter-efuse")]
-        return CounterKind::Hardware;
-        
-        #[cfg(feature = "counter-none")]
-        return CounterKind::None;
-        
-        #[cfg(not(any(feature = "counter-flash", feature = "counter-efuse", feature = "counter-none")))]
-        return CounterKind::None;
+        // Until real eFuse/NVS backends are implemented
+        CounterKind::None
     }
 
     fn read(&mut self) -> Result<u64, Self::Error> {

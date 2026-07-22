@@ -2,45 +2,212 @@
 #![no_main]
 
 use esp_backtrace as _;
-use esp_println::println;
+use esp_println::{print, println};
+use esp_hal::uart::Uart;
+
+use slate_core::config::SchedCfg;
+use slate_core::slate::Slate;
+use slate_core::index::Index;
+use slate_core::gc::SegTable;
+use slate_core::sched::Scheduler;
+use slate_core::metrics::Metrics;
+use slate_core::log::HeadState;
+
+use slate_esp32::{EspFlash, EspCounter};
+use slate_crypto::sealer::CryptoSealer;
+use slate_hal::MonotonicCounter;
+
+static mut HOT_BUF: [u8; 4096] = [0; 4096];
+static mut COLD_BUF: [u8; 4096] = [0; 4096];
+static mut INDEX_SLOTS: [u32; 2048 * 4] = [0; 2048 * 4];
+static mut CKPT_BUF: [u8; 35000] = [0; 35000];
 
 #[esp_hal::main]
 fn main() -> ! {
-    let _peripherals = esp_hal::init(esp_hal::Config::default());
-    loop { }
+    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
+
+    let mut flash = EspFlash::new(0x10000, 4096 * 128, peripherals.FLASH);
+    let mut counter = EspCounter::new();
+    
+    let dev_key = slate_crypto::keys::DeviceKey([0u8; 32]);
+    let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
+    let mut sealer = CryptoSealer::new(keys);
+    
+    let (engine_state, _plain_len) = match slate_core::epoch::mount(
+        &mut flash,
+        &mut counter,
+        &mut sealer,
+        unsafe { &mut CKPT_BUF },
+    ) {
+        Ok((st, len)) => (st, len),
+        Err(_) => {
+            let st = slate_core::epoch::EngineState {
+                epoch: 1,
+                next_seq: 1,
+                acked_seq: 0,
+                d_ckpt: [0u8; 32],
+                chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                records_in_epoch: 0,
+                security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                active_ckpt_slot: 0,
+            };
+            (st, 0)
+        }
+    };
+
+    let sched_cfg = SchedCfg {
+        auto_b: false,
+        fixed_cost_uj: 1000,
+        staleness_budget_ms: 1000,
+        deadline_ms: 1000,
+        b_min: 1,
+        b_max: 128,
+        b_commit: 8,
+    };
+
+    let rng_seed = engine_state.epoch.max(1) ^ 42;
+    let mut slate = Slate {
+        flash,
+        counter,
+        sealer,
+        engine: engine_state,
+        log_hot: slate_core::log::Log::new(unsafe { &mut HOT_BUF }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
+        log_cold: slate_core::log::Log::new(unsafe { &mut COLD_BUF }, HeadState { seg_seq: 0, write_offset: 0, block_idx: 0 }),
+        index: Index::new(unsafe { &mut INDEX_SLOTS }, 2048),
+        segs: SegTable::new(128),
+        ckpt_seg_seq: 0,
+        sched: Scheduler::new(sched_cfg),
+        metrics: Metrics::default(),
+        ckpt_buf: unsafe { &mut CKPT_BUF },
+        rng: slate_core::index::XorShift64::new(rng_seed),
+    };
+
+    println!("slate> ");
+
+    let mut line_buf = [0u8; 128];
+    let mut line_idx = 0;
+
+    loop {
+        let mut b = [0u8; 1];
+        if let Ok(1) = uart.read(&mut b) {
+            let ch = b[0];
+            if ch == b'\n' || ch == b'\r' {
+                if line_idx > 0 {
+                    if let Ok(s) = core::str::from_utf8(&line_buf[..line_idx]) {
+                        handle_cmd(&mut slate, s);
+                    }
+                    line_idx = 0;
+                }
+                print!("slate> ");
+            } else if line_idx < line_buf.len() {
+                line_buf[line_idx] = ch;
+                line_idx += 1;
+            }
+        }
+        slate.sched.poll(0); // Poll scheduler
+    }
 }
 
-fn handle_cmd(cmd: &str) {
+fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
+where
+    F: slate_hal::Flash,
+    C: slate_hal::MonotonicCounter,
+    S: slate_core::log::Sealer,
+{
     let mut parts = cmd.split_whitespace();
     match parts.next() {
         Some("put") => {
-            let k = parts.next().unwrap_or("");
-            let v = parts.next().unwrap_or("");
-            println!("put {} {}", k, v);
-            // TODO: call slate
+            let k = parts.next().unwrap_or("").as_bytes();
+            let v = parts.next().unwrap_or("").as_bytes();
+            
+            let seq = slate.engine.next_seq;
+            if let Ok((_, offset)) = slate.log_hot.append(
+                seq,
+                slate_core::config::OP_PUT,
+                k,
+                v,
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            ) {
+                slate.engine.next_seq += 1;
+                slate.index_update_offset(k, offset);
+                // Do not ack here, ack on commit!
+            } else {
+                println!("err");
+            }
         }
         Some("get") => {
-            let k = parts.next().unwrap_or("");
-            println!("get {}", k);
+            let k = parts.next().unwrap_or("").as_bytes();
+            let mut cbuf = slate_core::index::CandidateBuf::new();
+            slate.index.candidates(k, &mut cbuf);
+            let mut found = false;
+            for &off in cbuf.as_slice() {
+                let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
+                if slate.flash.read(off, &mut hdr_bytes).is_err() { continue; }
+                if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                    if hdr.klen as usize == k.len() {
+                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        let mut rec_bytes = [0u8; 44 + 256 + 1024];
+                        if slate.flash.read(off, &mut rec_bytes[..total_len]).is_ok() {
+                            let mut scratch = [0u8; 256 + 1024];
+                            if slate.sealer.open_record(&hdr_bytes, &rec_bytes[slate_core::config::REC_HDR_LEN..total_len], &mut scratch).is_ok() {
+                                if &scratch[..hdr.klen as usize] == k {
+                                    if let Ok(v_str) = core::str::from_utf8(&scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize]) {
+                                        println!("{}", v_str);
+                                    } else {
+                                        println!("<binary>");
+                                    }
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !found {
+                println!("(not found)");
+            }
         }
         Some("del") => {
-            let k = parts.next().unwrap_or("");
-            println!("del {}", k);
+            let k = parts.next().unwrap_or("").as_bytes();
+            let seq = slate.engine.next_seq;
+            if slate.log_hot.append(
+                seq,
+                slate_core::config::OP_DEL,
+                k,
+                &[],
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            ).is_ok() {
+                slate.engine.next_seq += 1;
+                slate.index.remove(k, |_| true);
+            }
         }
         Some("commit") => {
-            println!("ack 1"); // echo ack <seq> after commit
+            if slate.commit().is_ok() {
+                let ack_seq = slate.engine.next_seq.saturating_sub(1);
+                println!("ack {}", ack_seq);
+            } else {
+                println!("err");
+            }
         }
         Some("stats") => {
             println!("stats: commits=0 wakes=0");
         }
         Some("mode") => {
-            println!("BestEffortRollback");
+            match slate.counter.kind() {
+                slate_hal::CounterKind::BestEffort => println!("BestEffortRollback"),
+                slate_hal::CounterKind::Hardware => println!("Hardware"),
+                slate_hal::CounterKind::None => println!("None"),
+            }
         }
         Some("selftest") => {
             println!("OK");
         }
         Some("format") => {
-            println!("formatted");
+            println!("err");
         }
         _ => {
             println!("unknown command");
