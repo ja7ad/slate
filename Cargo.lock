@@ -778,6 +778,7 @@ dependencies = [
  "serde",
  "slate-core",
  "slate-crypto",
+ "slate-erasure",
  "slate-hal",
 ]
 
