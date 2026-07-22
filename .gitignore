@@ -27,3 +27,7 @@ rustc-ice-*.txt
 # Test databases
 *_db/
 *test_db*/
+# Simulation artifacts
+targets/esp32/flash.img
+targets/esp32/flash_old.img
+targets/esp32/*.log
