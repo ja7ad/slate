@@ -1,7 +1,7 @@
 //! matrix
 
-use crate::{RS_K, Singular};
 use crate::gf::{gf_inv, gf_mul};
+use crate::{RS_K, Singular};
 
 /// Parity matrix P: RS_M×RS_K Cauchy matrix, P[j][i] = 1/(x_j ⊕ y_i) with
 /// x_j = (RS_K + j) as u8, y_i = i as u8.

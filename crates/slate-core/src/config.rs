@@ -21,6 +21,9 @@ pub const ERASED_BYTE: u8 = 0xFF;
 pub const MAX_KEY_LEN: usize = 256;
 pub const MAX_VAL_LEN: usize = 1024;
 pub const B_COMMIT: usize = 27;
+pub const B_MAX: usize = 128;
+pub const MAX_PAGE_SIZE: usize = 512;
+pub const MAX_CKPT_LEN: u32 = 40960;
 
 // Index constants (ESP32 default 8 k-key config)
 pub const BUCKET_SLOTS: usize = 4;
@@ -69,7 +72,7 @@ impl SlateConfig {
         if self.arena_bytes < 2 * self.expected_live_bytes {
             return Err(ConfigError::CapacityTooSmall);
         }
-        
+
         let required_counter = self.expected_life_ops / (THETA as u64);
         if self.counter_budget < required_counter.max(1) {
             return Err(ConfigError::CounterBudgetExceeded);
@@ -77,7 +80,7 @@ impl SlateConfig {
 
         if self.sched.auto_b {
             // c = A / (2·λ·t̄_max²)
-            // we are deriving holding cost here or it's provided? 
+            // we are deriving holding cost here or it's provided?
             // the prompt says "c derivation from staleness_budget_ms".
             // Since λ is dynamic, c derivation uses the budget directly.
             // Wait: "c = A / (2·λ·t̄²_max)" -> if λ is dynamic, c depends on λ?
@@ -118,11 +121,13 @@ mod tests {
         assert!(cfg.validate().is_ok());
 
         cfg.counter_budget = 999;
-        assert!(matches!(cfg.validate(), Err(ConfigError::CounterBudgetExceeded)));
+        assert!(matches!(
+            cfg.validate(),
+            Err(ConfigError::CounterBudgetExceeded)
+        ));
 
         cfg.counter_budget = 1000;
         cfg.expected_live_bytes = 4096 * 6;
         assert!(matches!(cfg.validate(), Err(ConfigError::CapacityTooSmall)));
     }
 }
-

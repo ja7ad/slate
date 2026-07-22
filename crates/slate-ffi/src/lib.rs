@@ -1,10 +1,11 @@
 #![allow(non_camel_case_types)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+use slate::{Db, KeySource, Options, Profile};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::catch_unwind;
 use std::path::Path;
 use std::sync::Mutex;
-use slate::{Db, KeySource, Options, Profile};
 
 pub const SLATE_OK: i32 = 0;
 pub const SLATE_ERR_NOT_FOUND: i32 = -1;
@@ -93,11 +94,15 @@ pub extern "C" fn slate_open(
             b_commit: opts_ref.b_commit,
             auto_b: opts_ref.b_commit == 0,
             n_keys: opts_ref.max_keys as usize,
-            profile: if opts_ref.profile == 0 { Profile::Pi } else { Profile::Esp32 },
+            profile: if opts_ref.profile == 0 {
+                Profile::Pi
+            } else {
+                Profile::Esp32
+            },
         };
 
         let db = Db::open(Path::new(path_str), KeySource::Bytes(root_key), rs_opts)?;
-        
+
         let slate_db_ptr = Box::into_raw(Box::new(slate_db {
             db,
             last_error: Mutex::new(String::new()),
@@ -159,16 +164,16 @@ pub extern "C" fn slate_get(
     if db.is_null() || k.is_null() || vlen_inout.is_null() {
         return SLATE_ERR_INVALID_ARG;
     }
-    
+
     catch_ffi!(db, {
         let key_slice = unsafe { std::slice::from_raw_parts(k, klen) };
         let val_opt = unsafe { (*db).db.get(key_slice) }?;
-        
+
         match val_opt {
             Some(val) => {
                 let capacity = unsafe { *vlen_inout };
                 unsafe { *vlen_inout = val.len() };
-                
+
                 if capacity < val.len() {
                     Ok::<i32, String>(SLATE_ERR_BUFFER_TOO_SMALL)
                 } else {
@@ -186,11 +191,7 @@ pub extern "C" fn slate_get(
 }
 
 #[no_mangle]
-pub extern "C" fn slate_delete(
-    db: *mut slate_db,
-    k: *const u8,
-    klen: usize,
-) -> i32 {
+pub extern "C" fn slate_delete(db: *mut slate_db, k: *const u8, klen: usize) -> i32 {
     if db.is_null() || k.is_null() {
         return SLATE_ERR_INVALID_ARG;
     }
@@ -202,23 +203,25 @@ pub extern "C" fn slate_delete(
 
 #[no_mangle]
 pub extern "C" fn slate_commit(db: *mut slate_db) -> i32 {
-    if db.is_null() { return SLATE_ERR_INVALID_ARG; }
-    catch_ffi!(db, {
-        unsafe { (*db).db.commit() }.map(|_| SLATE_OK)
-    })
+    if db.is_null() {
+        return SLATE_ERR_INVALID_ARG;
+    }
+    catch_ffi!(db, { unsafe { (*db).db.commit() }.map(|_| SLATE_OK) })
 }
 
 #[no_mangle]
 pub extern "C" fn slate_compact(db: *mut slate_db) -> i32 {
-    if db.is_null() { return SLATE_ERR_INVALID_ARG; }
-    catch_ffi!(db, {
-        unsafe { (*db).db.compact() }.map(|_| SLATE_OK)
-    })
+    if db.is_null() {
+        return SLATE_ERR_INVALID_ARG;
+    }
+    catch_ffi!(db, { unsafe { (*db).db.compact() }.map(|_| SLATE_OK) })
 }
 
 #[no_mangle]
 pub extern "C" fn slate_security_mode(db: *mut slate_db) -> i32 {
-    if db.is_null() { return -1; }
+    if db.is_null() {
+        return -1;
+    }
     match catch_unwind(|| unsafe { (*db).db.security_mode() }) {
         Ok(slate_core::epoch::SecurityMode::Full) => 0,
         Ok(slate_core::epoch::SecurityMode::BestEffortRollback) => 1,
@@ -229,7 +232,9 @@ pub extern "C" fn slate_security_mode(db: *mut slate_db) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn slate_close(db: *mut slate_db) -> i32 {
-    if db.is_null() { return SLATE_ERR_INVALID_ARG; }
+    if db.is_null() {
+        return SLATE_ERR_INVALID_ARG;
+    }
     match catch_unwind(|| {
         unsafe {
             let _ = (*db).db.commit(); // Best effort
@@ -251,19 +256,17 @@ pub extern "C" fn slate_last_error_message(
     if db.is_null() || buf.is_null() || len == 0 {
         return 0;
     }
-    let msg = match catch_unwind(|| {
-        unsafe {
-            if let Ok(lock) = (*db).last_error.lock() {
-                lock.clone()
-            } else {
-                String::new()
-            }
+    let msg = match catch_unwind(|| unsafe {
+        if let Ok(lock) = (*db).last_error.lock() {
+            lock.clone()
+        } else {
+            String::new()
         }
     }) {
         Ok(s) => s,
         Err(_) => return 0,
     };
-    
+
     let bytes = msg.as_bytes();
     let copy_len = std::cmp::min(bytes.len(), len - 1);
     unsafe {

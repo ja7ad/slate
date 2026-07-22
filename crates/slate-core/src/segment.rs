@@ -2,10 +2,10 @@
 
 use crate::config::*;
 use crate::error::Error;
-use slate_hal::Flash;
 use slate_erasure::gf::gf_mul;
 use slate_erasure::matrix::cauchy_row;
 use slate_erasure::{PAGE_SIZE, RS_K, RS_M};
+use slate_hal::Flash;
 
 /// Segment Header as per design doc 002.
 #[derive(Debug, Clone, Copy)]
@@ -81,7 +81,7 @@ impl Segment {
 #[allow(clippy::needless_range_loop)]
 pub fn encode_parity<F: Flash>(flash: &mut F, seg: &Segment) -> Result<(), Error> {
     let pages_per_block = (seg.block_size as usize) / PAGE_SIZE;
-    
+
     // 1. Erase parity blocks
     for j in 0..RS_M {
         flash.erase(seg.parity_block(j)).map_err(|_| Error::Io)?;
@@ -92,7 +92,9 @@ pub fn encode_parity<F: Flash>(flash: &mut F, seg: &Segment) -> Result<(), Error
         let mut par = [[0u8; PAGE_SIZE]; RS_M];
         for i in 0..RS_K {
             let mut d = [0u8; PAGE_SIZE];
-            flash.read(seg.data_block(i) + (page * PAGE_SIZE) as u32, &mut d).map_err(|_| Error::Io)?;
+            flash
+                .read(seg.data_block(i) + (page * PAGE_SIZE) as u32, &mut d)
+                .map_err(|_| Error::Io)?;
             for j in 0..RS_M {
                 let c = cauchy_row(j)[i];
                 for (p, &db) in par[j].iter_mut().zip(&d) {
@@ -101,9 +103,10 @@ pub fn encode_parity<F: Flash>(flash: &mut F, seg: &Segment) -> Result<(), Error
             }
         }
         for j in 0..RS_M {
-            flash.program(seg.parity_block(j) + (page * PAGE_SIZE) as u32, &par[j]).map_err(|_| Error::Io)?;
+            flash
+                .program(seg.parity_block(j) + (page * PAGE_SIZE) as u32, &par[j])
+                .map_err(|_| Error::Io)?;
         }
     }
     Ok(())
 }
-

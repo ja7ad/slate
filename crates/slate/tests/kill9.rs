@@ -1,6 +1,6 @@
 use slate::{Db, KeySource, Options, Profile};
-use std::process::Command;
 use std::env;
+use std::process::Command;
 
 #[test]
 fn test_kill9_recovery() {
@@ -39,7 +39,7 @@ fn test_kill9_recovery() {
         .expect("Failed to spawn child");
 
     std::thread::sleep(std::time::Duration::from_millis(50));
-    
+
     // Kill child
     let _ = child.kill();
     let _ = child.wait();

@@ -44,9 +44,9 @@ pub fn report(stats: &Stats, m: &PowerModel) -> PowerReport {
     let wake_nj = stats.wakes * m.wake_uj * 1000;
     let cpu_cycles = bytes * m.aead_cycles_per_byte;
     let cpu_nj = (cpu_cycles * m.cpu_nj_per_cycle_q10) / 1024;
-    
+
     let total_nj = write_nj + erase_nj + wake_nj + cpu_nj;
-    
+
     PowerReport {
         m_joules: total_nj as f64 / 1_000_000.0,
         label: "ESTIMATED",

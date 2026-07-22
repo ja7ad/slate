@@ -54,7 +54,10 @@ impl SegTable {
         for i in 0..core::cmp::min(num_segments as usize, MAX_SEGMENTS) {
             entries[i] = SegEntry::new(i as u32);
         }
-        Self { entries, num_segments }
+        Self {
+            entries,
+            num_segments,
+        }
     }
 
     pub fn pick_victim(&self, ckpt_seg_seq: u64) -> Option<u32> {
@@ -76,16 +79,19 @@ impl SegTable {
 }
 
 pub fn compact_one<'a, F: slate_hal::Flash, S: crate::log::Sealer>(
-    st: &mut crate::slate::Slate<'a, F, S>
+    st: &mut crate::slate::Slate<'a, F, S>,
 ) -> Result<(), Error> {
     let ckpt_seg_seq = st.ckpt_seg_seq;
     let victim = match st.segs.pick_victim(ckpt_seg_seq) {
         Some(v) => v,
         None => return Ok(()),
     };
-    
-    assert!(st.segs.entries[victim as usize].seg_seq < ckpt_seg_seq, "Victim is newer than latest checkpoint");
-    
+
+    assert!(
+        st.segs.entries[victim as usize].seg_seq < ckpt_seg_seq,
+        "Victim is newer than latest checkpoint"
+    );
+
     // We stub the scan of the segment for now
     let watermark = st.segs.entries[..st.segs.num_segments as usize]
         .iter()
@@ -105,13 +111,13 @@ pub fn compact_one<'a, F: slate_hal::Flash, S: crate::log::Sealer>(
     } else if rec_op == crate::config::OP_DEL && rec_seq > watermark {
         st.append_cold_tombstone(b"mock_key", 0)?;
     }
-    
+
     if st.cold_batch_full() {
         st.commit()?;
     }
-    
+
     st.commit()?;
-    
+
     let block_size = 4096 * 12; // 12 blocks per segment
     st.flash.erase(victim * block_size).map_err(|_| Error::Io)?;
     st.segs.entries[victim as usize].reset_to_free();

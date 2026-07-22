@@ -41,6 +41,10 @@ impl RecordHeader {
             return Err(Error::FormatError);
         }
 
+        if klen as usize > MAX_KEY_LEN || vlen as usize > MAX_VAL_LEN {
+            return Err(Error::FormatError);
+        }
+
         Ok(Self {
             magic: buf[0],
             seq,

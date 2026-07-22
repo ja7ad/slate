@@ -98,7 +98,8 @@ impl Scheduler {
         };
         let b = b.clamp(self.cfg.b_min, self.cfg.b_max);
         // hard deadline: even if B not reached, no write waits past D (§8.2)
-        self.ops_since_commit >= b || now_ms.saturating_sub(self.oldest_pending_ms) >= self.cfg.deadline_ms as u64
+        self.ops_since_commit >= b
+            || now_ms.saturating_sub(self.oldest_pending_ms) >= self.cfg.deadline_ms as u64
     }
 
     pub fn on_commit(&mut self) {
@@ -138,8 +139,8 @@ mod tests {
         // b_star(lam_q10: u64, a_uj: u64, c_nj: u64)
         // Check ESP32 default config
         let lam_q10 = 1024; // 1 op/s
-        let a_uj = 400;     // 400 uJ fixed cost
-        let c_nj = 1000;    // 1000 nJ holding cost
+        let a_uj = 400; // 400 uJ fixed cost
+        let c_nj = 1000; // 1000 nJ holding cost
         let b = b_star(lam_q10, a_uj, c_nj);
         // B★ = sqrt(2 * 1 * 400,000 / 1000) = sqrt(800) = 28
         assert_eq!(b, 28);
@@ -165,7 +166,7 @@ mod tests {
             // Random-ish interval
             let dt = (isqrt(i as u64) % 500) + 1;
             now_ms += dt;
-            
+
             if uncommitted == 0 {
                 oldest = now_ms;
             }
@@ -173,12 +174,24 @@ mod tests {
 
             if sched.on_append(now_ms) {
                 // Must not exceed deadline
-                assert!(now_ms - oldest <= 1000, "Deadline exceeded: {} - {} = {}", now_ms, oldest, now_ms - oldest);
+                assert!(
+                    now_ms - oldest <= 1000,
+                    "Deadline exceeded: {} - {} = {}",
+                    now_ms,
+                    oldest,
+                    now_ms - oldest
+                );
                 sched.on_commit();
                 uncommitted = 0;
             } else {
                 // Not committed yet, check if deadline is violated
-                assert!(now_ms - oldest < 1000, "Deadline violated without commit: {} - {} = {}", now_ms, oldest, now_ms - oldest);
+                assert!(
+                    now_ms - oldest < 1000,
+                    "Deadline violated without commit: {} - {} = {}",
+                    now_ms,
+                    oldest,
+                    now_ms - oldest
+                );
             }
         }
     }
@@ -189,17 +202,17 @@ mod tests {
         let a_uj = 400;
         let c_nj = 1000;
         let bs = b_star(lam_q10, a_uj, c_nj);
-        
+
         let power = |b: u32| -> u64 {
             let b = b as u64;
             (a_uj * 1000) / b + c_nj * b / 2
         };
 
         let p_star = power(bs);
-        
+
         let mut min_p = p_star;
         let mut min_b = bs;
-        for b in (bs/4)..=(bs*4) {
+        for b in (bs / 4)..=(bs * 4) {
             let p = power(b.max(1));
             if p < min_p {
                 min_p = p;
@@ -207,7 +220,7 @@ mod tests {
             }
         }
         assert!((min_b as i64 - bs as i64).abs() <= 1);
-        
+
         let p_2bs = power(bs * 2);
         assert!(p_2bs <= (p_star * 125) / 100 + 10); // +10 nJ epsilon
     }

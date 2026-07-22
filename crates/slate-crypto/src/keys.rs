@@ -17,10 +17,10 @@ impl fmt::Debug for DeviceKey {
 
 #[derive(ZeroizeOnDrop)]
 pub struct KeySet {
-    pub prk: [u8; 32],            // HKDF-Extract(salt=HKDF_SALT, ikm=K)
-    pub k_cm: [u8; 32],           // Expand(prk, "cm")
-    pub k_ckpt: [u8; 32],         // Expand(prk, "ckpt")
-    pub k_rec_e: [u8; 32],        // Expand(prk, "rec"||le64(e)) — CURRENT epoch only
+    pub prk: [u8; 32],     // HKDF-Extract(salt=HKDF_SALT, ikm=K)
+    pub k_cm: [u8; 32],    // Expand(prk, "cm")
+    pub k_ckpt: [u8; 32],  // Expand(prk, "ckpt")
+    pub k_rec_e: [u8; 32], // Expand(prk, "rec"||le64(e)) — CURRENT epoch only
     pub epoch: u64,
 }
 
@@ -88,12 +88,12 @@ mod tests {
     fn test_keyset_derivation() {
         let dk = DeviceKey([42; 32]);
         let mut ks = KeySet::derive(&dk, 1);
-        
+
         // Ensure k_cm, k_ckpt, k_rec_e are derived
         assert_ne!(ks.k_cm, [0; 32]);
         assert_ne!(ks.k_ckpt, [0; 32]);
         assert_ne!(ks.k_rec_e, [0; 32]);
-        
+
         // Roll epoch
         let old_k_rec_e = ks.k_rec_e;
         ks.roll_epoch(2);

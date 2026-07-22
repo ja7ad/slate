@@ -40,7 +40,12 @@ pub struct FileFlash {
 }
 
 impl FileFlash {
-    pub fn new(file: File, capacity: u32, page_size: usize, block_size: usize) -> Result<Self, std::io::Error> {
+    pub fn new(
+        file: File,
+        capacity: u32,
+        page_size: usize,
+        block_size: usize,
+    ) -> Result<Self, std::io::Error> {
         let meta = file.metadata()?;
         if meta.len() != capacity as u64 {
             file.set_len(capacity as u64)?;
@@ -84,7 +89,7 @@ impl Flash for FileFlash {
 
     fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
         let addr = addr as usize;
-        if addr % self.page_size != 0 || buf.len() % self.page_size != 0 {
+        if !addr.is_multiple_of(self.page_size) || !buf.len().is_multiple_of(self.page_size) {
             return Err(FileFlashError::Unaligned);
         }
         if addr + buf.len() > self.capacity as usize {
@@ -106,7 +111,7 @@ impl Flash for FileFlash {
 
     fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
         let block_addr = block_addr as usize;
-        if block_addr % self.block_size != 0 {
+        if !block_addr.is_multiple_of(self.block_size) {
             return Err(FileFlashError::Unaligned);
         }
         if block_addr + self.block_size > self.capacity as usize {

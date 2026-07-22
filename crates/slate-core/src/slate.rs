@@ -2,11 +2,11 @@
 #![allow(missing_docs)]
 
 use crate::config::*;
+use crate::epoch::EngineState;
 use crate::error::Error;
 use crate::gc::SegTable;
-use crate::log::{Log, Sealer};
 use crate::index::Index;
-use crate::epoch::EngineState;
+use crate::log::{Log, Sealer};
 use slate_hal::Flash;
 
 pub struct Slate<'a, F: Flash, S: Sealer> {
@@ -41,7 +41,8 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
-        self.log_cold.append(OP_PUT, key, val, &mut self.sealer, &mut self.engine.chain)?;
+        self.log_cold
+            .append(OP_PUT, key, val, &mut self.sealer, &mut self.engine.chain)?;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -49,7 +50,8 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
-        self.log_cold.append(OP_DEL, key, &[], &mut self.sealer, &mut self.engine.chain)?;
+        self.log_cold
+            .append(OP_DEL, key, &[], &mut self.sealer, &mut self.engine.chain)?;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -62,8 +64,10 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn commit(&mut self) -> Result<(), Error> {
-        self.log_hot.commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
-        self.log_cold.commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
+        self.log_hot
+            .commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
+        self.log_cold
+            .commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
         self.sched.on_commit();
         self.metrics.add_commit();
         Ok(())

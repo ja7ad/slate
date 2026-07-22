@@ -1,7 +1,7 @@
 //! log
 
-use crate::config::*;
 use crate::chain::Chain;
+use crate::config::*;
 use crate::error::Error;
 use crate::record::RecordHeader;
 use slate_hal::Flash;
@@ -39,7 +39,12 @@ pub trait Sealer {
     /// Seals a checkpoint.
     fn seal_checkpoint(&mut self, epoch: u64, plain: &[u8], ct_tag_out: &mut [u8]);
     /// Opens a checkpoint.
-    fn open_checkpoint(&mut self, epoch: u64, ct_tag: &[u8], plain_out: &mut [u8]) -> Result<(), Error>;
+    fn open_checkpoint(
+        &mut self,
+        epoch: u64,
+        ct_tag: &[u8],
+        plain_out: &mut [u8],
+    ) -> Result<(), Error>;
 }
 
 /// Head state for the append log.
@@ -142,6 +147,10 @@ impl<'a, F: Flash> Log<'a, F> {
         s: &mut impl Sealer,
         chain: &mut Chain,
     ) -> Result<u64, Error> {
+        if key.len() > MAX_KEY_LEN || val.len() > MAX_VAL_LEN {
+            return Err(Error::FormatError);
+        }
+
         let seq = self.next_seq;
         let mut hdr = RecordHeader {
             magic: MAGIC_REC,
@@ -181,7 +190,7 @@ impl<'a, F: Flash> Log<'a, F> {
 
         let mut addr = self.head.write_offset;
         let num_pages = data.len().div_ceil(page_size);
-        let mut page_buf = [0xFF; 512]; // Large enough for any typical page size, or dynamic if we alloc. For now, max 512.
+        let mut page_buf = [0xFF; MAX_PAGE_SIZE];
 
         for i in 0..num_pages {
             let chunk_start = i * page_size;
@@ -208,27 +217,27 @@ impl<'a, F: Flash> Log<'a, F> {
         }
         let page_size = flash.page_size();
         let num_pages = data.len().div_ceil(page_size);
-        
-        let mut xor_page = [0u8; 512];
-        let mut page_buf = [0xFF; 512];
-        
+
+        let mut xor_page = [0u8; MAX_PAGE_SIZE];
+        let mut page_buf = [0xFF; MAX_PAGE_SIZE];
+
         for i in 0..num_pages {
             let chunk_start = i * page_size;
             let chunk_end = core::cmp::min(chunk_start + page_size, data.len());
             let chunk_len = chunk_end - chunk_start;
-            
+
             page_buf[..page_size].fill(0xFF);
             page_buf[..chunk_len].copy_from_slice(&data[chunk_start..chunk_end]);
-            
+
             for j in 3..page_size {
                 xor_page[j] ^= page_buf[j];
             }
         }
-        
+
         // Header
         xor_page[0] = 0x58; // MAGIC_XOR
         xor_page[1..3].copy_from_slice(&(num_pages as u16).to_le_bytes());
-        
+
         flash
             .program(self.head.write_offset, &xor_page[..page_size])
             .map_err(|_| Error::Io)?;
@@ -238,7 +247,7 @@ impl<'a, F: Flash> Log<'a, F> {
 
     fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
         let page_size = flash.page_size();
-        let mut page_buf = [0xFF; 512];
+        let mut page_buf = [0xFF; MAX_PAGE_SIZE];
         let len = core::cmp::min(data.len(), page_size);
         page_buf[..len].copy_from_slice(&data[..len]);
         flash
@@ -249,7 +258,12 @@ impl<'a, F: Flash> Log<'a, F> {
     }
 
     /// Commits batched records to flash.
-    pub fn commit(&mut self, flash: &mut F, s: &mut impl Sealer, chain: &Chain) -> Result<(), Error> {
+    pub fn commit(
+        &mut self,
+        flash: &mut F,
+        s: &mut impl Sealer,
+        chain: &Chain,
+    ) -> Result<(), Error> {
         if self.batch.is_empty() {
             return Ok(());
         }

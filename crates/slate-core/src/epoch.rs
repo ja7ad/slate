@@ -2,12 +2,12 @@
 #![allow(missing_docs)]
 
 use crate::chain::Chain;
-use crate::checkpoint::{CheckpointHeader, CKPT_HDR_LEN};
+use crate::checkpoint::{CKPT_HDR_LEN, CheckpointHeader};
 use crate::config::CKPT_SLOTS;
 use crate::error::Error;
 use crate::log::Sealer;
-use slate_hal::{CounterKind, Flash, MonotonicCounter};
 use sha2::{Digest, Sha256};
+use slate_hal::{CounterKind, Flash, MonotonicCounter};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SecurityMode {
@@ -57,30 +57,35 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 /// Helper to serialize the snapshot (in a real system this would serialize Index, etc.)
-fn encode_checkpoint(_st: &EngineState, s: &mut impl Sealer, e: u64, out: &mut [u8]) -> Result<usize, Error> {
+fn encode_checkpoint(
+    _st: &EngineState,
+    s: &mut impl Sealer,
+    e: u64,
+    out: &mut [u8],
+) -> Result<usize, Error> {
     // For now we just stub the snapshot with dummy bytes since doc 005 uses it conceptually
     let snapshot = b"dummy_snapshot";
-    
+
     let hdr = CheckpointHeader {
         magic: crate::config::MAGIC_CKPT,
         format_version: 1,
         epoch: e,
-        seq: 0, // from log
+        seq: 0,     // from log
         seg_seq: 0, // from log head
         write_offset: 0,
         n_keys: 0, // from index
         ct_len: snapshot.len() as u32 + 16,
     };
-    
+
     let total_len = CKPT_HDR_LEN + hdr.ct_len as usize;
     if out.len() < total_len {
         return Err(Error::FormatError);
     }
-    
+
     let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
     hdr.encode(&mut hdr_bytes);
     out[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
-    
+
     s.seal_checkpoint(e, snapshot, &mut out[CKPT_HDR_LEN..total_len]);
     Ok(total_len)
 }
@@ -93,7 +98,7 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
     let page_size = flash.page_size();
     let num_pages = bytes.len().div_ceil(page_size);
     let mut page_buf = [0xFF; 256]; // Assuming 256 is the max page size for now, or pass from caller
-    
+
     for i in 0..num_pages {
         let start = i * page_size;
         let end = core::cmp::min(start + page_size, bytes.len());
@@ -101,7 +106,9 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
         if end - start < page_size {
             page_buf[end - start..page_size].fill(0xFF);
         }
-        flash.program(block_addr + start as u32, &page_buf[..page_size]).map_err(|_| Error::Io)?;
+        flash
+            .program(block_addr + start as u32, &page_buf[..page_size])
+            .map_err(|_| Error::Io)?;
     }
     Ok(())
 }
@@ -114,7 +121,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     s: &mut impl Sealer, // Sealer provides roll_epoch
 ) -> Result<(), Error> {
     let e = st.epoch;
-    
+
     // 1. write + flush checkpoint carrying counter field e
     let slot = st.next_ckpt_slot();
     let mut ckpt_buf = [0u8; 1024]; // Buffer for checkpoint (stubbed size)
@@ -122,12 +129,12 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     program_checkpoint(flash, slot, &ckpt_buf[..len])?;
     st.d_ckpt = sha256(&ckpt_buf[..len]);
     st.active_ckpt_slot = slot;
-    
+
     // 2. THEN advance hardware counter to e
     if ctr.kind() != CounterKind::None {
         ctr.increment().map_err(|_| Error::Io)?;
     }
-    
+
     // 3. open epoch e+1
     st.epoch = e + 1;
     // s.roll_epoch(st.epoch); // Will be added to Sealer trait or called explicitly
@@ -163,14 +170,18 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
     ctr: &mut C,
     s: &mut impl Sealer,
 ) -> Result<EngineState, MountError> {
+    if flash.capacity() > (1 << crate::config::OFF_BITS) {
+        return Err(MountError::FormatError);
+    }
+
     // (a) load newest valid checkpoint: try both slots, verify AEAD, take max epoch.
     let ckpt_opt = load_best_checkpoint(flash, s)?;
-    
+
     let (ckpt, d_ckpt, slot) = match ckpt_opt {
         Some(c) => c,
         None => return Err(MountError::FormatError), // Or handle genesis
     };
-    
+
     // (b) O(1) FRESHNESS-TIP CHECK — Lemma 6.4 boot rule:
     let mc = if ctr.kind() == CounterKind::None {
         u64::MAX
@@ -178,7 +189,7 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         ctr.read().map_err(|_| MountError::Io)?
     };
     let m = ckpt.epoch;
-    
+
     match ctr.kind() {
         CounterKind::Hardware | CounterKind::BestEffort => {
             if m + 1 < mc + 1 && m < mc {
@@ -195,7 +206,7 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         }
         CounterKind::None => { /* G3 unavailable: record degraded mode, no check */ }
     }
-    
+
     // (c) re-anchor chain from the checkpoint and O(Θ) replay of the tail
     let st = EngineState {
         epoch: ckpt.epoch,
@@ -209,8 +220,8 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         },
         active_ckpt_slot: slot,
     };
-    
+
     // recover_tail(flash, &mut st)?; // Stubbed: O(Θ) replay of the tail
-    
+
     Ok(st)
 }

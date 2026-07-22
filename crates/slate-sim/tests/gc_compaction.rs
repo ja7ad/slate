@@ -1,8 +1,8 @@
 #![allow(unused_imports)]
 
 use slate_core::config::*;
-use slate_core::error::Error;
 use slate_core::epoch::{EngineState, SecurityMode};
+use slate_core::error::Error;
 use slate_core::gc::{SegState, SegTable};
 use slate_core::index::Index;
 use slate_core::log::{HeadState, Log};
@@ -15,7 +15,12 @@ impl slate_core::log::Sealer for MockSealer {
     fn seal_record(&mut self, _hdr: &[u8; REC_HDR_LEN], _plain_kv: &[u8], ct_tag_out: &mut [u8]) {
         ct_tag_out.fill(0);
     }
-    fn open_record(&mut self, _hdr: &[u8; REC_HDR_LEN], _ct_tag: &[u8], _plain_out: &mut [u8]) -> Result<(), Error> {
+    fn open_record(
+        &mut self,
+        _hdr: &[u8; REC_HDR_LEN],
+        _ct_tag: &[u8],
+        _plain_out: &mut [u8],
+    ) -> Result<(), Error> {
         Ok(())
     }
     fn commit_marker(&mut self, _seq_max: u64, _epoch: u64, _chi: &[u8; 32]) -> [u8; CM_LEN] {
@@ -29,7 +34,12 @@ impl slate_core::log::Sealer for MockSealer {
     fn seal_checkpoint(&mut self, _epoch: u64, _plain: &[u8], ct_tag_out: &mut [u8]) {
         ct_tag_out.fill(0);
     }
-    fn open_checkpoint(&mut self, _epoch: u64, _ct_tag: &[u8], _plain_out: &mut [u8]) -> Result<(), Error> {
+    fn open_checkpoint(
+        &mut self,
+        _epoch: u64,
+        _ct_tag: &[u8],
+        _plain_out: &mut [u8],
+    ) -> Result<(), Error> {
         Ok(())
     }
 }
@@ -120,11 +130,11 @@ fn test_no_resurrection_prop3_1() {
     // Compact segment 1 (tombstone) BEFORE segment 0 (put)
     // Watermark is minseq of segment 0 = 5
     // Tombstone has seq = 6. 6 > 5, so it must be forwarded.
-    
+
     // In our mock, compact_one scans and does exactly this if rec_seq > watermark
     // We mock the rec_seq and op inside `compact_one` currently, so we'll just call it and verify the logic.
     st.ckpt_seg_seq = 10;
-    
+
     // Our gc.rs stub mocks: rec_op = OP_PUT, is_live = true
     // We just test that it runs without panic for now.
     st.compact().unwrap();
@@ -142,9 +152,11 @@ fn test_wa_accounting() {
     let mut st = create_slate(flash, &mut hot_buf, &mut cold_buf, &mut index_slots);
 
     // Write a hot put
-    st.log_hot.append(OP_PUT, b"key", b"val", &mut st.sealer, &mut st.engine.chain).unwrap();
+    st.log_hot
+        .append(OP_PUT, b"key", b"val", &mut st.sealer, &mut st.engine.chain)
+        .unwrap();
     st.commit().unwrap();
-    
+
     assert!(st.flash.stats.user_bytes > 0);
     assert_eq!(st.flash.stats.gc_bytes, 0);
 

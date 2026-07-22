@@ -2,7 +2,10 @@
 #![allow(deprecated)]
 
 use crate::keys::KeySet;
-use chacha20poly1305::{aead::{AeadInPlace, KeyInit}, ChaCha20Poly1305};
+use chacha20poly1305::{
+    ChaCha20Poly1305,
+    aead::{AeadInPlace, KeyInit},
+};
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use slate_core::config::{CM_LEN, REC_HDR_LEN};
@@ -16,9 +19,7 @@ pub struct CryptoSealer {
 
 impl CryptoSealer {
     pub fn new(keys: KeySet) -> Self {
-        Self {
-            keys,
-        }
+        Self { keys }
     }
 }
 
@@ -100,7 +101,7 @@ impl Sealer for CryptoSealer {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
-        
+
         let ct_len = plain.len();
         ct_tag_out[..ct_len].copy_from_slice(plain);
         let tag = cipher
@@ -109,16 +110,26 @@ impl Sealer for CryptoSealer {
         ct_tag_out[ct_len..].copy_from_slice(&tag);
     }
 
-    fn open_checkpoint(&mut self, epoch: u64, ct_tag: &[u8], plain_out: &mut [u8]) -> Result<(), Error> {
+    fn open_checkpoint(
+        &mut self,
+        epoch: u64,
+        ct_tag: &[u8],
+        plain_out: &mut [u8],
+    ) -> Result<(), Error> {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
-        
+
         let (ct, tag) = ct_tag.split_at(ct_tag.len() - 16);
         plain_out[..ct.len()].copy_from_slice(ct);
         let tag_arr: &[u8; 16] = tag.try_into().unwrap();
         cipher
-            .decrypt_in_place_detached(&nonce.into(), &[], &mut plain_out[..ct.len()], tag_arr.into())
+            .decrypt_in_place_detached(
+                &nonce.into(),
+                &[],
+                &mut plain_out[..ct.len()],
+                tag_arr.into(),
+            )
             .map_err(|_| {
                 plain_out.zeroize();
                 Error::Tampered
@@ -132,9 +143,9 @@ extern crate std;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::vec;
     use crate::keys::DeviceKey;
     use slate_core::config::MAGIC_REC;
+    use std::vec;
 
     fn setup_sealer() -> CryptoSealer {
         let dk = DeviceKey([42; 32]);
@@ -166,7 +177,7 @@ mod tests {
         hdr[0] = MAGIC_REC;
         hdr[1..9].copy_from_slice(&100u64.to_le_bytes()); // seq=100
         hdr[16..24].copy_from_slice(&100u64.to_le_bytes()); // nonce
-        
+
         let kv = b"hello_world";
         let mut ct_tag = vec![0u8; kv.len() + 16];
         sealer.seal_record(&hdr, kv, &mut ct_tag);
@@ -191,7 +202,10 @@ mod tests {
         ct_tag[0] ^= 1; // Tamper ciphertext
 
         let mut out = vec![0u8; kv.len()];
-        assert!(matches!(sealer.open_record(&hdr, &ct_tag, &mut out), Err(Error::Tampered)));
+        assert!(matches!(
+            sealer.open_record(&hdr, &ct_tag, &mut out),
+            Err(Error::Tampered)
+        ));
         assert_eq!(out, vec![0u8; kv.len()]); // zeroized
     }
 
@@ -210,6 +224,9 @@ mod tests {
         hdr[5] ^= 1; // Tamper header (AD)
 
         let mut out = vec![0u8; kv.len()];
-        assert!(matches!(sealer.open_record(&hdr, &ct_tag, &mut out), Err(Error::Tampered)));
+        assert!(matches!(
+            sealer.open_record(&hdr, &ct_tag, &mut out),
+            Err(Error::Tampered)
+        ));
     }
 }

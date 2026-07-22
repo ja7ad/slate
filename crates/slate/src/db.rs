@@ -1,18 +1,18 @@
-use slate_core::config::{SchedCfg, OP_PUT, OP_DEL};
-use slate_core::epoch::{EngineState, SecurityMode, MountError};
+use slate_core::config::{OP_DEL, OP_PUT, SchedCfg};
+use slate_core::epoch::{EngineState, MountError, SecurityMode};
 use slate_core::gc::SegTable;
 use slate_core::index::Index;
 use slate_core::log::{HeadState, Log};
-use slate_core::slate::Slate;
 use slate_core::metrics::Metrics;
 use slate_core::sched::Scheduler;
+use slate_core::slate::Slate;
 use slate_crypto::sealer::CryptoSealer;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::fs::OpenOptions;
 
-use crate::file_flash::FileFlash;
 use crate::file_counter::FileCounter;
+use crate::file_flash::FileFlash;
 
 pub enum KeySource {
     Bytes([u8; 32]),
@@ -93,7 +93,9 @@ impl Db {
             KeySource::File(p) => {
                 let mut k = [0u8; 32];
                 let b = std::fs::read(&p).map_err(|e| e.to_string())?;
-                if b.len() < 32 { return Err("Key file too short".into()); }
+                if b.len() < 32 {
+                    return Err("Key file too short".into());
+                }
                 k.copy_from_slice(&b[0..32]);
                 k
             }
@@ -101,7 +103,9 @@ impl Db {
                 let mut k = [0u8; 32];
                 let val = std::env::var(var).map_err(|e| e.to_string())?;
                 let b = val.as_bytes();
-                if b.len() < 32 { return Err("Env key too short".into()); }
+                if b.len() < 32 {
+                    return Err("Env key too short".into());
+                }
                 k.copy_from_slice(&b[0..32]);
                 k
             }
@@ -110,11 +114,25 @@ impl Db {
         let flash_path = path.join("data.bin");
         let counter_path = path.join("counter.bin");
 
-        let flash_file = OpenOptions::new().read(true).write(true).create(true).open(flash_path).map_err(|e| e.to_string())?;
-        let counter_file = OpenOptions::new().read(true).write(true).create(true).open(counter_path).map_err(|e| e.to_string())?;
+        let flash_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(flash_path)
+            .map_err(|e| e.to_string())?;
+        let counter_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(counter_path)
+            .map_err(|e| e.to_string())?;
 
-        let mut flash = FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| e.to_string())?;
-        let mut counter = FileCounter::new(counter_file, root_key, u64::MAX).map_err(|e| format!("{:?}", e))?;
+        let mut flash =
+            FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| e.to_string())?;
+        let mut counter =
+            FileCounter::new(counter_file, root_key, u64::MAX).map_err(|e| format!("{:?}", e))?;
 
         let device_key = slate_crypto::keys::DeviceKey(root_key);
         let keyset = slate_crypto::keys::KeySet::derive(&device_key, 1);
@@ -133,7 +151,8 @@ impl Db {
                     security_mode: SecurityMode::BestEffortRollback,
                     active_ckpt_slot: 0,
                 };
-                slate_core::epoch::seal_epoch(&mut st, &mut flash, &mut counter, &mut sealer).map_err(|e| format!("{:?}", e))?;
+                slate_core::epoch::seal_epoch(&mut st, &mut flash, &mut counter, &mut sealer)
+                    .map_err(|e| format!("{:?}", e))?;
                 st
             }
             Err(e) => return Err(format!("Mount failed: {:?}", e)),
@@ -163,14 +182,40 @@ impl Db {
         let cold_slice = unsafe { &mut *cold_ptr };
         let index_slice = unsafe { &mut *index_ptr };
 
-        let log_hot = Log::new(hot_slice, 1, 0, 1, HeadState { seg_seq: 1, write_offset: 0, block_idx: 0 });
-        let log_cold = Log::new(cold_slice, 1, 0, 1, HeadState { seg_seq: 1, write_offset: 0, block_idx: 0 });
+        let log_hot = Log::new(
+            hot_slice,
+            1,
+            0,
+            1,
+            HeadState {
+                seg_seq: 1,
+                write_offset: 0,
+                block_idx: 0,
+            },
+        );
+        let log_cold = Log::new(
+            cold_slice,
+            1,
+            0,
+            1,
+            HeadState {
+                seg_seq: 1,
+                write_offset: 0,
+                block_idx: 0,
+            },
+        );
 
         let sched_cfg = SchedCfg {
             auto_b: opts.auto_b,
-            fixed_cost_uj: match opts.profile { Profile::Esp32 => 400, Profile::Pi => 150 },
+            fixed_cost_uj: match opts.profile {
+                Profile::Esp32 => 400,
+                Profile::Pi => 150,
+            },
             holding_nj_per_op_s: 1000, // Derived ideally
-            deadline_ms: match opts.profile { Profile::Esp32 => 1000, Profile::Pi => 500 },
+            deadline_ms: match opts.profile {
+                Profile::Esp32 => 1000,
+                Profile::Pi => 500,
+            },
             b_min: 1,
             b_max: 128,
             b_commit: opts.b_commit,
@@ -190,18 +235,32 @@ impl Db {
         };
 
         Ok(Db {
-            inner: Mutex::new(OwnedEngine { slate, bufs, mock_store: std::collections::BTreeMap::new() }),
+            inner: Mutex::new(OwnedEngine {
+                slate,
+                bufs,
+                mock_store: std::collections::BTreeMap::new(),
+            }),
         })
     }
 
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine { slate, mock_store, .. } = &mut *inner;
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        
-        slate.log_hot.append(OP_PUT, key, val, &mut slate.sealer, &mut slate.engine.chain).map_err(|e| format!("{:?}", e))?;
+        let OwnedEngine {
+            slate, mock_store, ..
+        } = &mut *inner;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        slate
+            .log_hot
+            .append(OP_PUT, key, val, &mut slate.sealer, &mut slate.engine.chain)
+            .map_err(|e| format!("{:?}", e))?;
         mock_store.insert(key.to_vec(), val.to_vec());
-        slate.metrics.add_user_bytes((44 + key.len() + val.len()) as u64);
+        slate
+            .metrics
+            .add_user_bytes((44 + key.len() + val.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit().map_err(|e| format!("{:?}", e))?;
         }
@@ -220,10 +279,18 @@ impl Db {
 
     pub fn delete(&self, key: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine { slate, mock_store, .. } = &mut *inner;
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
-        
-        slate.log_hot.append(OP_DEL, key, &[], &mut slate.sealer, &mut slate.engine.chain).map_err(|e| format!("{:?}", e))?;
+        let OwnedEngine {
+            slate, mock_store, ..
+        } = &mut *inner;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        slate
+            .log_hot
+            .append(OP_DEL, key, &[], &mut slate.sealer, &mut slate.engine.chain)
+            .map_err(|e| format!("{:?}", e))?;
         mock_store.remove(key);
         slate.metrics.add_user_bytes((44 + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
@@ -243,7 +310,10 @@ impl Db {
     }
 
     pub fn scrub(&self) -> Result<ScrubReport, String> {
-        Ok(ScrubReport { errors_found: 0, errors_fixed: 0 })
+        Ok(ScrubReport {
+            errors_found: 0,
+            errors_fixed: 0,
+        })
     }
 
     pub fn security_mode(&self) -> SecurityMode {

@@ -31,7 +31,7 @@ pub fn head_repair_one_page(
 }
 
 /// Repair orchestration (`slate-core::repair`): on any located failure in a *sealed* segment.
-/// (tag/MAC/ECC error during get, replay, or scrub), load the stripe page-column, 
+/// (tag/MAC/ECC error during get, replay, or scrub), load the stripe page-column,
 /// call `reconstruct`, and write the recovered blocks by **segment rewrite**.
 pub fn scrub<F: Flash>(_flash: &mut F) -> Result<(), Error> {
     // Stub: scrubs all sealed segments and repairs any failures.

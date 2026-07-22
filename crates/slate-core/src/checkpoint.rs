@@ -1,7 +1,7 @@
 //! checkpoint
 #![allow(missing_docs)]
 
-use crate::config::MAGIC_CKPT;
+use crate::config::{MAGIC_CKPT, MAX_CKPT_LEN};
 use crate::error::Error;
 
 /// Size of the checkpoint header (AD for the AEAD).
@@ -40,7 +40,11 @@ impl CheckpointHeader {
         let write_offset = u32::from_le_bytes(bytes[26..30].try_into().unwrap());
         let n_keys = u16::from_le_bytes(bytes[30..32].try_into().unwrap());
         let ct_len = u32::from_le_bytes(bytes[32..36].try_into().unwrap());
-        
+
+        if ct_len > MAX_CKPT_LEN {
+            return Err(Error::FormatError);
+        }
+
         Ok(Self {
             magic: bytes[0],
             format_version: bytes[1],

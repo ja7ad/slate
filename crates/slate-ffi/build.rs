@@ -3,10 +3,12 @@ use std::env;
 fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
 
-    let mut config = cbindgen::Config::default();
-    config.language = cbindgen::Language::C;
-    config.include_guard = Some("SLATE_H".to_string());
-    config.sys_includes = vec!["stdint.h".into(), "stddef.h".into()];
+    let config = cbindgen::Config {
+        language: cbindgen::Language::C,
+        include_guard: Some("SLATE_H".to_string()),
+        sys_includes: vec!["stdint.h".into(), "stddef.h".into()],
+        ..Default::default()
+    };
 
     cbindgen::Builder::new()
         .with_crate(crate_dir.clone())

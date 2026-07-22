@@ -5,9 +5,9 @@
 #![warn(missing_docs)]
 #![deny(clippy::float_arithmetic)]
 
-pub mod config;
 pub mod chain;
 pub mod checkpoint;
+pub mod config;
 pub mod epoch;
 pub mod error;
 pub mod gc;

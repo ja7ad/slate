@@ -99,6 +99,7 @@ pub fn alt_bucket(i: usize, fp: u8, n: usize) -> usize {
 
 #[inline]
 fn pack(fp: u8, off: u32) -> u32 {
+    debug_assert!(off < (1 << OFF_BITS));
     ((fp as u32) << 24) | (off & 0x00FF_FFFF)
 }
 
@@ -194,7 +195,7 @@ impl<'a> Index<'a> {
                 return Ok(());
             }
         }
-        
+
         for e in &mut self.stash {
             if e.0 == fp && matches_key(e.1) {
                 e.1 = off;
@@ -227,7 +228,7 @@ impl<'a> Index<'a> {
             cur_fp = vfp;
             cur_off = voff;
             i = alt_bucket(i, cur_fp, n);
-            
+
             for s in self.bucket_mut(i) {
                 if (*s >> 24) == 0 {
                     *s = pack(cur_fp, cur_off);
@@ -274,7 +275,7 @@ impl<'a> Index<'a> {
                 return true;
             }
         }
-        
+
         false
     }
 }
@@ -322,9 +323,9 @@ mod tests {
 
         let key = b"testkey";
         let off = 100;
-        
+
         index.upsert(key, off, &mut rng, |_| false).unwrap();
-        
+
         let mut cbuf = CandidateBuf::new();
         index.candidates(key, &mut cbuf);
         assert!(cbuf.as_slice().contains(&off));
@@ -339,7 +340,7 @@ mod tests {
         // Remove
         let removed = index.remove(key, |o| o == 200);
         assert!(removed);
-        
+
         let mut cbuf = CandidateBuf::new();
         index.candidates(key, &mut cbuf);
         assert!(!cbuf.as_slice().contains(&200));
@@ -355,7 +356,9 @@ mod tests {
         for i in 0..n_keys {
             let key = i.to_le_bytes();
             // Just assume no collisions in our mock matches_key initially
-            index.upsert(&key, i as u32 + 1, &mut rng, |_| false).expect("Index should not be full at alpha=0.95");
+            index
+                .upsert(&key, i as u32 + 1, &mut rng, |_| false)
+                .expect("Index should not be full at alpha=0.95");
         }
 
         // Verify all lookups

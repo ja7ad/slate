@@ -1,11 +1,11 @@
-use slate_sim::{SimFlash, Crash};
 use slate_core::chain::Chain;
-use slate_core::log::{Log, HeadState};
-use slate_core::recover::recover;
 use slate_core::config::*;
+use slate_core::log::{HeadState, Log};
+use slate_core::recover::recover;
+use slate_sim::{Crash, SimFlash};
 
-use rand::{Rng, SeedableRng};
 use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 use slate_crypto::keys::{DeviceKey, KeySet};
 use slate_crypto::sealer::CryptoSealer;
@@ -21,17 +21,23 @@ fn test_crash_monte_carlo() {
         let mut buf = std::vec![0u8; 65536]; // Batch buffer
 
         // 1. Initial write of some records
-        let head = HeadState { seg_seq: 0, write_offset: 256, block_idx: 0 }; // After segment header
+        let head = HeadState {
+            seg_seq: 0,
+            write_offset: 256,
+            block_idx: 0,
+        }; // After segment header
         let mut chain = Chain::default();
         let mut log = Log::new(&mut buf, 1, 0, 1, head);
 
         let mut last_ticket = 0;
-        
+
         // Write 3 records
         for i in 1..=3 {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
-            last_ticket = log.append(OP_PUT, &key, &val, &mut sealer, &mut chain).unwrap();
+            last_ticket = log
+                .append(OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .unwrap();
         }
         log.commit(&mut flash, &mut sealer, &chain).unwrap();
         let acked = last_ticket;
@@ -40,25 +46,43 @@ fn test_crash_monte_carlo() {
         for i in 4..=5 {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
-            let _ = log.append(OP_PUT, &key, &val, &mut sealer, &mut chain).unwrap();
+            let _ = log
+                .append(OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .unwrap();
         }
 
         // Setup crash at random byte inside commit
         let op_idx = rng.gen_range(0..5);
         let byte_in_op = rng.gen_range(0..256);
-        flash.power.crash = Crash::AtByte { op_index: flash.power.current_op + op_idx, byte_in_op };
+        flash.power.crash = Crash::AtByte {
+            op_index: flash.power.current_op + op_idx,
+            byte_in_op,
+        };
 
         let _ = log.commit(&mut flash, &mut sealer, &chain);
 
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();
         let mut rec_chain = Chain::default();
-        let info = recover(&mut flash, &mut sealer, &mut rec_chain, 1, |(seq, _off)| recovered_seqs.push(seq)).unwrap();
+        let info = recover(&mut flash, &mut sealer, &mut rec_chain, 1, |(seq, _off)| {
+            recovered_seqs.push(seq)
+        })
+        .unwrap();
 
         // 3. Verify exactly acknowledged prefix or fully committed batch
-        assert!(info.committed_upto == acked || info.committed_upto == 5, "Seed {} failed: recovered seq {} neither {} nor 5", seed, info.committed_upto, acked);
-        
+        assert!(
+            info.committed_upto == acked || info.committed_upto == 5,
+            "Seed {} failed: recovered seq {} neither {} nor 5",
+            seed,
+            info.committed_upto,
+            acked
+        );
+
         let expected_seqs: std::vec::Vec<u64> = (1..=info.committed_upto).collect();
-        assert_eq!(recovered_seqs, expected_seqs, "Seed {} failed: seqs mismatch", seed);
+        assert_eq!(
+            recovered_seqs, expected_seqs,
+            "Seed {} failed: seqs mismatch",
+            seed
+        );
     }
 }

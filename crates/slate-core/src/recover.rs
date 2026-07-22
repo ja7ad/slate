@@ -17,7 +17,7 @@ pub struct RecoverInfo {
 
 /// A batch of pending record sequence numbers.
 pub struct PendingBatch {
-    records: [(u64, u32); 100], // Adjust size if B_COMMIT is larger
+    records: [(u64, u32); B_MAX],
     count: usize,
     last_seq: u64,
 }
@@ -26,19 +26,22 @@ impl PendingBatch {
     /// Creates a new pending batch.
     pub fn new() -> Self {
         Self {
-            records: [(0, 0); 100],
+            records: [(0, 0); B_MAX],
             count: 0,
             last_seq: 0,
         }
     }
 
     /// Pushes a sequence number.
-    pub fn push(&mut self, seq: u64, off: u32) {
+    pub fn push(&mut self, seq: u64, off: u32) -> Result<(), Error> {
         if self.count < self.records.len() {
             self.records[self.count] = (seq, off);
             self.count += 1;
+            self.last_seq = seq;
+            Ok(())
+        } else {
+            Err(Error::FormatError)
         }
-        self.last_seq = seq;
     }
 
     /// Returns last sequence number.
@@ -128,7 +131,9 @@ pub fn recover<F: Flash>(
                         ) {
                             Ok(()) => {
                                 chain.fold(&rec_bytes[..total_len]);
-                                pending.push(hdr.seq, off);
+                                if pending.push(hdr.seq, off).is_err() {
+                                    return Ok(finish_truncate(off, committed_upto));
+                                }
                             }
                             Err(_) => {
                                 return Ok(finish_truncate(off, committed_upto));
@@ -149,7 +154,11 @@ pub fn recover<F: Flash>(
                     }
                     let cm_valid = s.verify_marker(&cm1).or_else(|_| s.verify_marker(&cm2));
                     match cm_valid {
-                        Ok(f) if f.seq_max == pending.last_seq() && f.chi == chain.chi && f.epoch == epoch => {
+                        Ok(f)
+                            if f.seq_max == pending.last_seq()
+                                && f.chi == chain.chi
+                                && f.epoch == epoch =>
+                        {
                             let batch = pending.drain();
                             for &m in batch {
                                 apply(m);
