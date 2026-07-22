@@ -1,6 +1,7 @@
 //! log
 
 use crate::config::*;
+use crate::chain::Chain;
 use crate::error::Error;
 use crate::record::RecordHeader;
 use slate_hal::Flash;
@@ -30,12 +31,15 @@ pub trait Sealer {
         ct_tag: &[u8],
         plain_out: &mut [u8],
     ) -> Result<(), Error>;
-    /// Folds record into chain.
-    fn chain_fold(&mut self, record_bytes: &[u8]);
+
     /// Generates a commit marker.
-    fn commit_marker(&mut self, seq_max: u64, epoch: u64) -> [u8; CM_LEN];
+    fn commit_marker(&mut self, seq_max: u64, epoch: u64, chi: &[u8; 32]) -> [u8; CM_LEN];
     /// Verifies a commit marker.
     fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error>;
+    /// Seals a checkpoint.
+    fn seal_checkpoint(&mut self, epoch: u64, plain: &[u8], ct_tag_out: &mut [u8]);
+    /// Opens a checkpoint.
+    fn open_checkpoint(&mut self, epoch: u64, ct_tag: &[u8], plain_out: &mut [u8]) -> Result<(), Error>;
 }
 
 /// Head state for the append log.
@@ -136,6 +140,7 @@ impl<'a, F: Flash> Log<'a, F> {
         key: &[u8],
         val: &[u8],
         s: &mut impl Sealer,
+        chain: &mut Chain,
     ) -> Result<u64, Error> {
         let seq = self.next_seq;
         let mut hdr = RecordHeader {
@@ -164,7 +169,7 @@ impl<'a, F: Flash> Log<'a, F> {
         kv_idx += val.len();
 
         s.seal_record(&hdr_bytes, &kv[..kv_idx], &mut rec[REC_HDR_LEN..]);
-        s.chain_fold(rec);
+        chain.fold(&rec[..total_len]);
 
         self.next_seq += 1;
         Ok(seq)
@@ -214,13 +219,13 @@ impl<'a, F: Flash> Log<'a, F> {
     }
 
     /// Commits batched records to flash.
-    pub fn commit(&mut self, flash: &mut F, s: &mut impl Sealer) -> Result<(), Error> {
+    pub fn commit(&mut self, flash: &mut F, s: &mut impl Sealer, chain: &Chain) -> Result<(), Error> {
         if self.batch.is_empty() {
             return Ok(());
         }
         self.program_batch_pages(flash)?;
         self.program_xor_parity(flash)?;
-        let cm = s.commit_marker(self.next_seq - 1, self.epoch);
+        let cm = s.commit_marker(self.next_seq - 1, self.epoch, &chain.chi);
         self.program_page(flash, &cm)?;
         self.program_page(flash, &cm)?;
         self.acked_seq = self.next_seq - 1; // Ack rule

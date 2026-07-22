@@ -4,7 +4,7 @@
 use crate::keys::KeySet;
 use chacha20poly1305::{aead::{AeadInPlace, KeyInit}, ChaCha20Poly1305};
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use slate_core::config::{CM_LEN, REC_HDR_LEN};
 use slate_core::error::Error;
 use slate_core::log::{CmFields, Sealer};
@@ -12,14 +12,12 @@ use zeroize::Zeroize;
 
 pub struct CryptoSealer {
     keys: KeySet,
-    pub chi: [u8; 32],
 }
 
 impl CryptoSealer {
     pub fn new(keys: KeySet) -> Self {
         Self {
             keys,
-            chi: [0; 32], // doc 005 owns updates, but we need it here
         }
     }
 }
@@ -54,19 +52,12 @@ impl Sealer for CryptoSealer {
             })
     }
 
-    fn chain_fold(&mut self, record_bytes: &[u8]) {
-        let mut hasher = Sha256::new();
-        hasher.update(self.chi);
-        hasher.update(record_bytes);
-        self.chi = hasher.finalize().into();
-    }
-
-    fn commit_marker(&mut self, seq_max: u64, epoch: u64) -> [u8; CM_LEN] {
+    fn commit_marker(&mut self, seq_max: u64, epoch: u64, chi: &[u8; 32]) -> [u8; CM_LEN] {
         let mut cm = [0u8; CM_LEN];
         cm[0] = slate_core::config::MAGIC_CM;
         cm[1..9].copy_from_slice(&seq_max.to_le_bytes());
         cm[9..17].copy_from_slice(&epoch.to_le_bytes());
-        cm[17..49].copy_from_slice(&self.chi);
+        cm[17..49].copy_from_slice(chi);
 
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.keys.k_cm).expect("valid key length");
         mac.update(&cm[1..49]);
@@ -104,6 +95,35 @@ impl Sealer for CryptoSealer {
             tau_cm,
         })
     }
+
+    fn seal_checkpoint(&mut self, epoch: u64, plain: &[u8], ct_tag_out: &mut [u8]) {
+        let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
+        let mut nonce = [0u8; 12];
+        nonce[..8].copy_from_slice(&epoch.to_le_bytes());
+        
+        let ct_len = plain.len();
+        ct_tag_out[..ct_len].copy_from_slice(plain);
+        let tag = cipher
+            .encrypt_in_place_detached(&nonce.into(), &[], &mut ct_tag_out[..ct_len])
+            .expect("length checked");
+        ct_tag_out[ct_len..].copy_from_slice(&tag);
+    }
+
+    fn open_checkpoint(&mut self, epoch: u64, ct_tag: &[u8], plain_out: &mut [u8]) -> Result<(), Error> {
+        let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
+        let mut nonce = [0u8; 12];
+        nonce[..8].copy_from_slice(&epoch.to_le_bytes());
+        
+        let (ct, tag) = ct_tag.split_at(ct_tag.len() - 16);
+        plain_out[..ct.len()].copy_from_slice(ct);
+        let tag_arr: &[u8; 16] = tag.try_into().unwrap();
+        cipher
+            .decrypt_in_place_detached(&nonce.into(), &[], &mut plain_out[..ct.len()], tag_arr.into())
+            .map_err(|_| {
+                plain_out.zeroize();
+                Error::Tampered
+            })
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +145,7 @@ mod tests {
     #[test]
     fn test_marker_mac() {
         let mut sealer = setup_sealer();
-        let cm = sealer.commit_marker(100, 1);
+        let cm = sealer.commit_marker(100, 1, &[0; 32]);
         let fields = sealer.verify_marker(&cm).unwrap();
         assert_eq!(fields.seq_max, 100);
         assert_eq!(fields.epoch, 1);
@@ -134,7 +154,7 @@ mod tests {
     #[test]
     fn test_marker_tamper() {
         let mut sealer = setup_sealer();
-        let mut cm = sealer.commit_marker(100, 1);
+        let mut cm = sealer.commit_marker(100, 1, &[0; 32]);
         cm[5] ^= 1; // Flip bit in seq_max
         assert!(matches!(sealer.verify_marker(&cm), Err(Error::Tampered)));
     }

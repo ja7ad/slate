@@ -24,3 +24,10 @@ pub const FP_BITS: usize = 8;
 pub const OFF_BITS: usize = 24;
 pub const MAX_KICKS: usize = 500;
 pub const N_BUCKETS: usize = 2048;
+
+// Epoch & Checkpoint constants
+pub const THETA: usize = 16384;
+pub const CHI_LEN: usize = 32;
+pub const MAGIC_CKPT: u8 = 0xCF;
+pub const CKPT_SLOTS: usize = 2;
+pub const EPOCH_ANCHOR_TAG: &[u8] = b"slate/epoch";

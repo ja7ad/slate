@@ -1,5 +1,6 @@
 //! recover
 
+use crate::chain::Chain;
 use crate::config::*;
 use crate::error::Error;
 use crate::log::Sealer;
@@ -76,6 +77,8 @@ pub fn scan_segment_headers<F: Flash>(_flash: &mut F) -> Result<[u32; 1], Error>
 pub fn recover<F: Flash>(
     flash: &mut F,
     s: &mut impl Sealer,
+    chain: &mut Chain,
+    epoch: u64,
     mut apply: impl FnMut((u64, u32)),
 ) -> Result<RecoverInfo, Error> {
     let segs = scan_segment_headers(flash)?;
@@ -124,7 +127,7 @@ pub fn recover<F: Flash>(
                             &mut scratch,
                         ) {
                             Ok(()) => {
-                                s.chain_fold(&rec_bytes[..total_len]);
+                                chain.fold(&rec_bytes[..total_len]);
                                 pending.push(hdr.seq, off);
                             }
                             Err(_) => {
@@ -146,7 +149,7 @@ pub fn recover<F: Flash>(
                     }
                     let cm_valid = s.verify_marker(&cm1).or_else(|_| s.verify_marker(&cm2));
                     match cm_valid {
-                        Ok(f) if f.seq_max == pending.last_seq() => {
+                        Ok(f) if f.seq_max == pending.last_seq() && f.chi == chain.chi && f.epoch == epoch => {
                             let batch = pending.drain();
                             for &m in batch {
                                 apply(m);
