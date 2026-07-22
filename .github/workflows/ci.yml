@@ -72,6 +72,8 @@ jobs:
         run: cargo install espflash cargo-binutils
       - name: Install Espressif QEMU
         run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20
           wget https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           echo "$PWD/qemu/bin" >> $GITHUB_PATH
