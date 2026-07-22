@@ -70,6 +70,20 @@ pub struct Options {
     pub durability: crate::file_flash::Durability,
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            capacity: 4 * 1024 * 1024,
+            b_commit: 8,
+            auto_b: true,
+            staleness_budget_ms: 1000,
+            n_keys: 8192,
+            profile: Profile::Pi,
+            durability: crate::file_flash::Durability::Full,
+        }
+    }
+}
+
 pub struct ScrubReport {
     pub errors_found: u32,
     pub errors_fixed: u32,

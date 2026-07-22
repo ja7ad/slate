@@ -1,0 +1,244 @@
+#![no_std]
+#![no_main]
+
+use esp_backtrace as _;
+use esp_hal::uart::Uart;
+use esp_println::{print, println};
+
+use slate_core::config::{SchedCfg, OP_DEL, OP_PUT};
+use slate_core::gc::SegTable;
+use slate_core::index::Index;
+use slate_core::log::HeadState;
+use slate_core::metrics::Metrics;
+use slate_core::sched::Scheduler;
+use slate_core::slate::Slate;
+
+use slate_crypto::sealer::CryptoSealer;
+use slate_esp32::{EspCounter, EspFlash};
+
+esp_bootloader_esp_idf::esp_app_desc!();
+
+static mut HOT_BUF: [u8; 4096] = [0; 4096];
+static mut COLD_BUF: [u8; 4096] = [0; 4096];
+static mut INDEX_SLOTS: [u32; 2048 * 4] = [0; 2048 * 4];
+static mut CKPT_BUF: [u8; 35000] = [0; 35000];
+
+#[esp_hal::main]
+fn main() -> ! {
+    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
+
+    let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
+    let mut counter = EspCounter::new();
+
+    let dev_key = slate_crypto::keys::DeviceKey([0x53u8; 32]); // Node master key
+    let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
+    let mut sealer = CryptoSealer::new(keys);
+
+    let (engine_state, _plain_len) =
+        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, unsafe {
+            &mut *core::ptr::addr_of_mut!(CKPT_BUF)
+        }) {
+            Ok((st, len)) => (st, len),
+            Err(_) => {
+                let st = slate_core::epoch::EngineState {
+                    epoch: 1,
+                    next_seq: 1,
+                    acked_seq: 0,
+                    d_ckpt: [0u8; 32],
+                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                    records_in_epoch: 0,
+                    security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                    active_ckpt_slot: 0,
+                };
+                (st, 0)
+            }
+        };
+
+    let sched_cfg = SchedCfg {
+        auto_b: true,
+        fixed_cost_uj: 400,
+        staleness_budget_ms: 1000,
+        deadline_ms: 1000,
+        b_min: 1,
+        b_max: 128,
+        b_commit: 8,
+    };
+
+    let rng_seed = engine_state.epoch.max(1) ^ 42;
+    let mut slate = Slate {
+        flash,
+        counter,
+        sealer,
+        engine: engine_state,
+        log_hot: slate_core::log::Log::new(
+            unsafe { &mut *core::ptr::addr_of_mut!(HOT_BUF) },
+            HeadState {
+                seg_seq: 0,
+                write_offset: 0,
+                block_idx: 0,
+            },
+        ),
+        log_cold: slate_core::log::Log::new(
+            unsafe { &mut *core::ptr::addr_of_mut!(COLD_BUF) },
+            HeadState {
+                seg_seq: 0,
+                write_offset: 0,
+                block_idx: 0,
+            },
+        ),
+        index: Index::new(unsafe { &mut *core::ptr::addr_of_mut!(INDEX_SLOTS) }, 2048),
+        segs: SegTable::new(128),
+        ckpt_seg_seq: 0,
+        sched: Scheduler::new(sched_cfg),
+        metrics: Metrics::default(),
+        ckpt_buf: unsafe { &mut *core::ptr::addr_of_mut!(CKPT_BUF) },
+        rng: slate_core::index::XorShift64::new(rng_seed),
+    };
+
+    println!("[SLATE ESP32 Storage Node Online]");
+    print!("slate_node> ");
+
+    let mut line_buf = [0u8; 128];
+    let mut line_idx = 0;
+
+    loop {
+        let mut b = [0u8; 1];
+        if let Ok(1) = uart.read(&mut b) {
+            let ch = b[0];
+            if ch == b'\n' || ch == b'\r' {
+                if line_idx > 0 {
+                    if let Ok(s) = core::str::from_utf8(&line_buf[..line_idx]) {
+                        process_cmd(&mut slate, s);
+                    }
+                    line_idx = 0;
+                }
+                print!("slate_node> ");
+            } else if line_idx < line_buf.len() {
+                line_buf[line_idx] = ch;
+                line_idx += 1;
+            }
+        }
+        slate.sched.poll(0);
+    }
+}
+
+fn process_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
+where
+    F: slate_hal::Flash,
+    C: slate_hal::MonotonicCounter,
+    S: slate_core::log::Sealer,
+{
+    let parts: Vec<&str, 4> = parse_words(cmd);
+    if parts.is_empty() {
+        return;
+    }
+
+    match parts[0] {
+        "put" if parts.len() >= 3 => {
+            let key = parts[1].as_bytes();
+            let val = parts[2].as_bytes();
+            let seq = slate.engine.next_seq;
+            if let Ok((_seq, offset)) = slate.log_hot.append(
+                seq,
+                OP_PUT,
+                key,
+                val,
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            ) {
+                slate.engine.next_seq += 1;
+                let mut rng = slate_core::index::XorShift64::new(42);
+                let _ = slate.index.upsert(key, offset, &mut rng, |_| false);
+                println!("OK seq={}", seq);
+            } else {
+                println!("ERR append_failed");
+            }
+        }
+        "commit" => {
+            if slate.commit().is_ok() {
+                println!("ACK acked_seq={}", slate.engine.acked_seq);
+            } else {
+                println!("ERR commit_failed");
+            }
+        }
+        "get" if parts.len() >= 2 => {
+            let key = parts[1].as_bytes();
+            let mut cbuf = slate_core::index::CandidateBuf::new();
+            slate.index.candidates(key, &mut cbuf);
+            if cbuf.as_slice().is_empty() {
+                println!("ERR not_found");
+            } else {
+                println!("OK candidate_count={}", cbuf.as_slice().len());
+            }
+        }
+        "del" if parts.len() >= 2 => {
+            let key = parts[1].as_bytes();
+            let seq = slate.engine.next_seq;
+            if let Ok(_) = slate.log_hot.append(
+                seq,
+                OP_DEL,
+                key,
+                &[],
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            ) {
+                slate.engine.next_seq += 1;
+                slate.index.remove(key, |_| true);
+                println!("OK seq={}", seq);
+            } else {
+                println!("ERR del_failed");
+            }
+        }
+        "ping" => {
+            println!("pong");
+        }
+        _ => {
+            println!("ERR unknown_command");
+        }
+    }
+}
+
+struct Vec<T, const N: usize> {
+    data: [Option<T>; N],
+    len: usize,
+}
+
+impl<T: Copy, const N: usize> Vec<T, N> {
+    fn new() -> Self {
+        Self {
+            data: [None; N],
+            len: 0,
+        }
+    }
+
+    fn push(&mut self, val: T) {
+        if self.len < N {
+            self.data[self.len] = Some(val);
+            self.len += 1;
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl<T: Copy, const N: usize> core::ops::Index<usize> for Vec<T, N> {
+    type Output = T;
+    fn index(&self, idx: usize) -> &Self::Output {
+        self.data[idx].as_ref().unwrap()
+    }
+}
+
+fn parse_words<'a, const N: usize>(s: &'a str) -> Vec<&'a str, N> {
+    let mut res = Vec::new();
+    for word in s.split_whitespace() {
+        res.push(word);
+    }
+    res
+}
