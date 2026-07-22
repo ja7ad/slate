@@ -31,3 +31,6 @@ rustc-ice-*.txt
 targets/esp32/flash.img
 targets/esp32/flash_old.img
 targets/esp32/*.log
+
+# macOS
+.DS_Store
