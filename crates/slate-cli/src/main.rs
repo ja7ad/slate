@@ -119,6 +119,15 @@ fn main() {
             }
             let db = open_db(&args[2], args.get(3));
 
+            println!("=== Persistent Database State ===");
+            println!("Path:          {}", args[2]);
+            println!("Epoch:         {}", db.epoch());
+            println!("Acked Seq:     {}", db.acked_seq());
+            println!("Next Seq:      {}", db.next_seq());
+            println!("Active Keys:   {}", db.len());
+            println!("Security Mode: {:?}", db.security_mode());
+            println!();
+            println!("=== Current Session Metrics ===");
             let stats = db.stats();
             println!("Commits:       {}", stats.commits);
             println!("Wakes:         {}", stats.wakes);

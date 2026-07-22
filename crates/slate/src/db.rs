@@ -594,6 +594,22 @@ impl Db {
         inner.slate.engine.security_mode
     }
 
+    pub fn acked_seq(&self) -> u64 {
+        self.inner.lock().unwrap().slate.engine.acked_seq
+    }
+
+    pub fn next_seq(&self) -> u64 {
+        self.inner.lock().unwrap().slate.engine.next_seq
+    }
+
+    pub fn epoch(&self) -> u64 {
+        self.inner.lock().unwrap().slate.engine.epoch
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.lock().unwrap().slate.index.len()
+    }
+
     pub fn stats(&self) -> Stats {
         let inner = self.inner.lock().unwrap();
         let m = &inner.slate.metrics;
