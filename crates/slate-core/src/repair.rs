@@ -19,15 +19,11 @@ pub fn head_repair_one_page(
     out.copy_from_slice(parity);
     for (i, page) in survivors.iter().enumerate() {
         if i != missing_idx {
-            for j in 3..256 {
+            for j in 0..256 {
                 out[j] ^= page[j];
             }
         }
     }
-    // Note: the first 3 bytes of the missing page cannot be recovered this way.
-    // The caller must infer them (e.g. MAGIC_REC or continuation).
-    // For single page head repair, we assume it's MAGIC_REC if it's the start of a record.
-    out[0] = MAGIC_REC; // Best effort inference for start of record
 }
 
 /// Repair orchestration (`slate-core::repair`): on any located failure in a *sealed* segment.

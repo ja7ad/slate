@@ -78,8 +78,13 @@ impl SegTable {
     }
 }
 
-pub fn compact_one<'a, F: slate_hal::Flash, S: crate::log::Sealer>(
-    st: &mut crate::slate::Slate<'a, F, S>,
+pub fn compact_one<
+    'a,
+    F: slate_hal::Flash,
+    C: slate_hal::MonotonicCounter,
+    S: crate::log::Sealer,
+>(
+    st: &mut crate::slate::Slate<'a, F, C, S>,
 ) -> Result<(), Error> {
     let ckpt_seg_seq = st.ckpt_seg_seq;
     let victim = match st.segs.pick_victim(ckpt_seg_seq) {

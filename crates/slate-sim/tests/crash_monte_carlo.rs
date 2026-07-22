@@ -37,7 +37,8 @@ fn test_crash_monte_carlo() {
             let val = format!("val{}", i).into_bytes();
             last_ticket = log
                 .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
-                .unwrap();
+                .unwrap()
+                .0;
         }
         log.commit(&mut flash, &mut sealer, &chain, 1, 3).unwrap();
         let acked = last_ticket;
@@ -64,9 +65,13 @@ fn test_crash_monte_carlo() {
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();
         let mut rec_chain = Chain::default();
-        let info = recover(&mut flash, &mut sealer, &mut rec_chain, 1, |(seq, _off)| {
-            recovered_seqs.push(seq)
-        })
+        let info = recover(
+            &mut flash,
+            &mut sealer,
+            &mut rec_chain,
+            1,
+            |seq, _off, _op, _key| recovered_seqs.push(seq),
+        )
         .unwrap();
 
         // 3. Verify exactly acknowledged prefix or fully committed batch

@@ -5,7 +5,7 @@ use crate::config::{MAGIC_CKPT, MAX_CKPT_LEN};
 use crate::error::Error;
 
 /// Size of the checkpoint header (AD for the AEAD).
-pub const CKPT_HDR_LEN: usize = 36;
+pub const CKPT_HDR_LEN: usize = 76;
 
 pub struct CheckpointHeader {
     pub magic: u8,
@@ -16,6 +16,8 @@ pub struct CheckpointHeader {
     pub write_offset: u32,
     pub n_keys: u16,
     pub ct_len: u32,
+    pub chi: [u8; 32],
+    pub mc: u64,
 }
 
 impl CheckpointHeader {
@@ -28,6 +30,8 @@ impl CheckpointHeader {
         out[26..30].copy_from_slice(&self.write_offset.to_le_bytes());
         out[30..32].copy_from_slice(&self.n_keys.to_le_bytes());
         out[32..36].copy_from_slice(&self.ct_len.to_le_bytes());
+        out[36..68].copy_from_slice(&self.chi);
+        out[68..76].copy_from_slice(&self.mc.to_le_bytes());
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
@@ -40,6 +44,9 @@ impl CheckpointHeader {
         let write_offset = u32::from_le_bytes(bytes[26..30].try_into().unwrap());
         let n_keys = u16::from_le_bytes(bytes[30..32].try_into().unwrap());
         let ct_len = u32::from_le_bytes(bytes[32..36].try_into().unwrap());
+        let mut chi = [0u8; 32];
+        chi.copy_from_slice(&bytes[36..68]);
+        let mc = u64::from_le_bytes(bytes[68..76].try_into().unwrap());
 
         if ct_len > MAX_CKPT_LEN {
             return Err(Error::FormatError);
@@ -54,6 +61,8 @@ impl CheckpointHeader {
             write_offset,
             n_keys,
             ct_len,
+            chi,
+            mc,
         })
     }
 }

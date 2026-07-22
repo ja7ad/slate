@@ -7,10 +7,11 @@ use crate::error::Error;
 use crate::gc::SegTable;
 use crate::index::Index;
 use crate::log::{Log, Sealer};
-use slate_hal::Flash;
+use slate_hal::{Flash, MonotonicCounter};
 
-pub struct Slate<'a, F: Flash, S: Sealer> {
+pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
     pub flash: F,
+    pub counter: C,
     pub sealer: S,
     pub engine: EngineState,
     pub log_hot: Log<'a, F>,
@@ -20,9 +21,10 @@ pub struct Slate<'a, F: Flash, S: Sealer> {
     pub ckpt_seg_seq: u64,
     pub sched: crate::sched::Scheduler,
     pub metrics: crate::metrics::Metrics,
+    pub ckpt_buf: &'a mut [u8],
 }
 
-impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
+impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
     pub fn index_points_to(&self, key_candidates: &[&[u8]], offset: u32) -> bool {
         // Stub: check if index maps any candidate key to this offset
         for &k in key_candidates {
@@ -42,7 +44,7 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
 
     pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
         let seq = self.engine.next_seq;
-        self.log_cold.append(
+        let (_seq_ret, offset) = self.log_cold.append(
             seq,
             OP_PUT,
             key,
@@ -54,12 +56,12 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
-        Ok(self.log_cold.head.write_offset) // Approximation of new_off
+        Ok(offset)
     }
 
     pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
         let seq = self.engine.next_seq;
-        self.log_cold.append(
+        let _ = self.log_cold.append(
             seq,
             OP_DEL,
             key,
@@ -98,6 +100,27 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
         self.engine.acked_seq = seq_max;
         self.sched.on_commit();
         self.metrics.add_commit();
+
+        if self.engine.records_in_epoch >= crate::config::THETA {
+            let index_len = self
+                .index
+                .serialize(&mut self.ckpt_buf[crate::checkpoint::CKPT_HDR_LEN..]);
+            let seg_seq = self.log_hot.head.seg_seq;
+            let write_offset = self.log_hot.head.write_offset;
+            let n_keys = self.index.len() as u16;
+
+            crate::epoch::seal_epoch(
+                &mut self.engine,
+                &mut self.flash,
+                &mut self.counter,
+                &mut self.sealer,
+                seg_seq,
+                write_offset,
+                n_keys,
+                self.ckpt_buf,
+                index_len,
+            )?;
+        }
         Ok(())
     }
 

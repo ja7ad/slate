@@ -94,7 +94,8 @@ pub fn bucket1(h: u64, n: usize) -> usize {
 /// Returns the alternate bucket index.
 #[inline]
 pub fn alt_bucket(i: usize, fp: u8, n: usize) -> usize {
-    i ^ ((fp as usize).wrapping_mul(0x5bd1e995) & (n - 1))
+    let d = (fp as usize).wrapping_mul(0x5bd1e995) & (n - 1);
+    i ^ (d | 1)
 }
 
 #[inline]
@@ -277,6 +278,53 @@ impl<'a> Index<'a> {
         }
 
         false
+    }
+
+    /// Serializes the index slots to a byte buffer. Returns bytes written.
+    pub fn serialize(&self, out: &mut [u8]) -> usize {
+        let slots_len = self.slots.len() * 4;
+        let stash_len = STASH_SIZE * 5;
+        let len = slots_len + stash_len;
+        assert!(out.len() >= len);
+        for (i, &slot) in self.slots.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&slot.to_le_bytes());
+        }
+        let mut off = slots_len;
+        for e in &self.stash {
+            out[off] = e.0;
+            out[off + 1..off + 5].copy_from_slice(&e.1.to_le_bytes());
+            off += 5;
+        }
+        len
+    }
+
+    /// Deserializes the index slots from a byte buffer.
+    pub fn deserialize(&mut self, data: &[u8]) {
+        let slots_len = self.slots.len() * 4;
+        let stash_len = STASH_SIZE * 5;
+        let len = slots_len + stash_len;
+        assert!(data.len() >= len);
+        self.len = 0;
+        for i in 0..self.slots.len() {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&data[i * 4..i * 4 + 4]);
+            self.slots[i] = u32::from_le_bytes(b);
+            if (self.slots[i] >> 24) != 0 {
+                self.len += 1;
+            }
+        }
+        let mut off = slots_len;
+        for i in 0..STASH_SIZE {
+            let fp = data[off];
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&data[off + 1..off + 5]);
+            let val = u32::from_le_bytes(b);
+            self.stash[i] = (fp, val);
+            if fp != 0 {
+                self.len += 1;
+            }
+            off += 5;
+        }
     }
 }
 

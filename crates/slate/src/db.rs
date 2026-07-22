@@ -55,6 +55,7 @@ struct Buffers {
     hot: *mut [u8],
     cold: *mut [u8],
     index: *mut [u32],
+    ckpt: *mut [u8],
 }
 
 // SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by OwnedEngine.
@@ -63,9 +64,8 @@ unsafe impl Send for Buffers {}
 unsafe impl Sync for Buffers {}
 
 struct OwnedEngine {
-    slate: Slate<'static, FileFlash, CryptoSealer>,
+    slate: Slate<'static, FileFlash, FileCounter, CryptoSealer>,
     bufs: Buffers,
-    mock_store: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
 // SAFETY: OwnedEngine encapsulates exclusively owned data and is protected by Mutex in Db.
@@ -78,6 +78,7 @@ impl Drop for OwnedEngine {
             let _ = Box::from_raw(self.bufs.hot);
             let _ = Box::from_raw(self.bufs.cold);
             let _ = Box::from_raw(self.bufs.index);
+            let _ = Box::from_raw(self.bufs.ckpt);
         }
     }
 }
@@ -140,27 +141,42 @@ impl Db {
 
         let mut sealer = CryptoSealer::new(keyset);
 
+        let mut ckpt_box = vec![0u8; 65536].into_boxed_slice();
+        let ckpt_ptr = Box::into_raw(ckpt_box);
+        let ckpt_slice = unsafe { &mut *ckpt_ptr };
+
         // Mount
-        let engine_state = match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer) {
-            Ok(st) => st,
-            Err(MountError::FormatError) => {
-                // Formatting new
-                let mut st = EngineState {
-                    epoch: 1,
-                    next_seq: 1,
-                    acked_seq: 0,
-                    d_ckpt: [0u8; 32],
-                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
-                    records_in_epoch: 0,
-                    security_mode: SecurityMode::BestEffortRollback,
-                    active_ckpt_slot: 0,
-                };
-                slate_core::epoch::seal_epoch(&mut st, &mut flash, &mut counter, &mut sealer)
+        let (engine_state, plain_len) =
+            match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, ckpt_slice) {
+                Ok((st, len)) => (st, len),
+                Err(MountError::FormatError) => {
+                    // Formatting new
+                    let mut st = EngineState {
+                        epoch: 1,
+                        next_seq: 1,
+                        acked_seq: 0,
+                        d_ckpt: [0u8; 32],
+                        chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                        records_in_epoch: 0,
+                        security_mode: SecurityMode::BestEffortRollback,
+                        active_ckpt_slot: 0,
+                    };
+                    slate_core::epoch::seal_epoch(
+                        &mut st,
+                        &mut flash,
+                        &mut counter,
+                        &mut sealer,
+                        1,
+                        0,
+                        0,
+                        ckpt_slice,
+                        0,
+                    )
                     .map_err(|e| format!("{:?}", e))?;
-                st
-            }
-            Err(e) => return Err(format!("Mount failed: {:?}", e)),
-        };
+                    (st, 0)
+                }
+                Err(e) => return Err(format!("Mount failed: {:?}", e)),
+            };
 
         // Allocate buffers
         let hot_box = vec![0u8; 65536].into_boxed_slice();
@@ -179,6 +195,7 @@ impl Db {
             hot: hot_ptr,
             cold: cold_ptr,
             index: index_ptr,
+            ckpt: ckpt_ptr,
         };
 
         // SAFETY: Pointers are valid for the lifetime of Db, ensuring Slate<'static> constraint.
@@ -219,8 +236,9 @@ impl Db {
             b_commit: opts.b_commit,
         };
 
-        let slate = Slate {
+        let mut slate = Slate {
             flash,
+            counter,
             sealer,
             engine: engine_state,
             log_hot,
@@ -230,29 +248,54 @@ impl Db {
             ckpt_seg_seq: 0,
             sched: Scheduler::new(sched_cfg),
             metrics: Metrics::default(),
+            ckpt_buf: ckpt_slice,
         };
 
+        if plain_len > 0 {
+            slate.index.deserialize(
+                &slate.ckpt_buf[slate_core::checkpoint::CKPT_HDR_LEN
+                    ..slate_core::checkpoint::CKPT_HDR_LEN + plain_len],
+            );
+        }
+
+        let mut index_upsert_error = false;
+        let mut rng = slate_core::index::XorShift64::new(42);
+        slate_core::recover::recover(
+            &mut slate.flash,
+            &mut slate.sealer,
+            &mut slate.engine.chain,
+            slate.engine.epoch,
+            |_seq, off, op, key| {
+                if op == slate_core::config::OP_PUT {
+                    if slate.index.upsert(key, off, &mut rng, |_| false).is_err() {
+                        index_upsert_error = true;
+                    }
+                } else if op == slate_core::config::OP_DEL {
+                    slate.index.remove(key, |_| true);
+                }
+            },
+        )
+        .map_err(|e| format!("{:?}", e))?;
+
+        if index_upsert_error {
+            return Err("Index capacity exceeded during recovery".into());
+        }
+
         Ok(Db {
-            inner: Mutex::new(OwnedEngine {
-                slate,
-                bufs,
-                mock_store: std::collections::BTreeMap::new(),
-            }),
+            inner: Mutex::new(OwnedEngine { slate, bufs }),
         })
     }
 
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine {
-            slate, mock_store, ..
-        } = &mut *inner;
+        let OwnedEngine { slate, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         let seq = slate.engine.next_seq;
-        slate
+        let (_seq, offset) = slate
             .log_hot
             .append(
                 seq,
@@ -264,7 +307,11 @@ impl Db {
             )
             .map_err(|e| format!("{:?}", e))?;
         slate.engine.next_seq += 1;
-        mock_store.insert(key.to_vec(), val.to_vec());
+        let mut rng = slate_core::index::XorShift64::new(42);
+        slate
+            .index
+            .upsert(key, offset, &mut rng, |_| false)
+            .map_err(|e| format!("{:?}", e))?;
         slate
             .metrics
             .add_user_bytes((44 + key.len() + val.len()) as u64);
@@ -280,22 +327,120 @@ impl Db {
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let inner = self.inner.lock().unwrap();
-        Ok(inner.mock_store.get(key).cloned())
+        let mut inner = self.inner.lock().unwrap();
+        let mut cbuf = slate_core::index::CandidateBuf::new();
+        inner.slate.index.candidates(key, &mut cbuf);
+
+        let mut best_val: Option<Vec<u8>> = None;
+        let mut best_seq = 0;
+
+        for &off in cbuf.as_slice() {
+            let mut rec_bytes = None;
+
+            // Check hot log batch
+            let hot_write_off = inner.slate.log_hot.head.write_offset;
+            let hot_data = inner.slate.log_hot.batch.data();
+            if off >= hot_write_off && off < hot_write_off + hot_data.len() as u32 {
+                let rec_off = (off - hot_write_off) as usize;
+                if rec_off + slate_core::config::REC_HDR_LEN <= hot_data.len() {
+                    let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
+                    hdr_bytes.copy_from_slice(
+                        &hot_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
+                    );
+                    if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        if rec_off + total_len <= hot_data.len() {
+                            rec_bytes =
+                                Some((hdr_bytes, hot_data[rec_off..rec_off + total_len].to_vec()));
+                        }
+                    }
+                }
+            }
+
+            // Check cold log batch
+            let cold_write_off = inner.slate.log_cold.head.write_offset;
+            let cold_data = inner.slate.log_cold.batch.data();
+            if rec_bytes.is_none()
+                && off >= cold_write_off
+                && off < cold_write_off + cold_data.len() as u32
+            {
+                let rec_off = (off - cold_write_off) as usize;
+                if rec_off + slate_core::config::REC_HDR_LEN <= cold_data.len() {
+                    let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
+                    hdr_bytes.copy_from_slice(
+                        &cold_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
+                    );
+                    if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        if rec_off + total_len <= cold_data.len() {
+                            rec_bytes =
+                                Some((hdr_bytes, cold_data[rec_off..rec_off + total_len].to_vec()));
+                        }
+                    }
+                }
+            }
+
+            // Read from flash if not in batch
+            if rec_bytes.is_none() {
+                use slate_hal::Flash;
+                let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
+                if inner.slate.flash.read(off, &mut hdr_bytes).is_ok() {
+                    if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        let mut rb = vec![0u8; total_len];
+                        if inner.slate.flash.read(off, &mut rb).is_ok() {
+                            rec_bytes = Some((hdr_bytes, rb));
+                        }
+                    }
+                }
+            }
+
+            if let Some((hdr_bytes, rb)) = rec_bytes {
+                if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                    let mut plain_out = vec![0u8; rb.len() - 16];
+                    use slate_core::log::Sealer;
+                    if inner
+                        .slate
+                        .sealer
+                        .open_record(
+                            &hdr_bytes,
+                            &rb[slate_core::config::REC_HDR_LEN..],
+                            &mut plain_out,
+                        )
+                        .is_ok()
+                    {
+                        if plain_out[..hdr.klen as usize] == *key {
+                            if hdr.seq >= best_seq {
+                                best_seq = hdr.seq;
+                                if hdr.op == slate_core::config::OP_PUT {
+                                    let val_start = hdr.klen as usize;
+                                    best_val = Some(
+                                        plain_out[val_start..val_start + hdr.vlen as usize]
+                                            .to_vec(),
+                                    );
+                                } else {
+                                    best_val = None;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(best_val)
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine {
-            slate, mock_store, ..
-        } = &mut *inner;
+        let OwnedEngine { slate, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_millis() as u64;
 
         let seq = slate.engine.next_seq;
-        slate
+        let _ = slate
             .log_hot
             .append(
                 seq,
@@ -307,7 +452,8 @@ impl Db {
             )
             .map_err(|e| format!("{:?}", e))?;
         slate.engine.next_seq += 1;
-        mock_store.remove(key);
+        let mut rng = slate_core::index::XorShift64::new(42);
+        slate.index.remove(key, |_| true);
         slate.metrics.add_user_bytes((44 + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit().map_err(|e| format!("{:?}", e))?;

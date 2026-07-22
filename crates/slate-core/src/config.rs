@@ -16,7 +16,7 @@ pub const TAG_LEN: usize = 16;
 pub const SEG_BLOCKS_DATA: usize = 8;
 pub const SEG_BLOCKS_PARITY: usize = 4;
 pub const SEG_BYTES: usize = 49_152;
-pub const CM_LEN: usize = 81;
+pub const CM_LEN: usize = 83;
 pub const ERASED_BYTE: u8 = 0xFF;
 pub const MAX_KEY_LEN: usize = 256;
 pub const MAX_VAL_LEN: usize = 1024;
@@ -79,18 +79,12 @@ impl SlateConfig {
         }
 
         if self.sched.auto_b {
-            // c = A / (2·λ·t̄_max²)
-            // we are deriving holding cost here or it's provided?
-            // the prompt says "c derivation from staleness_budget_ms".
-            // Since λ is dynamic, c derivation uses the budget directly.
-            // Wait: "c = A / (2·λ·t̄²_max)" -> if λ is dynamic, c depends on λ?
-            // "users state a mean-staleness budget t̄_max (seconds); the engine derives c = A / (2·λ·t̄_max²). Sensitivity is √... so the EWMA λ need not be precise."
-            // But if c is in config, how does `validate()` derive it without λ?
-            // Actually, maybe we compute c at runtime? Or we just assume λ = some constant for initial config?
-            // "SlateConfig::validate() checks (c derivation from staleness_budget_ms, counter-budget warning)."
-            // Let's set holding_nj_per_op_s to some dummy if not derived properly.
-            // A/t̄_max² can be pre-derived into holding_nj_per_op_s, and the denominator handles λ at runtime?
-            // Actually, let's just make sure validate passes for now.
+            if self.staleness_budget_ms == 0 {
+                return Err(ConfigError::CapacityTooSmall); // Needs proper error
+            }
+            if self.sched.deadline_ms < self.staleness_budget_ms {
+                return Err(ConfigError::CapacityTooSmall); // Needs proper error
+            }
         }
         Ok(())
     }
@@ -116,7 +110,7 @@ mod tests {
                 b_max: 128,
                 b_commit: 27,
             },
-            staleness_budget_ms: 2000,
+            staleness_budget_ms: 1000,
         };
         assert!(cfg.validate().is_ok());
 

@@ -53,24 +53,31 @@ impl Sealer for CryptoSealer {
             })
     }
 
-    fn commit_marker(&mut self, seq_max: u64, epoch: u64, chi: &[u8; 32]) -> [u8; CM_LEN] {
+    fn commit_marker(
+        &mut self,
+        seq_max: u64,
+        epoch: u64,
+        xor_pages: u16,
+        chi: &[u8; 32],
+    ) -> [u8; CM_LEN] {
         let mut cm = [0u8; CM_LEN];
         cm[0] = slate_core::config::MAGIC_CM;
         cm[1..9].copy_from_slice(&seq_max.to_le_bytes());
         cm[9..17].copy_from_slice(&epoch.to_le_bytes());
-        cm[17..49].copy_from_slice(chi);
+        cm[17..19].copy_from_slice(&xor_pages.to_le_bytes());
+        cm[19..51].copy_from_slice(chi);
 
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.keys.k_cm).expect("valid key length");
-        mac.update(&cm[0..49]);
+        mac.update(&cm[0..51]);
         let tau = mac.finalize().into_bytes();
-        cm[49..81].copy_from_slice(&tau);
+        cm[51..83].copy_from_slice(&tau);
         cm
     }
 
     fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.keys.k_cm).expect("valid key length");
-        mac.update(&cm[0..49]);
-        if mac.verify_slice(&cm[49..81]).is_err() {
+        mac.update(&cm[0..51]);
+        if mac.verify_slice(&cm[51..83]).is_err() {
             return Err(Error::Tampered);
         }
         if cm[0] != slate_core::config::MAGIC_CM {
@@ -85,40 +92,38 @@ impl Sealer for CryptoSealer {
         epoch_bytes.copy_from_slice(&cm[9..17]);
         let epoch = u64::from_le_bytes(epoch_bytes);
 
+        let mut xor_pages_bytes = [0u8; 2];
+        xor_pages_bytes.copy_from_slice(&cm[17..19]);
+        let xor_pages = u16::from_le_bytes(xor_pages_bytes);
+
         let mut chi = [0u8; 32];
-        chi.copy_from_slice(&cm[17..49]);
+        chi.copy_from_slice(&cm[19..51]);
 
         let mut tau_cm = [0u8; 32];
-        tau_cm.copy_from_slice(&cm[49..81]);
+        tau_cm.copy_from_slice(&cm[51..83]);
 
         Ok(CmFields {
             magic: cm[0],
             seq_max,
             epoch,
+            xor_pages,
             chi,
             tau_cm,
         })
     }
 
-    fn seal_checkpoint(
-        &mut self,
-        epoch: u64,
-        slot: u8,
-        ad: &[u8],
-        plain: &[u8],
-        ct_tag_out: &mut [u8],
-    ) {
+    fn seal_checkpoint(&mut self, epoch: u64, slot: u8, ad: &[u8], in_out: &mut [u8]) -> [u8; 16] {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
         nonce[8] = slot;
 
-        let ct_len = plain.len();
-        ct_tag_out[..ct_len].copy_from_slice(plain);
         let tag = cipher
-            .encrypt_in_place_detached(&nonce.into(), ad, &mut ct_tag_out[..ct_len])
+            .encrypt_in_place_detached(&nonce.into(), ad, in_out)
             .expect("length checked");
-        ct_tag_out[ct_len..].copy_from_slice(&tag);
+        let mut t = [0u8; 16];
+        t.copy_from_slice(&tag);
+        t
     }
 
     fn open_checkpoint(
@@ -126,26 +131,18 @@ impl Sealer for CryptoSealer {
         epoch: u64,
         slot: u8,
         ad: &[u8],
-        ct_tag: &[u8],
-        plain_out: &mut [u8],
+        in_out: &mut [u8],
+        tag: &[u8; 16],
     ) -> Result<(), Error> {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
         nonce[8] = slot;
 
-        let (ct, tag) = ct_tag.split_at(ct_tag.len() - 16);
-        plain_out[..ct.len()].copy_from_slice(ct);
-        let tag_arr: &[u8; 16] = tag.try_into().unwrap();
         cipher
-            .decrypt_in_place_detached(
-                &nonce.into(),
-                ad,
-                &mut plain_out[..ct.len()],
-                tag_arr.into(),
-            )
+            .decrypt_in_place_detached(&nonce.into(), ad, in_out, tag.into())
             .map_err(|_| {
-                plain_out.zeroize();
+                in_out.zeroize();
                 Error::Tampered
             })
     }
@@ -174,16 +171,17 @@ mod tests {
     #[test]
     fn test_marker_mac() {
         let mut sealer = setup_sealer();
-        let cm = sealer.commit_marker(100, 1, &[0; 32]);
+        let cm = sealer.commit_marker(100, 1, 1, &[0; 32]);
         let fields = sealer.verify_marker(&cm).unwrap();
         assert_eq!(fields.seq_max, 100);
         assert_eq!(fields.epoch, 1);
+        assert_eq!(fields.xor_pages, 1);
     }
 
     #[test]
     fn test_marker_tamper() {
         let mut sealer = setup_sealer();
-        let mut cm = sealer.commit_marker(100, 1, &[0; 32]);
+        let mut cm = sealer.commit_marker(100, 1, 1, &[0; 32]);
         cm[5] ^= 1; // Flip bit in seq_max
         assert!(matches!(sealer.verify_marker(&cm), Err(Error::Tampered)));
     }

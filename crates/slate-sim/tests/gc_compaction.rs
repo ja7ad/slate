@@ -23,7 +23,13 @@ impl slate_core::log::Sealer for MockSealer {
     ) -> Result<(), Error> {
         Ok(())
     }
-    fn commit_marker(&mut self, _seq_max: u64, _epoch: u64, _chi: &[u8; 32]) -> [u8; CM_LEN] {
+    fn commit_marker(
+        &mut self,
+        _seq_max: u64,
+        _epoch: u64,
+        _xor_pages: u16,
+        _chi: &[u8; 32],
+    ) -> [u8; CM_LEN] {
         let mut out = [0u8; CM_LEN];
         out[0] = MAGIC_CM;
         out
@@ -36,18 +42,18 @@ impl slate_core::log::Sealer for MockSealer {
         _epoch: u64,
         _slot: u8,
         _ad: &[u8],
-        _plain: &[u8],
-        ct_tag_out: &mut [u8],
-    ) {
-        ct_tag_out.fill(0);
+        in_out: &mut [u8],
+    ) -> [u8; 16] {
+        in_out.fill(0);
+        [0u8; 16]
     }
     fn open_checkpoint(
         &mut self,
         _epoch: u64,
         _slot: u8,
         _ad: &[u8],
-        _ct_tag: &[u8],
-        _plain_out: &mut [u8],
+        _in_out: &mut [u8],
+        _tag: &[u8; 16],
     ) -> Result<(), Error> {
         Ok(())
     }
@@ -56,10 +62,12 @@ impl slate_core::log::Sealer for MockSealer {
 
 fn create_slate<'a>(
     flash: SimFlash,
+    counter: SimCounter,
     hot_buf: &'a mut [u8],
     cold_buf: &'a mut [u8],
     index_slots: &'a mut [u32],
-) -> Slate<'a, SimFlash, MockSealer> {
+    ckpt_buf: &'a mut [u8],
+) -> Slate<'a, SimFlash, SimCounter, MockSealer> {
     let engine = EngineState {
         epoch: 1,
         next_seq: 1,
@@ -91,6 +99,7 @@ fn create_slate<'a>(
 
     Slate {
         flash,
+        counter,
         sealer: MockSealer,
         engine,
         log_hot,
@@ -100,14 +109,15 @@ fn create_slate<'a>(
         ckpt_seg_seq: 10,         // fake checkpoint time
         sched: slate_core::sched::Scheduler::new(slate_core::config::SchedCfg {
             auto_b: false,
-            fixed_cost_uj: 400,
-            holding_nj_per_op_s: 1000,
-            deadline_ms: 1000,
-            b_min: 1,
-            b_max: 128,
-            b_commit: 27,
+            fixed_cost_uj: 0,
+            holding_nj_per_op_s: 0,
+            deadline_ms: 0,
+            b_min: 2,
+            b_max: 2,
+            b_commit: 2,
         }),
-        metrics: Default::default(),
+        metrics: slate_core::metrics::Metrics::default(),
+        ckpt_buf,
     }
 }
 
@@ -118,7 +128,16 @@ fn test_no_resurrection_prop3_1() {
     let mut index_slots = vec![0u32; N_BUCKETS * BUCKET_SLOTS];
 
     let flash = SimFlash::new(4096 * 128, 256, 4096);
-    let mut st = create_slate(flash, &mut hot_buf, &mut cold_buf, &mut index_slots);
+    let mut ckpt_buf = [0u8; 35000];
+    let counter = SimCounter::new(1000000);
+    let mut st = create_slate(
+        flash,
+        counter,
+        &mut hot_buf,
+        &mut cold_buf,
+        &mut index_slots,
+        &mut ckpt_buf,
+    );
 
     // Setup: put key "A" in segment 0, tombstone in segment 1
     st.segs.entries[0].state = SegState::Sealed;
@@ -155,7 +174,16 @@ fn test_wa_accounting() {
     let mut index_slots = vec![0u32; N_BUCKETS * BUCKET_SLOTS];
 
     let flash = SimFlash::new(4096 * 128, 256, 4096);
-    let mut st = create_slate(flash, &mut hot_buf, &mut cold_buf, &mut index_slots);
+    let mut ckpt_buf = [0u8; 35000];
+    let counter = SimCounter::new(1000000);
+    let mut st = create_slate(
+        flash,
+        counter,
+        &mut hot_buf,
+        &mut cold_buf,
+        &mut index_slots,
+        &mut ckpt_buf,
+    );
 
     // Write a hot put
     st.log_hot

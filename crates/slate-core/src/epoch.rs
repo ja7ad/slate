@@ -58,47 +58,6 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Helper to serialize the snapshot (in a real system this would serialize Index, etc.)
-fn encode_checkpoint(
-    _st: &EngineState,
-    s: &mut impl Sealer,
-    e: u64,
-    slot: u8,
-    out: &mut [u8],
-) -> Result<usize, Error> {
-    // For now we just stub the snapshot with dummy bytes since doc 005 uses it conceptually
-    let snapshot = b"dummy_snapshot";
-
-    let hdr = CheckpointHeader {
-        magic: crate::config::MAGIC_CKPT,
-        format_version: 1,
-        epoch: e,
-        seq: 0,     // from log
-        seg_seq: 0, // from log head
-        write_offset: 0,
-        n_keys: 0, // from index
-        ct_len: snapshot.len() as u32 + 16,
-    };
-
-    let total_len = CKPT_HDR_LEN + hdr.ct_len as usize;
-    if out.len() < total_len {
-        return Err(Error::FormatError);
-    }
-
-    let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
-    hdr.encode(&mut hdr_bytes);
-    out[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
-
-    s.seal_checkpoint(
-        e,
-        slot,
-        &hdr_bytes,
-        snapshot,
-        &mut out[CKPT_HDR_LEN..total_len],
-    );
-    Ok(total_len)
-}
-
 fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result<(), Error> {
     // In doc 002, checkpoint area is after superblock. We assume it's at block 2 and 3 for example.
     let block_addr = (2 + slot as u32) * flash.block_size() as u32;
@@ -127,16 +86,50 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     st: &mut EngineState,
     flash: &mut F,
     ctr: &mut C,
-    s: &mut impl Sealer, // Sealer provides roll_epoch
+    s: &mut impl Sealer,
+    seg_seq: u64,
+    write_offset: u32,
+    n_keys: u16,
+    ckpt_buf: &mut [u8],
+    index_len: usize,
 ) -> Result<(), Error> {
     let e = st.epoch;
 
     // 1. write + flush checkpoint carrying counter field e
     let slot = st.next_ckpt_slot();
-    let mut ckpt_buf = [0u8; 1024]; // Buffer for checkpoint (stubbed size)
-    let len = encode_checkpoint(st, s, e, slot, &mut ckpt_buf)?;
-    program_checkpoint(flash, slot, &ckpt_buf[..len])?;
-    st.d_ckpt = sha256(&ckpt_buf[..len]);
+
+    let hdr = CheckpointHeader {
+        magic: crate::config::MAGIC_CKPT,
+        format_version: 1,
+        epoch: e,
+        seq: st.next_seq,
+        seg_seq,
+        write_offset,
+        n_keys,
+        ct_len: index_len as u32 + 16,
+        chi: st.chain.chi,
+        mc: e,
+    };
+
+    let total_len = CKPT_HDR_LEN + index_len + 16;
+    if ckpt_buf.len() < total_len {
+        return Err(Error::FormatError);
+    }
+
+    let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
+    hdr.encode(&mut hdr_bytes);
+    ckpt_buf[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
+
+    let tag = s.seal_checkpoint(
+        e,
+        slot,
+        &hdr_bytes,
+        &mut ckpt_buf[CKPT_HDR_LEN..CKPT_HDR_LEN + index_len],
+    );
+    ckpt_buf[CKPT_HDR_LEN + index_len..total_len].copy_from_slice(&tag);
+
+    program_checkpoint(flash, slot, &ckpt_buf[..total_len])?;
+    st.d_ckpt = sha256(&ckpt_buf[..total_len]);
     st.active_ckpt_slot = slot;
 
     // 2. THEN advance hardware counter to e
@@ -153,24 +146,72 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
 }
 
 fn load_best_checkpoint<F: Flash>(
-    _flash: &mut F,
-    _s: &mut impl Sealer,
-) -> Result<Option<(CheckpointHeader, [u8; 32], u8)>, Error> {
-    // Stub: returns a dummy genesis checkpoint for now
-    Ok(Some((
-        CheckpointHeader {
-            magic: crate::config::MAGIC_CKPT,
-            format_version: 1,
-            epoch: 0,
-            seq: 0,
-            seg_seq: 0,
-            write_offset: 0,
-            n_keys: 0,
-            ct_len: 16,
-        },
-        [0u8; 32], // d_ckpt
-        0,         // slot
-    )))
+    flash: &mut F,
+    s: &mut impl Sealer,
+    out_buf: &mut [u8],
+) -> Result<Option<(CheckpointHeader, [u8; 32], u8, usize)>, Error> {
+    let mut best: Option<(CheckpointHeader, [u8; 32], u8, usize)> = None;
+    let mut any_non_empty = false;
+
+    for slot in 0..(CKPT_SLOTS as u8) {
+        let block_addr = (2 + slot as u32) * flash.block_size() as u32;
+        let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
+
+        if flash.read(block_addr, &mut hdr_bytes).is_err() {
+            continue;
+        }
+
+        if hdr_bytes[0] != crate::config::ERASED_BYTE {
+            any_non_empty = true;
+        }
+
+        if let Ok(hdr) = CheckpointHeader::decode(&hdr_bytes) {
+            let ct_len = hdr.ct_len as usize;
+            let total_len = CKPT_HDR_LEN + ct_len;
+            if total_len > out_buf.len() || ct_len < 16 {
+                continue;
+            }
+            if flash
+                .read(
+                    block_addr + CKPT_HDR_LEN as u32,
+                    &mut out_buf[CKPT_HDR_LEN..total_len],
+                )
+                .is_err()
+            {
+                continue;
+            }
+
+            let mut tag = [0u8; 16];
+            tag.copy_from_slice(&out_buf[total_len - 16..total_len]);
+            let plain_len = ct_len - 16;
+
+            if s.open_checkpoint(
+                hdr.epoch,
+                slot,
+                &hdr_bytes,
+                &mut out_buf[CKPT_HDR_LEN..CKPT_HDR_LEN + plain_len],
+                &tag,
+            )
+            .is_ok()
+            {
+                let is_better = match &best {
+                    Some((best_hdr, _, _, _)) => hdr.epoch > best_hdr.epoch,
+                    None => true,
+                };
+                if is_better {
+                    out_buf[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
+                    let d_ckpt = sha256(&out_buf[..total_len]);
+                    best = Some((hdr, d_ckpt, slot, plain_len));
+                }
+            }
+        }
+    }
+
+    if best.is_none() && any_non_empty {
+        return Err(Error::Tampered);
+    }
+
+    Ok(best)
 }
 
 /// Full mount (§3.4.1: the tip check is O(1); the replay is O(Θ) — Thm 4.3).
@@ -178,15 +219,16 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
     flash: &mut F,
     ctr: &mut C,
     s: &mut impl Sealer,
-) -> Result<EngineState, MountError> {
+    out_buf: &mut [u8],
+) -> Result<(EngineState, usize), MountError> {
     if flash.capacity() > (1 << crate::config::OFF_BITS) {
         return Err(MountError::FormatError);
     }
 
     // (a) load newest valid checkpoint: try both slots, verify AEAD, take max epoch.
-    let ckpt_opt = load_best_checkpoint(flash, s)?;
+    let ckpt_opt = load_best_checkpoint(flash, s, out_buf)?;
 
-    let (ckpt, d_ckpt, slot) = match ckpt_opt {
+    let (ckpt, d_ckpt, slot, plain_len) = match ckpt_opt {
         Some(c) => c,
         None => return Err(MountError::FormatError), // Or handle genesis
     };
@@ -201,7 +243,7 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
 
     match ctr.kind() {
         CounterKind::Hardware | CounterKind::BestEffort => {
-            if m + 1 < mc + 1 && m < mc {
+            if m < mc {
                 return Err(MountError::Rollback); // m < MC* => stale epoch
             }
             if m > mc + 1 {
@@ -216,7 +258,7 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         CounterKind::None => { /* G3 unavailable: record degraded mode, no check */ }
     }
 
-    // (c) re-anchor chain from the checkpoint and O(Θ) replay of the tail
+    // (c) re-anchor chain from the checkpoint
     let st = EngineState {
         epoch: ckpt.epoch,
         next_seq: ckpt.seq,
@@ -232,7 +274,5 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         active_ckpt_slot: slot,
     };
 
-    // recover_tail(flash, &mut st)?; // Stubbed: O(Θ) replay of the tail
-
-    Ok(st)
+    Ok((st, plain_len))
 }

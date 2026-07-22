@@ -14,6 +14,8 @@ pub struct CmFields {
     pub seq_max: u64,
     /// Epoch number.
     pub epoch: u64,
+    /// Number of covered data pages by the preceding XOR page.
+    pub xor_pages: u16,
     /// Chain hash.
     pub chi: [u8; 32],
     /// MAC over marker fields.
@@ -33,26 +35,25 @@ pub trait Sealer {
     ) -> Result<(), Error>;
 
     /// Generates a commit marker.
-    fn commit_marker(&mut self, seq_max: u64, epoch: u64, chi: &[u8; 32]) -> [u8; CM_LEN];
+    fn commit_marker(
+        &mut self,
+        seq_max: u64,
+        epoch: u64,
+        xor_pages: u16,
+        chi: &[u8; 32],
+    ) -> [u8; CM_LEN];
     /// Verifies a commit marker.
     fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error>;
-    /// Seals a checkpoint.
-    fn seal_checkpoint(
-        &mut self,
-        epoch: u64,
-        slot: u8,
-        ad: &[u8],
-        plain: &[u8],
-        ct_tag_out: &mut [u8],
-    );
-    /// Opens a checkpoint.
+    /// Seals a checkpoint in-place.
+    fn seal_checkpoint(&mut self, epoch: u64, slot: u8, ad: &[u8], in_out: &mut [u8]) -> [u8; 16];
+    /// Opens a checkpoint in-place.
     fn open_checkpoint(
         &mut self,
         epoch: u64,
         slot: u8,
         ad: &[u8],
-        ct_tag: &[u8],
-        plain_out: &mut [u8],
+        in_out: &mut [u8],
+        tag: &[u8; 16],
     ) -> Result<(), Error>;
     /// Rotates the epoch key.
     fn roll_epoch(&mut self, e: u64);
@@ -134,7 +135,7 @@ impl<'a, F: Flash> Log<'a, F> {
         val: &[u8],
         s: &mut impl Sealer,
         chain: &mut Chain,
-    ) -> Result<u64, Error> {
+    ) -> Result<(u64, u32), Error> {
         if key.len() > MAX_KEY_LEN || val.len() > MAX_VAL_LEN {
             return Err(Error::FormatError);
         }
@@ -151,6 +152,7 @@ impl<'a, F: Flash> Log<'a, F> {
         hdr.nonce[0..8].copy_from_slice(&seq.to_le_bytes());
 
         let total_len = 44 + key.len() + val.len();
+        let offset = self.head.write_offset + self.batch.offset as u32;
         let rec = self.batch.alloc(total_len)?;
 
         let mut hdr_bytes = [0u8; REC_HDR_LEN];
@@ -167,7 +169,7 @@ impl<'a, F: Flash> Log<'a, F> {
         s.seal_record(&hdr_bytes, &kv[..kv_idx], &mut rec[REC_HDR_LEN..]);
         chain.fold(&rec[..total_len]);
 
-        Ok(seq)
+        Ok((seq, offset))
     }
 
     fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
@@ -196,10 +198,10 @@ impl<'a, F: Flash> Log<'a, F> {
         Ok(())
     }
 
-    fn program_xor_parity(&mut self, flash: &mut F) -> Result<(), Error> {
+    fn program_xor_parity(&mut self, flash: &mut F) -> Result<u16, Error> {
         let data = self.batch.data();
         if data.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         let page_size = flash.page_size();
         let num_pages = data.len().div_ceil(page_size);
@@ -215,20 +217,16 @@ impl<'a, F: Flash> Log<'a, F> {
             page_buf[..page_size].fill(0xFF);
             page_buf[..chunk_len].copy_from_slice(&data[chunk_start..chunk_end]);
 
-            for j in 3..page_size {
+            for j in 0..page_size {
                 xor_page[j] ^= page_buf[j];
             }
         }
-
-        // Header
-        xor_page[0] = 0x58; // MAGIC_XOR
-        xor_page[1..3].copy_from_slice(&(num_pages as u16).to_le_bytes());
 
         flash
             .program(self.head.write_offset, &xor_page[..page_size])
             .map_err(|_| Error::Io)?;
         self.head.write_offset += page_size as u32;
-        Ok(())
+        Ok(num_pages as u16)
     }
 
     fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
@@ -256,8 +254,8 @@ impl<'a, F: Flash> Log<'a, F> {
             return Ok(());
         }
         self.program_batch_pages(flash)?;
-        self.program_xor_parity(flash)?;
-        let cm = s.commit_marker(seq_max, epoch, &chain.chi);
+        let xor_pages = self.program_xor_parity(flash)?;
+        let cm = s.commit_marker(seq_max, epoch, xor_pages, &chain.chi);
         self.program_page(flash, &cm)?;
         self.program_page(flash, &cm)?;
         self.batch.clear();

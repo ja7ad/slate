@@ -82,11 +82,12 @@ pub fn recover<F: Flash>(
     s: &mut impl Sealer,
     chain: &mut Chain,
     epoch: u64,
-    mut apply: impl FnMut((u64, u32)),
+    mut apply: impl FnMut(u64, u32, u8, &[u8]),
 ) -> Result<RecoverInfo, Error> {
     let segs = scan_segment_headers(flash)?;
     let mut committed_upto = 0;
     let mut pending = PendingBatch::new();
+    let mut scratch_chain = chain.clone();
 
     let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
     let page_size = flash.page_size() as u32;
@@ -112,70 +113,114 @@ pub fn recover<F: Flash>(
                         break;
                     }
                 }
-                MAGIC_REC => {
-                    let mut hdr_bytes = [0u8; REC_HDR_LEN];
-                    if flash.read(off, &mut hdr_bytes).is_err() {
-                        return Ok(finish_truncate(off, committed_upto));
-                    }
-                    if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
-                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
-                        let mut rec_bytes = [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
-                        if flash.read(off, &mut rec_bytes[..total_len]).is_err() {
-                            return Ok(finish_truncate(off, committed_upto));
-                        }
-
-                        match s.open_record(
-                            &hdr_bytes,
-                            &rec_bytes[REC_HDR_LEN..total_len],
-                            &mut scratch,
-                        ) {
-                            Ok(()) => {
-                                chain.fold(&rec_bytes[..total_len]);
-                                if pending.push(hdr.seq, off).is_err() {
-                                    return Ok(finish_truncate(off, committed_upto));
-                                }
-                            }
-                            Err(_) => {
-                                return Ok(finish_truncate(off, committed_upto));
-                            }
-                        }
-                        off += total_len as u32;
-                    } else {
-                        return Ok(finish_truncate(off, committed_upto));
-                    }
-                }
                 MAGIC_CM => {
                     let mut cm1 = [0u8; CM_LEN];
                     let mut cm2 = [0u8; CM_LEN];
-                    if flash.read(off, &mut cm1).is_err()
-                        || flash.read(off + page_size, &mut cm2).is_err()
-                    {
-                        return Ok(finish_truncate(off, committed_upto));
+                    let r1 = flash.read(off, &mut cm1);
+                    let r2 = flash.read(off + page_size, &mut cm2);
+
+                    let mut cm_valid = Err(Error::FormatError);
+                    if r1.is_ok() {
+                        cm_valid = s.verify_marker(&cm1);
                     }
-                    let cm_valid = s.verify_marker(&cm1).or_else(|_| s.verify_marker(&cm2));
+                    if cm_valid.is_err() && r2.is_ok() {
+                        cm_valid = s.verify_marker(&cm2);
+                    }
                     match cm_valid {
-                        Ok(f)
+                        Ok(f) => {
                             if f.seq_max == pending.last_seq()
-                                && f.chi == chain.chi
-                                && f.epoch == epoch =>
-                        {
-                            let batch = pending.drain();
-                            for &m in batch {
-                                apply(m);
+                                && f.chi == scratch_chain.chi
+                                && f.epoch == epoch
+                            {
+                                *chain = scratch_chain.clone();
+                                let batch = pending.drain();
+                                for &(seq, apply_off) in batch {
+                                    let mut hdr_bytes = [0u8; REC_HDR_LEN];
+                                    if flash.read(apply_off, &mut hdr_bytes).is_ok() {
+                                        if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
+                                            let total_len =
+                                                44 + hdr.klen as usize + hdr.vlen as usize;
+                                            let mut rec_bytes =
+                                                [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
+                                            if flash
+                                                .read(apply_off, &mut rec_bytes[..total_len])
+                                                .is_ok()
+                                            {
+                                                if s.open_record(
+                                                    &hdr_bytes,
+                                                    &rec_bytes[REC_HDR_LEN..total_len],
+                                                    &mut scratch,
+                                                )
+                                                .is_ok()
+                                                {
+                                                    apply(
+                                                        seq,
+                                                        apply_off,
+                                                        hdr.op,
+                                                        &scratch[..hdr.klen as usize],
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                committed_upto = f.seq_max;
+                            } else {
+                                return Ok(finish_truncate(off, committed_upto));
                             }
-                            committed_upto = f.seq_max;
                         }
-                        _ => {
+                        Err(_) => {
                             return Ok(finish_truncate(off, committed_upto));
                         }
                     }
                     off += page_size * 2;
                 }
-                MAGIC_XOR => {
-                    // Skip the XOR parity page.
-                    off += page_size;
-                }
                 _ => {
+                    // Before parsing, if we are at a page boundary, check if this is the XOR page
+                    let rem = off % page_size;
+                    if rem == 0 {
+                        let mut next_cm = [0u8; CM_LEN];
+                        if flash.read(off + page_size, &mut next_cm).is_ok()
+                            && next_cm[0] == MAGIC_CM
+                        {
+                            if s.verify_marker(&next_cm).is_ok() {
+                                // This page is the XOR parity page. Skip it.
+                                off += page_size;
+                                continue;
+                            }
+                        }
+                    }
+
+                    if buf[0] == MAGIC_REC {
+                        let mut hdr_bytes = [0u8; REC_HDR_LEN];
+                        if flash.read(off, &mut hdr_bytes).is_err() {
+                            return Ok(finish_truncate(off, committed_upto));
+                        }
+                        if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
+                            let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                            let mut rec_bytes = [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
+                            if flash.read(off, &mut rec_bytes[..total_len]).is_err() {
+                                return Ok(finish_truncate(off, committed_upto));
+                            }
+
+                            match s.open_record(
+                                &hdr_bytes,
+                                &rec_bytes[REC_HDR_LEN..total_len],
+                                &mut scratch,
+                            ) {
+                                Ok(()) => {
+                                    scratch_chain.fold(&rec_bytes[..total_len]);
+                                    if pending.push(hdr.seq, off).is_err() {
+                                        return Ok(finish_truncate(off, committed_upto));
+                                    }
+                                    off += total_len as u32;
+                                    continue;
+                                }
+                                Err(_) => {}
+                            }
+                        }
+                    }
+
                     return Ok(finish_truncate(off, committed_upto));
                 }
             }
