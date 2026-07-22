@@ -1,4 +1,5 @@
 version: 1
+name: "KV Demo ESP32-C3"
 author: "Slate"
 description: "Verify kv_demo runs on C3 in wokwi"
 steps:
