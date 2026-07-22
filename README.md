@@ -13,7 +13,7 @@ SLATE balances four competing objectives: **ultra-light memory footprint**, **hi
 ## Key Features
 
 - 🔒 **At-Rest Security (G1–G3)**: Per-record ChaCha20-Poly1305 / AES-GCM AEAD encryption, rolling hash-chain tamper-evidence, and epoch-granular hardware monotonic counter rollback protection.
-- ⚡ **Zero-Heap `no_std` Core**: [`slate-core`](crates/slate-core) operates completely allocation-free with bounded, compile-time asserted RAM footprint ($\le 32$–$64\text{ KB}$).
+- ⚡ **Zero-Heap `no_std` Core**: [`slate-core`](crates/slate-core) operates completely allocation-free with bounded, compile-time asserted RAM footprint ($\le 32\text{--}64\text{ KB}$).
 - 🛡️ **Proven Prefix-Durability**: Guaranteed zero acknowledged write loss across arbitrary power failures (Theorem 1).
 - 🧩 **Reed–Solomon Erasure Coding**: Systematic $\mathrm{RS}(n,k)$ over $\mathrm{GF}(2^8)$ repairs flash bit-rot and bad blocks without hot-path write overhead (Theorem 8).
 - 🔋 **Energy-Optimal Commit Scheduling**: Dynamic integer-only $B^\star$ scheduler minimizes wake-up and flash program power (Theorem 9).
