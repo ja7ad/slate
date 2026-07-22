@@ -11,6 +11,7 @@ fn test_kill9_recovery() {
             capacity: 1024 * 1024,
             b_commit: 1, // sync commit
             auto_b: false,
+            staleness_budget_ms: 1000,
             n_keys: 100,
             profile: Profile::Pi,
         };
@@ -47,8 +48,9 @@ fn test_kill9_recovery() {
     // Reopen and verify prefix durability holds (it mounts successfully)
     let opts = Options {
         capacity: 1024 * 1024,
-        b_commit: 1,
+        b_commit: 5,
         auto_b: false,
+        staleness_budget_ms: 1000,
         n_keys: 100,
         profile: Profile::Pi,
     };

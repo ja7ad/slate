@@ -29,11 +29,15 @@ impl RateEst {
     pub fn new() -> Self {
         Self {
             lam_q10: 1024, // Assume 1 op/s initially to prevent zero rate issues
-            last_ms: 0,
+            last_ms: u64::MAX,
         }
     }
 
     pub fn on_op(&mut self, now_ms: u64) {
+        if self.last_ms == u64::MAX {
+            self.last_ms = now_ms;
+            return;
+        }
         let dt = (now_ms.saturating_sub(self.last_ms)).max(1);
         let inst_q10 = (1024 * 1000) / dt; // ops per 1024 s, this interval
         self.lam_q10 = self.lam_q10 - self.lam_q10 / 16 + inst_q10 / 16;
@@ -85,10 +89,16 @@ impl Scheduler {
             self.oldest_pending_ms = now_ms;
         }
         let b = if self.cfg.auto_b {
+            let t_ms = self.cfg.staleness_budget_ms as u64;
+            // c_nj = (A_uj * 1000 * 1024 * 1000000) / (2 * lam_q10 * t_ms^2)
+            // c_nj = (A_uj * 512_000_000_000) / (lam_q10 * t_ms^2)
+            let c_nj = (self.cfg.fixed_cost_uj.saturating_mul(512_000_000_000)) / 
+                       (self.rate.lam_q10.max(1) * t_ms.saturating_mul(t_ms).max(1));
+
             let bs = b_star(
                 self.rate.lam_q10,
                 self.cfg.fixed_cost_uj,
-                self.cfg.holding_nj_per_op_s,
+                c_nj,
             );
             // deadline clamp B ≤ λD (Thm 8.1 constrained case), λD in ops:
             let lam_d = (self.rate.lam_q10 * self.cfg.deadline_ms as u64) / (1024 * 1000);
@@ -100,6 +110,14 @@ impl Scheduler {
         // hard deadline: even if B not reached, no write waits past D (§8.2)
         self.ops_since_commit >= b
             || now_ms.saturating_sub(self.oldest_pending_ms) >= self.cfg.deadline_ms as u64
+    }
+
+    /// Called periodically by a timer. Returns true ⇒ log.commit() now.
+    pub fn poll(&mut self, now_ms: u64) -> bool {
+        if self.ops_since_commit == 0 {
+            return false;
+        }
+        now_ms.saturating_sub(self.oldest_pending_ms) >= self.cfg.deadline_ms as u64
     }
 
     pub fn on_commit(&mut self) {
@@ -151,7 +169,7 @@ mod tests {
         let cfg = SchedCfg {
             auto_b: true,
             fixed_cost_uj: 400,
-            holding_nj_per_op_s: 1000,
+            staleness_budget_ms: 1000,
             deadline_ms: 1000,
             b_min: 1,
             b_max: 128,

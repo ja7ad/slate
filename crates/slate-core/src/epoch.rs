@@ -134,7 +134,8 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
 
     // 2. THEN advance hardware counter to e
     if ctr.kind() != CounterKind::None {
-        ctr.increment().map_err(|_| Error::Io)?;
+        let val = ctr.increment().map_err(|_| Error::CounterExhausted)?;
+        assert_eq!(val, e, "Counter drift detected during seal_epoch");
     }
 
     // 3. open epoch e+1

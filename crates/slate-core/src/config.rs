@@ -44,7 +44,7 @@ pub const EPOCH_ANCHOR_TAG: &[u8] = b"slate/epoch";
 pub struct SchedCfg {
     pub auto_b: bool,
     pub fixed_cost_uj: u64,
-    pub holding_nj_per_op_s: u64,
+    pub staleness_budget_ms: u32,
     pub deadline_ms: u32,
     pub b_min: u32,
     pub b_max: u32,
@@ -58,13 +58,13 @@ pub struct SlateConfig {
     pub counter_budget: u64,
     pub expected_life_ops: u64,
     pub sched: SchedCfg,
-    pub staleness_budget_ms: u32,
 }
 
 #[derive(Debug)]
 pub enum ConfigError {
     CounterBudgetExceeded,
     CapacityTooSmall,
+    InvalidSchedCfg,
 }
 
 impl SlateConfig {
@@ -79,11 +79,11 @@ impl SlateConfig {
         }
 
         if self.sched.auto_b {
-            if self.staleness_budget_ms == 0 {
-                return Err(ConfigError::CapacityTooSmall); // Needs proper error
+            if self.sched.staleness_budget_ms == 0 {
+                return Err(ConfigError::InvalidSchedCfg);
             }
-            if self.sched.deadline_ms < self.staleness_budget_ms {
-                return Err(ConfigError::CapacityTooSmall); // Needs proper error
+            if self.sched.deadline_ms < self.sched.staleness_budget_ms {
+                return Err(ConfigError::InvalidSchedCfg);
             }
         }
         Ok(())
@@ -104,13 +104,12 @@ mod tests {
             sched: SchedCfg {
                 auto_b: true,
                 fixed_cost_uj: 400,
-                holding_nj_per_op_s: 1000,
+                staleness_budget_ms: 1000,
                 deadline_ms: 1000,
                 b_min: 1,
                 b_max: 128,
                 b_commit: 27,
             },
-            staleness_budget_ms: 1000,
         };
         assert!(cfg.validate().is_ok());
 

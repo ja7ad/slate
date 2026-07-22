@@ -11,6 +11,7 @@ fn test_security_mode() {
         capacity: 4096 * 1024,
         b_commit: 9,
         auto_b: false,
+        staleness_budget_ms: 1000,
         n_keys: 100,
         profile: Profile::Pi,
     };

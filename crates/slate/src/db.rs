@@ -29,6 +29,7 @@ pub struct Options {
     pub capacity: u32,
     pub b_commit: u32,
     pub auto_b: bool,
+    pub staleness_budget_ms: u32,
     pub n_keys: usize,
     pub profile: Profile,
 }
@@ -226,7 +227,7 @@ impl Db {
                 Profile::Esp32 => 400,
                 Profile::Pi => 150,
             },
-            holding_nj_per_op_s: 1000, // Derived ideally
+            staleness_budget_ms: opts.staleness_budget_ms,
             deadline_ms: match opts.profile {
                 Profile::Esp32 => 1000,
                 Profile::Pi => 500,
@@ -236,6 +237,7 @@ impl Db {
             b_commit: opts.b_commit,
         };
 
+        let rng_seed = engine_state.epoch.max(1) ^ 42;
         let mut slate = Slate {
             flash,
             counter,
@@ -249,6 +251,7 @@ impl Db {
             sched: Scheduler::new(sched_cfg),
             metrics: Metrics::default(),
             ckpt_buf: ckpt_slice,
+            rng: slate_core::index::XorShift64::new(rng_seed),
         };
 
         if plain_len > 0 {

@@ -22,6 +22,7 @@ pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
     pub sched: crate::sched::Scheduler,
     pub metrics: crate::metrics::Metrics,
     pub ckpt_buf: &'a mut [u8],
+    pub rng: crate::index::XorShift64,
 }
 
 impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
@@ -38,8 +39,29 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
     }
 
     pub fn index_update_offset(&mut self, key: &[u8], new_off: u32) {
-        let mut rng = crate::index::XorShift64::new(42);
-        let _ = self.index.upsert(key, new_off, &mut rng, |_| false); // Ignore kick for now
+        let flash = &mut self.flash;
+        let sealer = &mut self.sealer;
+        let _ = self.index.upsert(key, new_off, &mut self.rng, |cand_off| {
+            let mut hdr_bytes = [0u8; REC_HDR_LEN];
+            if flash.read(cand_off, &mut hdr_bytes).is_err() { return false; }
+            let hdr = match crate::record::RecordHeader::decode(&hdr_bytes) {
+                Ok(h) => h,
+                Err(_) => return false,
+            };
+            if hdr.klen as usize != key.len() { return false; }
+            let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+            // Bound check just in case, though klen/vlen max checks are in decode
+            if total_len > 44 + MAX_KEY_LEN + MAX_VAL_LEN { return false; }
+            
+            let mut rec_bytes = [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
+            if flash.read(cand_off, &mut rec_bytes[..total_len]).is_err() { return false; }
+            
+            let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
+            if sealer.open_record(&hdr_bytes, &rec_bytes[REC_HDR_LEN..total_len], &mut scratch).is_err() {
+                return false;
+            }
+            &scratch[..hdr.klen as usize] == key
+        });
     }
 
     pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {

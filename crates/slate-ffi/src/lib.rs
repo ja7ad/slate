@@ -93,6 +93,7 @@ pub extern "C" fn slate_open(
             capacity: opts_ref.capacity_bytes as u32,
             b_commit: opts_ref.b_commit,
             auto_b: opts_ref.b_commit == 0,
+            staleness_budget_ms: 1000,
             n_keys: opts_ref.max_keys as usize,
             profile: if opts_ref.profile == 0 {
                 Profile::Pi

@@ -13,6 +13,7 @@ fn main() {
             capacity: 4096 * 1024, // 4MB
             b_commit: b,
             auto_b: false,
+            staleness_budget_ms: 1000,
             n_keys: 1000,
             profile: Profile::Pi,
         };

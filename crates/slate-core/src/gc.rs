@@ -105,16 +105,72 @@ pub fn compact_one<
         .min()
         .unwrap_or(u64::MAX);
 
-    // Mock record scan and processing
-    let rec_op = crate::config::OP_PUT; // Mock
-    let rec_seq = 0; // Mock
-    let is_live = true; // Mock
+    // Real record scan
+    let seg_base = victim * crate::config::SEG_BYTES as u32;
+    let page_size = st.flash.page_size() as u32;
+    let mut off = seg_base + page_size; // Skip segment header
 
-    if rec_op == crate::config::OP_PUT && is_live {
-        let new_off = st.append_cold(b"mock_key", b"mock_val", 0)?;
-        st.index_update_offset(b"mock_key", new_off);
-    } else if rec_op == crate::config::OP_DEL && rec_seq > watermark {
-        st.append_cold_tombstone(b"mock_key", 0)?;
+    let mut buf = [0u8; 1];
+    let mut rec_bytes = [0u8; 44 + crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN];
+    let mut scratch = [0u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN];
+
+    while off < seg_base + crate::config::SEG_BYTES as u32 {
+        if st.flash.read(off, &mut buf).is_err() {
+            break;
+        }
+
+        match buf[0] {
+            crate::config::ERASED_BYTE => {
+                let rem = off % page_size;
+                if rem != 0 {
+                    off += page_size - rem;
+                } else {
+                    break;
+                }
+            }
+            crate::config::MAGIC_CM => {
+                off += page_size * 2;
+            }
+            crate::config::MAGIC_XOR => {
+                off += page_size;
+            }
+            crate::config::MAGIC_REC => {
+                let mut hdr_bytes = [0u8; crate::config::REC_HDR_LEN];
+                if st.flash.read(off, &mut hdr_bytes).is_err() {
+                    break;
+                }
+                if let Ok(hdr) = crate::record::RecordHeader::decode(&hdr_bytes) {
+                    let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                    if total_len <= rec_bytes.len() && st.flash.read(off, &mut rec_bytes[..total_len]).is_ok() {
+                        if st.sealer.open_record(&hdr_bytes, &rec_bytes[crate::config::REC_HDR_LEN..total_len], &mut scratch).is_ok() {
+                            let key = &scratch[..hdr.klen as usize];
+                            let val = &scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize];
+
+                            if hdr.op == crate::config::OP_PUT {
+                                let mut is_live = false;
+                                let mut cbuf = crate::index::CandidateBuf::new();
+                                st.index.candidates(key, &mut cbuf);
+                                if cbuf.as_slice().contains(&off) {
+                                    is_live = true;
+                                }
+                                if is_live {
+                                    let new_off = st.append_cold(key, val, 0)?;
+                                    st.index_update_offset(key, new_off);
+                                }
+                            } else if hdr.op == crate::config::OP_DEL && hdr.seq > watermark {
+                                st.append_cold_tombstone(key, 0)?;
+                            }
+                        }
+                    }
+                    off += total_len as u32;
+                } else {
+                    break;
+                }
+            }
+            _ => {
+                break;
+            }
+        }
     }
 
     if st.cold_batch_full() {
@@ -123,8 +179,9 @@ pub fn compact_one<
 
     st.commit()?;
 
-    let block_size = 4096 * 12; // 12 blocks per segment
-    st.flash.erase(victim * block_size).map_err(|_| Error::Io)?;
+    for b in 0..12 {
+        st.flash.erase(seg_base + b * st.flash.block_size() as u32).map_err(|_| Error::Io)?;
+    }
     st.segs.entries[victim as usize].reset_to_free();
     Ok(())
 }
