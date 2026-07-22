@@ -4,3 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+slate-core = { path = "../slate-core", features = ["metrics"] }
+slate-hal = { path = "../slate-hal" }
+slate-crypto = { path = "../slate-crypto" }
+sha2 = "0.11.0"
+hmac = "0.13.0"
