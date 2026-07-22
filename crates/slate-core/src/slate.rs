@@ -49,11 +49,11 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
                 Err(_) => return false,
             };
             if hdr.klen as usize != key.len() { return false; }
-            let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+            let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
             // Bound check just in case, though klen/vlen max checks are in decode
-            if total_len > 44 + MAX_KEY_LEN + MAX_VAL_LEN { return false; }
+            if total_len > crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN { return false; }
             
-            let mut rec_bytes = [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
+            let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN];
             if flash.read(cand_off, &mut rec_bytes[..total_len]).is_err() { return false; }
             
             let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];

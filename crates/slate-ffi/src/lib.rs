@@ -40,13 +40,16 @@ fn set_error(db: *mut slate_db, msg: String) {
     }
 }
 
-fn map_err_string(e: String) -> i32 {
-    if e.contains("Tampered") || e.contains("FormatError") {
-        SLATE_ERR_TAMPERED
-    } else if e.contains("Rollback") {
-        SLATE_ERR_ROLLBACK
-    } else {
-        SLATE_ERR_IO
+fn map_err(e: &slate::DbError) -> i32 {
+    match e {
+        slate::DbError::Core(slate_core::error::Error::Tampered) => SLATE_ERR_TAMPERED,
+        slate::DbError::Core(slate_core::error::Error::Rollback) => SLATE_ERR_ROLLBACK,
+        slate::DbError::Mount(slate_core::epoch::MountError::Tampered) => SLATE_ERR_TAMPERED,
+        slate::DbError::Mount(slate_core::epoch::MountError::Rollback) => SLATE_ERR_ROLLBACK,
+        slate::DbError::Mount(slate_core::epoch::MountError::Io) => SLATE_ERR_IO,
+        slate::DbError::Io(_) => SLATE_ERR_IO,
+        slate::DbError::InvalidArg(_) => SLATE_ERR_INVALID_ARG,
+        _ => SLATE_ERR_INTERNAL,
     }
 }
 
@@ -55,8 +58,8 @@ macro_rules! catch_ffi {
         match catch_unwind(|| $body) {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => {
-                let code = map_err_string(e.clone());
-                set_error($db, e);
+                let code = map_err(&e);
+                set_error($db, format!("{:?}", e));
                 code
             }
             Err(_) => SLATE_ERR_INTERNAL,
@@ -80,7 +83,7 @@ pub extern "C" fn slate_open(
         let path_c = unsafe { CStr::from_ptr(path) };
         let path_str = match path_c.to_str() {
             Ok(s) => s,
-            Err(_) => return Err("Invalid UTF-8 in path".to_string()),
+            Err(_) => return Err(slate::DbError::Config("Invalid UTF-8 in path".to_string())),
         };
 
         let mut root_key = [0u8; 32];
@@ -102,7 +105,10 @@ pub extern "C" fn slate_open(
             },
         };
 
-        let db = Db::open(Path::new(path_str), KeySource::Bytes(root_key), rs_opts)?;
+        let db = match Db::open(Path::new(path_str), KeySource::Bytes(root_key), rs_opts) {
+            Ok(d) => d,
+            Err(e) => return Err(e),
+        };
 
         let slate_db_ptr = Box::into_raw(Box::new(slate_db {
             db,
@@ -110,10 +116,10 @@ pub extern "C" fn slate_open(
         }));
 
         unsafe { *out = slate_db_ptr };
-        Ok(SLATE_OK)
+        Ok::<i32, slate::DbError>(SLATE_OK)
     }) {
         Ok(Ok(code)) => code,
-        Ok(Err(e)) => map_err_string(e),
+        Ok(Err(e)) => map_err(&e),
         Err(_) => SLATE_ERR_INTERNAL,
     }
 }
@@ -168,7 +174,10 @@ pub extern "C" fn slate_get(
 
     catch_ffi!(db, {
         let key_slice = unsafe { std::slice::from_raw_parts(k, klen) };
-        let val_opt = unsafe { (*db).db.get(key_slice) }?;
+        let val_opt = match unsafe { (*db).db.get(key_slice) } {
+            Ok(v) => v,
+            Err(e) => return Err(e),
+        };
 
         match val_opt {
             Some(val) => {
@@ -176,17 +185,17 @@ pub extern "C" fn slate_get(
                 unsafe { *vlen_inout = val.len() };
 
                 if capacity < val.len() {
-                    Ok::<i32, String>(SLATE_ERR_BUFFER_TOO_SMALL)
+                    Ok::<i32, slate::DbError>(SLATE_ERR_BUFFER_TOO_SMALL)
                 } else {
                     if !v_out.is_null() {
                         unsafe {
                             std::ptr::copy_nonoverlapping(val.as_ptr(), v_out, val.len());
                         }
                     }
-                    Ok::<i32, String>(SLATE_OK)
+                    Ok::<i32, slate::DbError>(SLATE_OK)
                 }
             }
-            None => Ok::<i32, String>(SLATE_ERR_NOT_FOUND),
+            None => Ok::<i32, slate::DbError>(SLATE_ERR_NOT_FOUND),
         }
     })
 }

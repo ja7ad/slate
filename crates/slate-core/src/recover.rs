@@ -76,20 +76,50 @@ pub fn scan_segment_headers<F: Flash>(_flash: &mut F) -> Result<[u32; 1], Error>
     Ok([0])
 }
 
+/// Workspace for the recovery process to avoid large stack allocations.
+pub struct RecoverWorkspace {
+    /// Batch of pending sequence numbers.
+    pub pending: PendingBatch,
+    /// Scratch buffer for cryptographic operations.
+    pub scratch: [u8; MAX_KEY_LEN + MAX_VAL_LEN],
+    /// Buffer for reading record bytes.
+    pub rec_bytes: [u8; crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN],
+}
+
+impl RecoverWorkspace {
+    /// Creates a new recovery workspace.
+    pub fn new() -> Self {
+        Self {
+            pending: PendingBatch::new(),
+            scratch: [0u8; MAX_KEY_LEN + MAX_VAL_LEN],
+            rec_bytes: [0u8; crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN],
+        }
+    }
+}
+
+impl Default for RecoverWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Recovers the state from the flash log.
+#[allow(clippy::collapsible_if)]
+#[allow(clippy::single_match)]
 pub fn recover<F: Flash>(
     flash: &mut F,
     s: &mut impl Sealer,
     chain: &mut Chain,
     epoch: u64,
+    workspace: &mut RecoverWorkspace,
     mut apply: impl FnMut(u64, u32, u8, &[u8]),
 ) -> Result<RecoverInfo, Error> {
     let segs = scan_segment_headers(flash)?;
     let mut committed_upto = 0;
-    let mut pending = PendingBatch::new();
+    workspace.pending.count = 0;
+    workspace.pending.last_seq = 0;
     let mut scratch_chain = chain.clone();
 
-    let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
     let page_size = flash.page_size() as u32;
 
     for &seg_addr in &segs {
@@ -128,28 +158,26 @@ pub fn recover<F: Flash>(
                     }
                     match cm_valid {
                         Ok(f) => {
-                            if f.seq_max == pending.last_seq()
+                            if f.seq_max == workspace.pending.last_seq()
                                 && f.chi == scratch_chain.chi
                                 && f.epoch == epoch
                             {
                                 *chain = scratch_chain.clone();
-                                let batch = pending.drain();
+                                let batch = workspace.pending.drain();
                                 for &(seq, apply_off) in batch {
                                     let mut hdr_bytes = [0u8; REC_HDR_LEN];
                                     if flash.read(apply_off, &mut hdr_bytes).is_ok() {
                                         if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
                                             let total_len =
-                                                44 + hdr.klen as usize + hdr.vlen as usize;
-                                            let mut rec_bytes =
-                                                [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
+                                                crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
                                             if flash
-                                                .read(apply_off, &mut rec_bytes[..total_len])
+                                                .read(apply_off, &mut workspace.rec_bytes[..total_len])
                                                 .is_ok()
                                             {
                                                 if s.open_record(
                                                     &hdr_bytes,
-                                                    &rec_bytes[REC_HDR_LEN..total_len],
-                                                    &mut scratch,
+                                                    &workspace.rec_bytes[REC_HDR_LEN..total_len],
+                                                    &mut workspace.scratch,
                                                 )
                                                 .is_ok()
                                                 {
@@ -157,7 +185,7 @@ pub fn recover<F: Flash>(
                                                         seq,
                                                         apply_off,
                                                         hdr.op,
-                                                        &scratch[..hdr.klen as usize],
+                                                        &workspace.scratch[..hdr.klen as usize],
                                                     );
                                                 }
                                             }
@@ -197,20 +225,19 @@ pub fn recover<F: Flash>(
                             return Ok(finish_truncate(off, committed_upto));
                         }
                         if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
-                            let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
-                            let mut rec_bytes = [0u8; 44 + MAX_KEY_LEN + MAX_VAL_LEN];
-                            if flash.read(off, &mut rec_bytes[..total_len]).is_err() {
+                            let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+                            if flash.read(off, &mut workspace.rec_bytes[..total_len]).is_err() {
                                 return Ok(finish_truncate(off, committed_upto));
                             }
 
                             match s.open_record(
                                 &hdr_bytes,
-                                &rec_bytes[REC_HDR_LEN..total_len],
-                                &mut scratch,
+                                &workspace.rec_bytes[REC_HDR_LEN..total_len],
+                                &mut workspace.scratch,
                             ) {
                                 Ok(()) => {
-                                    scratch_chain.fold(&rec_bytes[..total_len]);
-                                    if pending.push(hdr.seq, off).is_err() {
+                                    scratch_chain.fold(&workspace.rec_bytes[..total_len]);
+                                    if workspace.pending.push(hdr.seq, off).is_err() {
                                         return Ok(finish_truncate(off, committed_upto));
                                     }
                                     off += total_len as u32;

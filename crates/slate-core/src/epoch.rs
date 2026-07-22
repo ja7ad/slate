@@ -59,8 +59,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result<(), Error> {
-    // In doc 002, checkpoint area is after superblock. We assume it's at block 2 and 3 for example.
-    let block_addr = (2 + slot as u32) * flash.block_size() as u32;
+    // In doc 002, checkpoint area is after superblock.
+    let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32) * flash.block_size() as u32;
     flash.erase(block_addr).map_err(|_| Error::Io)?;
     // Pad bytes to page size
     let page_size = flash.page_size();
@@ -82,6 +82,7 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
 }
 
 /// EPOCH SEAL — the write-ahead protocol.
+#[allow(clippy::too_many_arguments)]
 pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     st: &mut EngineState,
     flash: &mut F,
@@ -146,6 +147,8 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     Ok(())
 }
 
+/// Helper: Load best checkpoint from flash
+#[allow(clippy::type_complexity)]
 fn load_best_checkpoint<F: Flash>(
     flash: &mut F,
     s: &mut impl Sealer,
@@ -155,7 +158,7 @@ fn load_best_checkpoint<F: Flash>(
     let mut any_non_empty = false;
 
     for slot in 0..(CKPT_SLOTS as u8) {
-        let block_addr = (2 + slot as u32) * flash.block_size() as u32;
+        let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32) * flash.block_size() as u32;
         let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
 
         if flash.read(block_addr, &mut hdr_bytes).is_err() {

@@ -1,6 +1,5 @@
 //! repair
 
-use crate::config::MAGIC_REC;
 use crate::error::Error;
 use slate_hal::Flash;
 

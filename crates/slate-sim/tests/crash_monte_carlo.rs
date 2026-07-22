@@ -65,11 +65,13 @@ fn test_crash_monte_carlo() {
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();
         let mut rec_chain = Chain::default();
+        let mut workspace = slate_core::recover::RecoverWorkspace::new();
         let info = recover(
             &mut flash,
             &mut sealer,
             &mut rec_chain,
             1,
+            &mut workspace,
             |seq, _off, _op, _key| recovered_seqs.push(seq),
         )
         .unwrap();

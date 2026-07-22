@@ -151,7 +151,7 @@ impl<'a, F: Flash> Log<'a, F> {
         };
         hdr.nonce[0..8].copy_from_slice(&seq.to_le_bytes());
 
-        let total_len = 44 + key.len() + val.len();
+        let total_len = crate::config::REC_OVERHEAD + key.len() + val.len();
         let offset = self.head.write_offset + self.batch.offset as u32;
         let rec = self.batch.alloc(total_len)?;
 

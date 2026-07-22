@@ -2,10 +2,7 @@ use slate_core::chain::Chain;
 use slate_core::config::*;
 use slate_core::log::{HeadState, Log};
 use slate_core::recover::recover;
-use slate_sim::{Crash, SimFlash};
-
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use slate_sim::SimFlash;
 
 use slate_crypto::keys::{DeviceKey, KeySet};
 use slate_crypto::sealer::CryptoSealer;
@@ -37,11 +34,14 @@ fn main() {
     log.commit(&mut flash, &mut sealer, &chain, 1, 3).unwrap();
 
     let mut rec_chain = Chain::default();
+    let mut rec_chain = Chain::default();
+    let mut workspace = slate_core::recover::RecoverWorkspace::new();
     let info = recover(
         &mut flash,
         &mut sealer,
         &mut rec_chain,
         1,
+        &mut workspace,
         |seq, off, op, key| {
             println!("Recovered seq: {} off: {}", seq, off);
         },

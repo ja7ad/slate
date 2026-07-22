@@ -14,6 +14,31 @@ use std::sync::Mutex;
 use crate::file_counter::FileCounter;
 use crate::file_flash::FileFlash;
 
+#[derive(Debug)]
+pub enum DbError {
+    Core(slate_core::error::Error),
+    Mount(slate_core::epoch::MountError),
+    Io(std::io::Error),
+    Config(String),
+    InvalidArg(String),
+}
+
+impl From<slate_core::error::Error> for DbError {
+    fn from(e: slate_core::error::Error) -> Self { DbError::Core(e) }
+}
+impl From<slate_core::epoch::MountError> for DbError {
+    fn from(e: slate_core::epoch::MountError) -> Self { DbError::Mount(e) }
+}
+impl From<std::io::Error> for DbError {
+    fn from(e: std::io::Error) -> Self { DbError::Io(e) }
+}
+impl From<String> for DbError {
+    fn from(e: String) -> Self { DbError::Config(e) }
+}
+impl From<&str> for DbError {
+    fn from(e: &str) -> Self { DbError::Config(e.to_string()) }
+}
+
 pub enum KeySource {
     Bytes([u8; 32]),
     File(PathBuf),
@@ -59,54 +84,56 @@ struct Buffers {
     ckpt: *mut [u8],
 }
 
-// SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by OwnedEngine.
+// SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by Db/OwnedEngine.
 unsafe impl Send for Buffers {}
-// SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by OwnedEngine.
 unsafe impl Sync for Buffers {}
+
+impl Drop for Buffers {
+    fn drop(&mut self) {
+        // SAFETY: Pointers were allocated via Box::into_raw in Db::open and never freed elsewhere.
+        unsafe {
+            let _ = Box::from_raw(self.hot);
+            let _ = Box::from_raw(self.cold);
+            let _ = Box::from_raw(self.index);
+            let _ = Box::from_raw(self.ckpt);
+        }
+    }
+}
 
 struct OwnedEngine {
     slate: Slate<'static, FileFlash, FileCounter, CryptoSealer>,
-    bufs: Buffers,
+    #[allow(dead_code)]
+    bufs: Buffers, // Dropped after slate because of declaration order
 }
 
 // SAFETY: OwnedEngine encapsulates exclusively owned data and is protected by Mutex in Db.
 unsafe impl Send for OwnedEngine {}
 
-impl Drop for OwnedEngine {
-    fn drop(&mut self) {
-        // SAFETY: Pointers were allocated via Box::into_raw in Db::open and never freed elsewhere.
-        unsafe {
-            let _ = Box::from_raw(self.bufs.hot);
-            let _ = Box::from_raw(self.bufs.cold);
-            let _ = Box::from_raw(self.bufs.index);
-            let _ = Box::from_raw(self.bufs.ckpt);
-        }
-    }
-}
 
 pub struct Db {
     inner: Mutex<OwnedEngine>,
 }
 
 impl Db {
-    pub fn open(path: &Path, key: KeySource, opts: Options) -> Result<Self, String> {
+    #[allow(clippy::collapsible_if)]
+    pub fn open(path: &Path, key: KeySource, opts: Options) -> Result<Self, DbError> {
         let root_key = match key {
             KeySource::Bytes(k) => k,
             KeySource::File(p) => {
                 let mut k = [0u8; 32];
-                let b = std::fs::read(&p).map_err(|e| e.to_string())?;
+                let b = std::fs::read(&p)?;
                 if b.len() < 32 {
-                    return Err("Key file too short".into());
+                    return Err(DbError::Config("Key file too short".into()));
                 }
                 k.copy_from_slice(&b[0..32]);
                 k
             }
             KeySource::Env(var) => {
                 let mut k = [0u8; 32];
-                let val = std::env::var(var).map_err(|e| e.to_string())?;
+                let val = std::env::var(var).map_err(|e| DbError::Config(e.to_string()))?;
                 let b = val.as_bytes();
                 if b.len() < 32 {
-                    return Err("Env key too short".into());
+                    return Err(DbError::Config("Env key too short".into()));
                 }
                 k.copy_from_slice(&b[0..32]);
                 k
@@ -121,28 +148,26 @@ impl Db {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(flash_path)
-            .map_err(|e| e.to_string())?;
+            .open(flash_path)?;
         let counter_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
-            .open(counter_path)
-            .map_err(|e| e.to_string())?;
+            .open(counter_path)?;
 
         let mut flash =
-            FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| e.to_string())?;
+            FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| DbError::Config(e.to_string()))?;
         let device_key = slate_crypto::keys::DeviceKey(root_key);
         let keyset = slate_crypto::keys::KeySet::derive(&device_key, 1);
         let k_ctr = keyset.k_ctr;
 
         let mut counter =
-            FileCounter::new(counter_file, k_ctr, u64::MAX).map_err(|e| format!("{:?}", e))?;
+            FileCounter::new(counter_file, k_ctr, u64::MAX).map_err(|e| DbError::Config(format!("{:?}", e)))?;
 
         let mut sealer = CryptoSealer::new(keyset);
 
-        let mut ckpt_box = vec![0u8; 65536].into_boxed_slice();
+        let ckpt_box = vec![0u8; 65536].into_boxed_slice();
         let ckpt_ptr = Box::into_raw(ckpt_box);
         let ckpt_slice = unsafe { &mut *ckpt_ptr };
 
@@ -172,11 +197,10 @@ impl Db {
                         0,
                         ckpt_slice,
                         0,
-                    )
-                    .map_err(|e| format!("{:?}", e))?;
+                    )?;
                     (st, 0)
                 }
-                Err(e) => return Err(format!("Mount failed: {:?}", e)),
+                Err(e) => return Err(e.into()),
             };
 
         // Allocate buffers
@@ -263,11 +287,13 @@ impl Db {
 
         let mut index_upsert_error = false;
         let mut rng = slate_core::index::XorShift64::new(42);
+        let mut workspace = Box::new(slate_core::recover::RecoverWorkspace::new());
         slate_core::recover::recover(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
             slate.engine.epoch,
+            &mut workspace,
             |_seq, off, op, key| {
                 if op == slate_core::config::OP_PUT {
                     if slate.index.upsert(key, off, &mut rng, |_| false).is_err() {
@@ -278,7 +304,7 @@ impl Db {
                 }
             },
         )
-        .map_err(|e| format!("{:?}", e))?;
+        .map_err(|e| DbError::Config(format!("{:?}", e)))?;
 
         if index_upsert_error {
             return Err("Index capacity exceeded during recovery".into());
@@ -289,7 +315,10 @@ impl Db {
         })
     }
 
-    pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), String> {
+    pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), DbError> {
+        if key.len() > slate_core::config::MAX_KEY_LEN || val.len() > slate_core::config::MAX_VAL_LEN {
+            return Err(DbError::InvalidArg("key or value too large".into()));
+        }
         let mut inner = self.inner.lock().unwrap();
         let OwnedEngine { slate, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now()
@@ -307,29 +336,34 @@ impl Db {
                 val,
                 &mut slate.sealer,
                 &mut slate.engine.chain,
-            )
-            .map_err(|e| format!("{:?}", e))?;
+            )?;
         slate.engine.next_seq += 1;
         let mut rng = slate_core::index::XorShift64::new(42);
         slate
             .index
-            .upsert(key, offset, &mut rng, |_| false)
-            .map_err(|e| format!("{:?}", e))?;
+            .upsert(key, offset, &mut rng, |_| false)?;
         slate
             .metrics
-            .add_user_bytes((44 + key.len() + val.len()) as u64);
+            .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len() + val.len()) as u64);
         if slate.sched.on_append(now_ms) {
-            slate.commit().map_err(|e| format!("{:?}", e))?;
+            slate.commit()?;
         }
         Ok(())
     }
 
-    pub fn put_durable(&self, key: &[u8], val: &[u8]) -> Result<(), String> {
+    pub fn put_durable(&self, key: &[u8], val: &[u8]) -> Result<(), DbError> {
+        if key.len() > slate_core::config::MAX_KEY_LEN || val.len() > slate_core::config::MAX_VAL_LEN {
+            return Err(DbError::InvalidArg("key or value too large".into()));
+        }
         self.put(key, val)?;
         self.commit()
     }
 
-    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    #[allow(clippy::collapsible_if)]
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, DbError> {
+        if key.len() > slate_core::config::MAX_KEY_LEN {
+            return Err(DbError::InvalidArg("key too large".into()));
+        }
         let mut inner = self.inner.lock().unwrap();
         let mut cbuf = slate_core::index::CandidateBuf::new();
         inner.slate.index.candidates(key, &mut cbuf);
@@ -351,7 +385,7 @@ impl Db {
                         &hot_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
                     );
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
                         if rec_off + total_len <= hot_data.len() {
                             rec_bytes =
                                 Some((hdr_bytes, hot_data[rec_off..rec_off + total_len].to_vec()));
@@ -374,7 +408,7 @@ impl Db {
                         &cold_data[rec_off..rec_off + slate_core::config::REC_HDR_LEN],
                     );
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
                         if rec_off + total_len <= cold_data.len() {
                             rec_bytes =
                                 Some((hdr_bytes, cold_data[rec_off..rec_off + total_len].to_vec()));
@@ -389,7 +423,7 @@ impl Db {
                 let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
                 if inner.slate.flash.read(off, &mut hdr_bytes).is_ok() {
                     if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
-                        let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
+                        let total_len = slate_core::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
                         let mut rb = vec![0u8; total_len];
                         if inner.slate.flash.read(off, &mut rb).is_ok() {
                             rec_bytes = Some((hdr_bytes, rb));
@@ -434,7 +468,10 @@ impl Db {
         Ok(best_val)
     }
 
-    pub fn delete(&self, key: &[u8]) -> Result<(), String> {
+    pub fn delete_durable(&self, key: &[u8]) -> Result<(), DbError> {
+        if key.len() > slate_core::config::MAX_KEY_LEN {
+            return Err(DbError::InvalidArg("key too large".into()));
+        }
         let mut inner = self.inner.lock().unwrap();
         let OwnedEngine { slate, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now()
@@ -452,29 +489,62 @@ impl Db {
                 &[],
                 &mut slate.sealer,
                 &mut slate.engine.chain,
-            )
-            .map_err(|e| format!("{:?}", e))?;
+            )?;
         slate.engine.next_seq += 1;
-        let mut rng = slate_core::index::XorShift64::new(42);
+
         slate.index.remove(key, |_| true);
-        slate.metrics.add_user_bytes((44 + key.len()) as u64);
+        slate.metrics.add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
-            slate.commit().map_err(|e| format!("{:?}", e))?;
+            slate.commit()?;
         }
         Ok(())
     }
 
-    pub fn commit(&self) -> Result<(), String> {
+    pub fn delete(&self, key: &[u8]) -> Result<(), DbError> {
+        if key.len() > slate_core::config::MAX_KEY_LEN {
+            return Err(DbError::InvalidArg("key too large".into()));
+        }
         let mut inner = self.inner.lock().unwrap();
-        inner.slate.commit().map_err(|e| format!("{:?}", e))
+        let OwnedEngine { slate, .. } = &mut *inner;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let seq = slate.engine.next_seq;
+        let _ = slate
+            .log_hot
+            .append(
+                seq,
+                OP_DEL,
+                key,
+                &[],
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            )?;
+        slate.engine.next_seq += 1;
+
+        slate.index.remove(key, |_| true);
+        slate.metrics.add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
+        if slate.sched.on_append(now_ms) {
+            slate.commit()?;
+        }
+        Ok(())
     }
 
-    pub fn compact(&self) -> Result<(), String> {
+    pub fn commit(&self) -> Result<(), DbError> {
         let mut inner = self.inner.lock().unwrap();
-        inner.slate.compact().map_err(|e| format!("{:?}", e))
+        inner.slate.commit()?;
+        Ok(())
     }
 
-    pub fn scrub(&self) -> Result<ScrubReport, String> {
+    pub fn compact(&self) -> Result<(), DbError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.slate.compact()?;
+        Ok(())
+    }
+
+    pub fn scrub(&self) -> Result<ScrubReport, DbError> {
         Ok(ScrubReport {
             errors_found: 0,
             errors_fixed: 0,
