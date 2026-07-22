@@ -19,4 +19,5 @@ fi
 qemu-system-riscv32 -nographic \
     -machine esp32c3 \
     -drive file=$IMAGE,if=mtd,format=raw \
-    -serial pty
+    -serial pty \
+    -monitor none
