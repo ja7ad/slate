@@ -72,8 +72,8 @@ jobs:
         run: cargo install espflash cargo-binutils
       - name: Install Espressif QEMU
         run: |
-          wget https://github.com/espressif/qemu/releases/download/esp-develop-20220919/qemu-riscv32-softmmu-ubuntu-20.04-20220919.tar.bz2
-          tar -xjf qemu-riscv32-softmmu-ubuntu-20.04-20220919.tar.bz2
+          wget https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+          tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           echo "$PWD/qemu/bin" >> $GITHUB_PATH
       - name: Run QEMU Crash Suite (None)
         run: ./targets/esp32/scripts/qemu_crash.sh --iters 25 --attack none
