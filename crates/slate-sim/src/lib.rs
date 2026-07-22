@@ -11,6 +11,8 @@ pub struct Stats {
     pub programs: u64,
     pub erases: u64,
     pub bytes_programmed: u64,
+    pub user_bytes: u64,
+    pub gc_bytes: u64,
     pub wakes: u64,
 }
 
@@ -41,6 +43,7 @@ pub struct SimFlash {
     pub bad_blocks: BTreeSet<u32>,
     pub power: PowerModel,
     pub stats: Stats,
+    pub is_gc_write: bool,
     page_size: usize,
     block_size: usize,
 }
@@ -57,6 +60,7 @@ impl SimFlash {
                 crash: Crash::None,
             },
             stats: Stats::default(),
+            is_gc_write: false,
             page_size,
             block_size,
         }
@@ -125,6 +129,11 @@ impl Flash for SimFlash {
 
         self.stats.programs += 1;
         self.stats.bytes_programmed += bytes_to_write as u64;
+        if self.is_gc_write {
+            self.stats.gc_bytes += bytes_to_write as u64;
+        } else {
+            self.stats.user_bytes += bytes_to_write as u64;
+        }
 
         if crash_byte.is_some() {
             return Err(SimFlashError::PowerLoss);
