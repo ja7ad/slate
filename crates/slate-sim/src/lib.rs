@@ -3,6 +3,8 @@
 #![allow(clippy::needless_range_loop)]
 #![allow(clippy::collapsible_if)]
 
+pub mod power;
+
 use slate_hal::{CounterKind, Flash, MonotonicCounter};
 use std::collections::BTreeSet;
 

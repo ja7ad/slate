@@ -1,8 +1,24 @@
 use slate_hal::{CounterKind, MonotonicCounter};
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd;
 use hmac::{Hmac, Mac, KeyInit};
 use sha2::Sha256;
+
+#[cfg(target_os = "macos")]
+fn flush_durable(f: &File) -> std::io::Result<()> {
+    let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) };
+    if rc == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn flush_durable(f: &File) -> std::io::Result<()> {
+    f.sync_data()
+}
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -52,7 +68,7 @@ impl FileCounter {
             (Ok(a), Ok(b)) => Ok(a.max(b)),
             (Ok(a), Err(_)) => Ok(a),
             (Err(_), Ok(b)) => Ok(b),
-            (Err(_), Err(_)) => Ok(0), // Both invalid means 0 or degraded. Return 0.
+            (Err(e), Err(_)) => Err(e),
         }
     }
 
@@ -85,7 +101,7 @@ impl FileCounter {
         buf[8..40].copy_from_slice(&tag);
         
         self.file.write_all_at(&buf, idx * SLOT_SIZE as u64)?;
-        self.file.sync_data()?;
+        flush_durable(&self.file)?;
         Ok(())
     }
 }

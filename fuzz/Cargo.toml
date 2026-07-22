@@ -1,0 +1,36 @@
+[package]
+name = "slate-fuzz"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+slate-core = { path = "../crates/slate-core" }
+
+[[bin]]
+name = "fuzz_record_decode"
+path = "src/bin/fuzz_record_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_ckpt_decode"
+path = "src/bin/fuzz_ckpt_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_marker_decode"
+path = "src/bin/fuzz_marker_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_recover"
+path = "src/bin/fuzz_recover.rs"
+test = false
+doc = false

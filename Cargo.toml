@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/*",
+    "fuzz",
 ]
 exclude = [
     "targets/esp32",
@@ -10,6 +11,9 @@ resolver = "2"
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+description = "A secure, log-structured, authenticated, tamper-evident key-value engine for edge devices"
+license = "Apache-2.0"
+repository = "https://github.com/javad/slate"
 
 [workspace.lints.clippy]
 all = "deny"

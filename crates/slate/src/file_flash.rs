@@ -1,6 +1,22 @@
 use slate_hal::Flash;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+use std::os::unix::io::AsRawFd;
+
+#[cfg(target_os = "macos")]
+fn flush_durable(f: &File) -> std::io::Result<()> {
+    let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) };
+    if rc == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn flush_durable(f: &File) -> std::io::Result<()> {
+    f.sync_data()
+}
 
 #[derive(Debug)]
 pub enum FileFlashError {
@@ -31,7 +47,7 @@ impl FileFlash {
             // Fill with 0xFF if new
             let ff = vec![0xFF; capacity as usize];
             file.write_all_at(&ff, 0)?;
-            file.sync_data()?;
+            flush_durable(&file)?;
         }
         Ok(Self {
             file,
@@ -84,7 +100,7 @@ impl Flash for FileFlash {
 
         // Write and sync
         self.file.write_all_at(buf, addr as u64)?;
-        self.file.sync_data()?;
+        flush_durable(&self.file)?;
         Ok(())
     }
 
@@ -99,7 +115,7 @@ impl Flash for FileFlash {
 
         let ff = vec![0xFF; self.block_size];
         self.file.write_all_at(&ff, block_addr as u64)?;
-        self.file.sync_data()?;
+        flush_durable(&self.file)?;
         Ok(())
     }
 }

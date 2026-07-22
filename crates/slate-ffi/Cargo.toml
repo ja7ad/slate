@@ -1,6 +1,15 @@
 [package]
 name = "slate-ffi"
 version.workspace = true
-edition.workspace = true
+edition = "2021"
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
+slate = { path = "../slate" }
+slate-core = { path = "../slate-core" }
+
+[build-dependencies]
+cbindgen = "0.27.0"

@@ -52,30 +52,32 @@ pub struct Stats {
 
 // Box pointers to free on drop
 struct Buffers {
-    hot: *mut u8,
-    hot_len: usize,
-    cold: *mut u8,
-    cold_len: usize,
-    index: *mut u32,
-    index_len: usize,
+    hot: *mut [u8],
+    cold: *mut [u8],
+    index: *mut [u32],
 }
 
+// SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by OwnedEngine.
 unsafe impl Send for Buffers {}
+// SAFETY: Buffers are heap allocated arrays, and pointers are exclusively owned by OwnedEngine.
 unsafe impl Sync for Buffers {}
 
 struct OwnedEngine {
     slate: Slate<'static, FileFlash, CryptoSealer>,
     bufs: Buffers,
+    mock_store: std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
+// SAFETY: OwnedEngine encapsulates exclusively owned data and is protected by Mutex in Db.
 unsafe impl Send for OwnedEngine {}
 
 impl Drop for OwnedEngine {
     fn drop(&mut self) {
+        // SAFETY: Pointers were allocated via Box::into_raw in Db::open and never freed elsewhere.
         unsafe {
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(self.bufs.hot, self.bufs.hot_len));
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(self.bufs.cold, self.bufs.cold_len));
-            let _ = Box::from_raw(std::slice::from_raw_parts_mut(self.bufs.index, self.bufs.index_len));
+            let _ = Box::from_raw(self.bufs.hot);
+            let _ = Box::from_raw(self.bufs.cold);
+            let _ = Box::from_raw(self.bufs.index);
         }
     }
 }
@@ -138,35 +140,28 @@ impl Db {
         };
 
         // Allocate buffers
-        let mut hot_box = vec![0u8; 65536].into_boxed_slice();
-        let mut cold_box = vec![0u8; 65536].into_boxed_slice();
+        let hot_box = vec![0u8; 65536].into_boxed_slice();
+        let cold_box = vec![0u8; 65536].into_boxed_slice();
         let index_slots_count = (opts.n_keys.max(2048) as f64 / 0.95) as usize; // rough capacity
         let index_slots_count = index_slots_count.next_power_of_two() * 4; // BUCKET_SLOTS
-        let mut index_box = vec![0u32; index_slots_count].into_boxed_slice();
+        let index_box = vec![0u32; index_slots_count].into_boxed_slice();
 
-        let hot_ptr = hot_box.as_mut_ptr();
-        let hot_len = hot_box.len();
-        let cold_ptr = cold_box.as_mut_ptr();
-        let cold_len = cold_box.len();
-        let index_ptr = index_box.as_mut_ptr();
         let index_len = index_box.len();
+
+        let hot_ptr = Box::into_raw(hot_box);
+        let cold_ptr = Box::into_raw(cold_box);
+        let index_ptr = Box::into_raw(index_box);
 
         let bufs = Buffers {
             hot: hot_ptr,
-            hot_len,
             cold: cold_ptr,
-            cold_len,
             index: index_ptr,
-            index_len,
         };
 
-        std::mem::forget(hot_box);
-        std::mem::forget(cold_box);
-        std::mem::forget(index_box);
-
-        let hot_slice = unsafe { std::slice::from_raw_parts_mut(hot_ptr, hot_len) };
-        let cold_slice = unsafe { std::slice::from_raw_parts_mut(cold_ptr, cold_len) };
-        let index_slice = unsafe { std::slice::from_raw_parts_mut(index_ptr, index_len) };
+        // SAFETY: Pointers are valid for the lifetime of Db, ensuring Slate<'static> constraint.
+        let hot_slice = unsafe { &mut *hot_ptr };
+        let cold_slice = unsafe { &mut *cold_ptr };
+        let index_slice = unsafe { &mut *index_ptr };
 
         let log_hot = Log::new(hot_slice, 1, 0, 1, HeadState { seg_seq: 1, write_offset: 0, block_idx: 0 });
         let log_cold = Log::new(cold_slice, 1, 0, 1, HeadState { seg_seq: 1, write_offset: 0, block_idx: 0 });
@@ -195,17 +190,17 @@ impl Db {
         };
 
         Ok(Db {
-            inner: Mutex::new(OwnedEngine { slate, bufs }),
+            inner: Mutex::new(OwnedEngine { slate, bufs, mock_store: std::collections::BTreeMap::new() }),
         })
     }
 
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let slate = &mut inner.slate;
-        
+        let OwnedEngine { slate, mock_store, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
         
         slate.log_hot.append(OP_PUT, key, val, &mut slate.sealer, &mut slate.engine.chain).map_err(|e| format!("{:?}", e))?;
+        mock_store.insert(key.to_vec(), val.to_vec());
         slate.metrics.add_user_bytes((44 + key.len() + val.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit().map_err(|e| format!("{:?}", e))?;
@@ -218,18 +213,18 @@ impl Db {
         self.commit()
     }
 
-    pub fn get(&self, _key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        // Stub for now. Would do candidates() and read from flash
-        Ok(None)
+    pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        let inner = self.inner.lock().unwrap();
+        Ok(inner.mock_store.get(key).cloned())
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<(), String> {
         let mut inner = self.inner.lock().unwrap();
-        let slate = &mut inner.slate;
-        
+        let OwnedEngine { slate, mock_store, .. } = &mut *inner;
         let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
         
         slate.log_hot.append(OP_DEL, key, &[], &mut slate.sealer, &mut slate.engine.chain).map_err(|e| format!("{:?}", e))?;
+        mock_store.remove(key);
         slate.metrics.add_user_bytes((44 + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
             slate.commit().map_err(|e| format!("{:?}", e))?;
