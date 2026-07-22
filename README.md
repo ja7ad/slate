@@ -32,6 +32,7 @@ slate/
 │   ├── slate-erasure/          # Reed–Solomon RS(n,k) erasure coder (no_std)
 │   ├── slate-hal/              # Hardware Abstraction Layer traits (no_std)
 │   ├── slate/                  # std wrapper & POSIX FileFlash engine
+│   ├── slate-cli/              # CLI binary utility (put, get, del, stats)
 │   ├── slate-ffi/              # C ABI bindings (cbindgen header generation)
 │   └── slate-sim/              # Deterministic crash-injection simulator
 ├── targets/
