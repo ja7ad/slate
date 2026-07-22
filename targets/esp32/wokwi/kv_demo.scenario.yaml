@@ -17,3 +17,8 @@ steps:
   - wait-serial: "slate> "
   - write-serial: "commit\n"
   - wait-serial: "ack 1"
+  - wait-serial: "slate> "
+  - write-serial: "del a\n"
+  - wait-serial: "slate> "
+  - write-serial: "commit\n"
+  - wait-serial: "ack 2"
