@@ -16,6 +16,7 @@ fn main() {
             staleness_budget_ms: 1000,
             n_keys: 1000,
             profile: Profile::Pi,
+            durability: slate::file_flash::Durability::OsCache, // os-cache documented as benchmark-only
         };
 
         let path = path.join(format!("db_b{}", b));

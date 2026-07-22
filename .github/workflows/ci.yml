@@ -60,3 +60,41 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal -c miri
       - run: rustup default nightly
       - run: cargo miri test -p slate-core
+
+  qemu-sim:
+    name: QEMU Crash Simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
+      - name: Install espflash
+        run: cargo install espflash cargo-binutils
+      - name: Install Espressif QEMU
+        run: |
+          wget https://github.com/espressif/qemu/releases/download/esp-develop-20220919/qemu-riscv32-softmmu-ubuntu-20.04-20220919.tar.bz2
+          tar -xjf qemu-riscv32-softmmu-ubuntu-20.04-20220919.tar.bz2
+          echo "$PWD/qemu/bin" >> $GITHUB_PATH
+      - name: Run QEMU Crash Suite (None)
+        run: ./targets/esp32/scripts/qemu_crash.sh --iters 25 --attack none
+      - name: Run QEMU Crash Suite (Rollback)
+        run: ./targets/esp32/scripts/qemu_crash.sh --iters 2 --attack rollback
+      - name: Run QEMU Crash Suite (Tamper)
+        run: ./targets/esp32/scripts/qemu_crash.sh --iters 2 --attack tamper
+
+  wokwi-sim:
+    name: Wokwi Simulator
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
+      - name: Install Wokwi CLI
+        run: curl -L https://wokwi.com/ci/install.sh | sh
+      - name: Run Wokwi scenario
+        run: |
+          cd targets/esp32
+          cargo build --release --no-default-features --features chip-esp32c3,counter-flash --bin kv_demo --target riscv32imc-unknown-none-elf
+          wokwi-cli --timeout 60000 --scenario wokwi/kv_demo.scenario.yaml .
+        env:
+          WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN }}

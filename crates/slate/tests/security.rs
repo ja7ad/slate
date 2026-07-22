@@ -14,6 +14,7 @@ fn test_security_mode() {
         staleness_budget_ms: 1000,
         n_keys: 100,
         profile: Profile::Pi,
+        durability: slate::file_flash::Durability::Full,
     };
 
     let db = Db::open(path, KeySource::Bytes([0x42; 32]), opts).unwrap();

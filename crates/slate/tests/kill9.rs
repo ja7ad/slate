@@ -14,6 +14,7 @@ fn test_kill9_recovery() {
             staleness_budget_ms: 1000,
             n_keys: 100,
             profile: Profile::Pi,
+            durability: slate::file_flash::Durability::Full,
         };
         let db = Db::open(path, KeySource::Bytes([0x42; 32]), opts).unwrap();
         for i in 0..10000 {
@@ -53,6 +54,7 @@ fn test_kill9_recovery() {
         staleness_budget_ms: 1000,
         n_keys: 100,
         profile: Profile::Pi,
+        durability: slate::file_flash::Durability::Full,
     };
     let db = Db::open(path, KeySource::Bytes([0x42; 32]), opts);
     assert!(db.is_ok(), "Failed to recover after kill -9");

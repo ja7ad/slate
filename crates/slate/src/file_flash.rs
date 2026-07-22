@@ -3,18 +3,31 @@ use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    Full,
+    OsCache,
+}
+
 #[cfg(target_os = "macos")]
-fn flush_durable(f: &File) -> std::io::Result<()> {
-    let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) };
-    if rc == -1 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+fn flush_durable(f: &File, durability: Durability) -> std::io::Result<()> {
+    match durability {
+        Durability::Full => {
+            // SAFETY-equivalent of §2.3(2) ordering on Darwin: fsync alone may leave
+            // writes in the drive cache; F_FULLFSYNC forces them to stable media.
+            let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) };
+            if rc == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        }
+        Durability::OsCache => f.sync_data(),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn flush_durable(f: &File) -> std::io::Result<()> {
+fn flush_durable(f: &File, _durability: Durability) -> std::io::Result<()> {
     f.sync_data()
 }
 
@@ -37,6 +50,7 @@ pub struct FileFlash {
     capacity: u32,
     page_size: usize,
     block_size: usize,
+    durability: Durability,
 }
 
 impl FileFlash {
@@ -45,6 +59,7 @@ impl FileFlash {
         capacity: u32,
         page_size: usize,
         block_size: usize,
+        durability: Durability,
     ) -> Result<Self, std::io::Error> {
         let meta = file.metadata()?;
         if meta.len() != capacity as u64 {
@@ -52,13 +67,14 @@ impl FileFlash {
             // Fill with 0xFF if new
             let ff = vec![0xFF; capacity as usize];
             file.write_all_at(&ff, 0)?;
-            flush_durable(&file)?;
+            flush_durable(&file, durability)?;
         }
         Ok(Self {
             file,
             capacity,
             page_size,
             block_size,
+            durability,
         })
     }
 }
@@ -105,7 +121,7 @@ impl Flash for FileFlash {
 
         // Write and sync
         self.file.write_all_at(buf, addr as u64)?;
-        flush_durable(&self.file)?;
+        flush_durable(&self.file, self.durability)?;
         Ok(())
     }
 
@@ -120,7 +136,7 @@ impl Flash for FileFlash {
 
         let ff = vec![0xFF; self.block_size];
         self.file.write_all_at(&ff, block_addr as u64)?;
-        flush_durable(&self.file)?;
+        flush_durable(&self.file, self.durability)?;
         Ok(())
     }
 }

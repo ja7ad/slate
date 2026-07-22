@@ -34,6 +34,7 @@ fn main() -> ! {
     let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
     
+    let mut mount_status = "OK";
     let (engine_state, _plain_len) = match slate_core::epoch::mount(
         &mut flash,
         &mut counter,
@@ -41,7 +42,36 @@ fn main() -> ! {
         unsafe { &mut CKPT_BUF },
     ) {
         Ok((st, len)) => (st, len),
+        Err(slate_core::epoch::MountError::Tampered) => {
+            mount_status = "Tampered";
+            let st = slate_core::epoch::EngineState {
+                epoch: 1,
+                next_seq: 1,
+                acked_seq: 0,
+                d_ckpt: [0u8; 32],
+                chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                records_in_epoch: 0,
+                security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                active_ckpt_slot: 0,
+            };
+            (st, 0)
+        }
+        Err(slate_core::epoch::MountError::Rollback) => {
+            mount_status = "Rollback";
+            let st = slate_core::epoch::EngineState {
+                epoch: 1,
+                next_seq: 1,
+                acked_seq: 0,
+                d_ckpt: [0u8; 32],
+                chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                records_in_epoch: 0,
+                security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                active_ckpt_slot: 0,
+            };
+            (st, 0)
+        }
         Err(_) => {
+            mount_status = "Format";
             let st = slate_core::epoch::EngineState {
                 epoch: 1,
                 next_seq: 1,
@@ -95,7 +125,7 @@ fn main() -> ! {
             if ch == b'\n' || ch == b'\r' {
                 if line_idx > 0 {
                     if let Ok(s) = core::str::from_utf8(&line_buf[..line_idx]) {
-                        handle_cmd(&mut slate, s);
+                        handle_cmd(&mut slate, s, mount_status);
                     }
                     line_idx = 0;
                 }
@@ -109,7 +139,7 @@ fn main() -> ! {
     }
 }
 
-fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
+fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str, mount_status: &str)
 where
     F: slate_hal::Flash,
     C: slate_hal::MonotonicCounter,
@@ -187,14 +217,23 @@ where
         }
         Some("commit") => {
             if slate.commit().is_ok() {
-                let ack_seq = slate.engine.next_seq.saturating_sub(1);
+                let ack_seq = slate.engine.acked_seq;
                 println!("ack {}", ack_seq);
             } else {
                 println!("err");
             }
         }
         Some("stats") => {
-            println!("stats: commits=0 wakes=0");
+            #[cfg(feature = "slate_core/metrics")]
+            {
+                let m = &slate.metrics;
+                println!("stats: commits={} wakes={} user_bytes={} gc_bytes={} parity_bytes={} ckpt_bytes={} erases={}",
+                    m.commits, m.wakes, m.user_bytes, m.gc_bytes, m.parity_bytes, m.ckpt_bytes, m.erases);
+            }
+            #[cfg(not(feature = "slate_core/metrics"))]
+            {
+                println!("stats: commits=0 wakes=0");
+            }
         }
         Some("mode") => {
             match slate.counter.kind() {
@@ -204,7 +243,7 @@ where
             }
         }
         Some("selftest") => {
-            println!("OK");
+            println!("{}", mount_status);
         }
         Some("format") => {
             println!("err");

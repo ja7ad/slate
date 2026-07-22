@@ -57,6 +57,7 @@ pub struct Options {
     pub staleness_budget_ms: u32,
     pub n_keys: usize,
     pub profile: Profile,
+    pub durability: crate::file_flash::Durability,
 }
 
 pub struct ScrubReport {
@@ -157,7 +158,7 @@ impl Db {
             .open(counter_path)?;
 
         let mut flash =
-            FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| DbError::Config(e.to_string()))?;
+            FileFlash::new(flash_file, opts.capacity, 256, 4096, opts.durability).map_err(|e| DbError::Config(e.to_string()))?;
         let device_key = slate_crypto::keys::DeviceKey(root_key);
         let keyset = slate_crypto::keys::KeySet::derive(&device_key, 1);
         let k_ctr = keyset.k_ctr;

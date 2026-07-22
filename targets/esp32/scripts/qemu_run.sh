@@ -13,7 +13,7 @@ IMAGE="flash.img"
 if [ "${1:-}" == "--fresh" ] || [ ! -f "$IMAGE" ]; then
     echo "Creating fresh $IMAGE"
     # Needs espflash installed: cargo install espflash
-    espflash save-image --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/$BIN $IMAGE
+    espflash save-image --ignore-app-descriptor --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/$BIN $IMAGE
 fi
 
 qemu-system-riscv32 -nographic \
