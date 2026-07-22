@@ -1,4 +1,3 @@
 [wokwi]
 version = 1
 elf = "../target/riscv32imc-unknown-none-elf/release/kv_demo"
-firmware = "../scripts/flash.img"
