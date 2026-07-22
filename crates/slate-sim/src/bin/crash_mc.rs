@@ -1,4 +1,4 @@
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{rngs::StdRng, Rng, SeedableRng};
 use slate_sim::{Crash, SimCounter, SimFlash};
 
 fn run_crash_mc(trials: usize, stale_trials: usize) {

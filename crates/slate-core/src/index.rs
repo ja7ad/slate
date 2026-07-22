@@ -82,7 +82,11 @@ pub fn h64(key: &[u8]) -> u64 {
 #[inline]
 pub fn fingerprint(key: &[u8]) -> u8 {
     let f = (h64(key) >> 56) as u8;
-    if f == 0 { 1 } else { f }
+    if f == 0 {
+        1
+    } else {
+        f
+    }
 }
 
 /// Returns the primary bucket index.

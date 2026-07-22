@@ -2,7 +2,7 @@
 #![allow(missing_docs)]
 
 use crate::chain::Chain;
-use crate::checkpoint::{CKPT_HDR_LEN, CheckpointHeader};
+use crate::checkpoint::{CheckpointHeader, CKPT_HDR_LEN};
 use crate::config::CKPT_SLOTS;
 use crate::error::Error;
 use crate::log::Sealer;

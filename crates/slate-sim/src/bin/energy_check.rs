@@ -1,4 +1,4 @@
-use slate_sim::power::{PowerModel, Stats, report};
+use slate_sim::power::{report, PowerModel, Stats};
 
 fn simulate_workload(b: u64) -> Stats {
     // A simplified model of the workload over e.g. 1000 ops

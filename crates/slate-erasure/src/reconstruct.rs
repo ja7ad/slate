@@ -2,7 +2,7 @@
 
 use crate::gf::gf_mul;
 use crate::matrix::{cauchy_row, gf_matrix_invert};
-use crate::{PAGE_SIZE, RS_K, RS_M, RS_N, TooManyErasures};
+use crate::{TooManyErasures, PAGE_SIZE, RS_K, RS_M, RS_N};
 
 /// Bitset of erased blocks.
 #[derive(Clone, Default)]

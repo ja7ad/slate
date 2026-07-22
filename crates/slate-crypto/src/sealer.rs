@@ -3,8 +3,8 @@
 
 use crate::keys::KeySet;
 use chacha20poly1305::{
-    ChaCha20Poly1305,
     aead::{AeadInPlace, KeyInit},
+    ChaCha20Poly1305,
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;

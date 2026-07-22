@@ -1,4 +1,4 @@
-use slate_core::config::{OP_DEL, OP_PUT, SchedCfg};
+use slate_core::config::{SchedCfg, OP_DEL, OP_PUT};
 use slate_core::epoch::{EngineState, MountError, SecurityMode};
 use slate_core::gc::SegTable;
 use slate_core::index::Index;
