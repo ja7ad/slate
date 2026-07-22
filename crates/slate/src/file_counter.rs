@@ -3,6 +3,7 @@ use sha2::Sha256;
 use slate_hal::{CounterKind, MonotonicCounter};
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+#[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 
 #[cfg(target_os = "macos")]

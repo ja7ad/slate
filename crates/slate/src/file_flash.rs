@@ -1,6 +1,7 @@
 use slate_hal::Flash;
 use std::fs::File;
 use std::os::unix::fs::FileExt;
+#[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
