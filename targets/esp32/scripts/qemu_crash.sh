@@ -41,7 +41,13 @@ for i in $(seq 1 $ITERS); do
     
     if [ "$i" -eq 1 ]; then
         # On first iteration, just wait for prompt and save old image for rollback
-        python3 ./scripts/serial_drive.py --port "$PTY" > drive.log 2>&1
+        if ! python3 ./scripts/serial_drive.py --port "$PTY" > drive.log 2>&1; then
+            echo "serial_drive.py failed on iteration 1!"
+            cat drive.log
+            cat qemu.log
+            kill -9 $QEMU_PID || true
+            exit 1
+        fi
         cp flash.img flash_old.img
     fi
 

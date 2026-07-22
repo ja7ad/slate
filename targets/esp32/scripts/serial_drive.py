@@ -4,7 +4,7 @@ import serial
 import time
 import argparse
 
-def expect(ser, text, timeout=5.0):
+def expect(ser, text, timeout=60.0):
     start = time.time()
     buf = ""
     while time.time() - start < timeout:
