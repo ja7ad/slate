@@ -26,7 +26,7 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
 
-    let mut flash = EspFlash::new(0x10000, 4096 * 128, peripherals.FLASH);
+    let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
     let mut counter = EspCounter::new();
     
     let dev_key = slate_crypto::keys::DeviceKey([0u8; 32]);
