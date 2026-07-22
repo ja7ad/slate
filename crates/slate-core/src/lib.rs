@@ -13,4 +13,5 @@ pub mod index;
 pub mod log;
 pub mod record;
 pub mod recover;
+pub mod repair;
 pub mod segment;

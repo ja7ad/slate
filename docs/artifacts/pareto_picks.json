@@ -1,0 +1,34 @@
+{
+  "esp32": {
+    "B": 27,
+    "m": 4,
+    "f": 8,
+    "u": 0.5,
+    "latency_ms": 270.0,
+    "energy_mJ": 0.6,
+    "ram_KB": 30.84,
+    "durability": 9.7,
+    "Ploss": 1.891138881933026e-10,
+    "space_overhead": 1.0,
+    "WA": 2.0,
+    "lifetime_log10writes": 7.6,
+    "lifetime_writes": 40000000.0
+  },
+  "pi": {
+    "B": 9,
+    "m": 4,
+    "f": 8,
+    "u": 0.5,
+    "latency_ms": 90.0,
+    "energy_mJ": 0.934,
+    "ram_KB": 30.84,
+    "durability": 9.7,
+    "Ploss": 1.891138881933026e-10,
+    "space_overhead": 1.0,
+    "WA": 2.0,
+    "lifetime_log10writes": 7.6,
+    "lifetime_writes": 40000000.0
+  },
+  "n_pareto": 5000,
+  "n_total": 12000
+}

@@ -162,6 +162,10 @@ pub fn recover<F: Flash>(
                     }
                     off += page_size * 2;
                 }
+                MAGIC_XOR => {
+                    // Skip the XOR parity page.
+                    off += page_size;
+                }
                 _ => {
                     return Ok(finish_truncate(off, committed_upto));
                 }

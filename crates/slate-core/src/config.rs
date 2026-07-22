@@ -1,9 +1,14 @@
 //! config
 #![allow(missing_docs)]
 
-pub const MAGIC_REC: u8 = 0xA5;
-pub const MAGIC_CM: u8 = 0xC3;
+/// Magic byte for a record header.
+pub const MAGIC_REC: u8 = 0x5A;
+/// Magic byte for a commit marker.
+pub const MAGIC_CM: u8 = 0x5C;
+/// Magic byte for a segment header.
 pub const MAGIC_SEG: u8 = 0x51;
+/// Magic byte for XOR head page.
+pub const MAGIC_XOR: u8 = 0x58;
 pub const OP_PUT: u8 = 0x00;
 pub const OP_DEL: u8 = 0x01;
 pub const REC_HDR_LEN: usize = 28;

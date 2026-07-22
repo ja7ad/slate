@@ -201,8 +201,38 @@ impl<'a, F: Flash> Log<'a, F> {
         Ok(())
     }
 
-    fn program_xor_parity(&mut self, _flash: &mut F) -> Result<(), Error> {
-        // Doc 006 stub: skip
+    fn program_xor_parity(&mut self, flash: &mut F) -> Result<(), Error> {
+        let data = self.batch.data();
+        if data.is_empty() {
+            return Ok(());
+        }
+        let page_size = flash.page_size();
+        let num_pages = data.len().div_ceil(page_size);
+        
+        let mut xor_page = [0u8; 512];
+        let mut page_buf = [0xFF; 512];
+        
+        for i in 0..num_pages {
+            let chunk_start = i * page_size;
+            let chunk_end = core::cmp::min(chunk_start + page_size, data.len());
+            let chunk_len = chunk_end - chunk_start;
+            
+            page_buf[..page_size].fill(0xFF);
+            page_buf[..chunk_len].copy_from_slice(&data[chunk_start..chunk_end]);
+            
+            for j in 3..page_size {
+                xor_page[j] ^= page_buf[j];
+            }
+        }
+        
+        // Header
+        xor_page[0] = 0x58; // MAGIC_XOR
+        xor_page[1..3].copy_from_slice(&(num_pages as u16).to_le_bytes());
+        
+        flash
+            .program(self.head.write_offset, &xor_page[..page_size])
+            .map_err(|_| Error::Io)?;
+        self.head.write_offset += page_size as u32;
         Ok(())
     }
 

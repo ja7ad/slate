@@ -4,6 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-sha2 = { version = "0.11.0", default-features = false }
-
 slate-hal = { path = "../slate-hal" }
+slate-erasure = { path = "../slate-erasure" }
+sha2 = { version = "0.11.0", default-features = false }
