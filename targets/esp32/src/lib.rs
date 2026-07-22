@@ -1,8 +1,8 @@
 #![no_std]
 
-use slate_hal::{Flash, CounterKind, MonotonicCounter};
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
-use embedded_storage::nor_flash::{ReadNorFlash, NorFlash};
+use slate_hal::{CounterKind, Flash, MonotonicCounter};
 
 #[derive(Debug)]
 pub enum EspFlashError {
@@ -20,31 +20,53 @@ pub struct EspFlash<'a> {
 
 impl<'a> EspFlash<'a> {
     pub fn new(base: u32, len: u32, flash: esp_hal::peripherals::FLASH<'a>) -> Self {
-        Self { base, len, inner: FlashStorage::new(flash) }
+        Self {
+            base,
+            len,
+            inner: FlashStorage::new(flash),
+        }
     }
 }
 
 impl<'a> Flash for EspFlash<'a> {
     type Error = EspFlashError;
 
-    fn page_size(&self) -> usize { 256 }
-    fn block_size(&self) -> usize { 4096 }
-    fn capacity(&self) -> u32 { self.len }
+    fn page_size(&self) -> usize {
+        256
+    }
+    fn block_size(&self) -> usize {
+        4096
+    }
+    fn capacity(&self) -> u32 {
+        self.len
+    }
 
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
-        if addr + buf.len() as u32 > self.len { return Err(EspFlashError::OutOfBounds); }
-        self.inner.read(self.base + addr, buf).map_err(|_| EspFlashError::StorageError)
+        if addr + buf.len() as u32 > self.len {
+            return Err(EspFlashError::OutOfBounds);
+        }
+        self.inner
+            .read(self.base + addr, buf)
+            .map_err(|_| EspFlashError::StorageError)
     }
 
     fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
-        if addr % 256 != 0 || buf.len() % 256 != 0 { return Err(EspFlashError::Unaligned); }
-        if addr + buf.len() as u32 > self.len { return Err(EspFlashError::OutOfBounds); }
-        
+        if !addr.is_multiple_of(256) || !buf.len().is_multiple_of(256) {
+            return Err(EspFlashError::Unaligned);
+        }
+        if addr + buf.len() as u32 > self.len {
+            return Err(EspFlashError::OutOfBounds);
+        }
+
         #[cfg(debug_assertions)]
         {
             let mut check_buf = [0u8; 256];
             for chunk_offset in (0..buf.len()).step_by(256) {
-                if self.inner.read(self.base + addr + chunk_offset as u32, &mut check_buf).is_ok() {
+                if self
+                    .inner
+                    .read(self.base + addr + chunk_offset as u32, &mut check_buf)
+                    .is_ok()
+                {
                     for &b in check_buf.iter() {
                         if b != 0xFF {
                             return Err(EspFlashError::ProgramWithoutErase);
@@ -54,13 +76,21 @@ impl<'a> Flash for EspFlash<'a> {
             }
         }
 
-        self.inner.write(self.base + addr, buf).map_err(|_| EspFlashError::StorageError)
+        self.inner
+            .write(self.base + addr, buf)
+            .map_err(|_| EspFlashError::StorageError)
     }
 
     fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
-        if block_addr % 4096 != 0 { return Err(EspFlashError::Unaligned); }
-        if block_addr + 4096 > self.len { return Err(EspFlashError::OutOfBounds); }
-        self.inner.erase(self.base + block_addr, self.base + block_addr + 4096).map_err(|_| EspFlashError::StorageError)
+        if !block_addr.is_multiple_of(4096) {
+            return Err(EspFlashError::Unaligned);
+        }
+        if block_addr + 4096 > self.len {
+            return Err(EspFlashError::OutOfBounds);
+        }
+        self.inner
+            .erase(self.base + block_addr, self.base + block_addr + 4096)
+            .map_err(|_| EspFlashError::StorageError)
     }
 }
 
@@ -74,8 +104,16 @@ pub struct EspCounter {
     val: u64,
 }
 
+impl Default for EspCounter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EspCounter {
-    pub fn new() -> Self { Self { val: 0 } }
+    pub fn new() -> Self {
+        Self { val: 0 }
+    }
 }
 
 impl MonotonicCounter for EspCounter {
