@@ -24,7 +24,7 @@ for i in $(seq 1 $ITERS); do
     QEMU_PID=$!
     
     PTY=""
-    for try in {1..150}; do
+    for try in {1..1000}; do
         PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
         if [ -n "$PTY" ]; then
             break
@@ -75,7 +75,7 @@ for i in $(seq 1 $ITERS); do
     QEMU_PID=$!
     
     PTY=""
-    for try in {1..150}; do
+    for try in {1..1000}; do
         PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
         if [ -n "$PTY" ]; then
             break
