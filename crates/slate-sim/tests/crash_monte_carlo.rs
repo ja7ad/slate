@@ -27,7 +27,7 @@ fn test_crash_monte_carlo() {
             block_idx: 0,
         }; // After segment header
         let mut chain = Chain::default();
-        let mut log = Log::new(&mut buf, 1, 0, 1, head);
+        let mut log = Log::new(&mut buf, head);
 
         let mut last_ticket = 0;
 
@@ -36,10 +36,10 @@ fn test_crash_monte_carlo() {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
             last_ticket = log
-                .append(OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
                 .unwrap();
         }
-        log.commit(&mut flash, &mut sealer, &chain).unwrap();
+        log.commit(&mut flash, &mut sealer, &chain, 1, 3).unwrap();
         let acked = last_ticket;
 
         // Write another batch that will crash
@@ -47,7 +47,7 @@ fn test_crash_monte_carlo() {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
             let _ = log
-                .append(OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
                 .unwrap();
         }
 
@@ -59,7 +59,7 @@ fn test_crash_monte_carlo() {
             byte_in_op,
         };
 
-        let _ = log.commit(&mut flash, &mut sealer, &chain);
+        let _ = log.commit(&mut flash, &mut sealer, &chain, 1, 5);
 
         // 2. Recover
         let mut recovered_seqs = std::vec::Vec::new();

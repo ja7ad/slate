@@ -21,6 +21,7 @@ pub struct KeySet {
     pub k_cm: [u8; 32],    // Expand(prk, "cm")
     pub k_ckpt: [u8; 32],  // Expand(prk, "ckpt")
     pub k_rec_e: [u8; 32], // Expand(prk, "rec"||le64(e)) — CURRENT epoch only
+    pub k_ctr: [u8; 32],   // Expand(prk, "ctr")
     pub epoch: u64,
 }
 
@@ -45,10 +46,12 @@ impl KeySet {
             k_cm: [0; 32],
             k_ckpt: [0; 32],
             k_rec_e: [0; 32],
+            k_ctr: [0; 32],
             epoch: 0,
         };
         expand(&ks.prk, b"cm", &mut ks.k_cm);
         expand(&ks.prk, b"ckpt", &mut ks.k_ckpt);
+        expand(&ks.prk, b"ctr", &mut ks.k_ctr);
         ks.roll_epoch(epoch);
         ks
     }

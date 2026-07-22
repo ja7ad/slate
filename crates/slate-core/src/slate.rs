@@ -41,8 +41,16 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
-        self.log_cold
-            .append(OP_PUT, key, val, &mut self.sealer, &mut self.engine.chain)?;
+        let seq = self.engine.next_seq;
+        self.log_cold.append(
+            seq,
+            OP_PUT,
+            key,
+            val,
+            &mut self.sealer,
+            &mut self.engine.chain,
+        )?;
+        self.engine.next_seq += 1;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -50,8 +58,16 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
-        self.log_cold
-            .append(OP_DEL, key, &[], &mut self.sealer, &mut self.engine.chain)?;
+        let seq = self.engine.next_seq;
+        self.log_cold.append(
+            seq,
+            OP_DEL,
+            key,
+            &[],
+            &mut self.sealer,
+            &mut self.engine.chain,
+        )?;
+        self.engine.next_seq += 1;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -64,10 +80,22 @@ impl<'a, F: Flash, S: Sealer> Slate<'a, F, S> {
     }
 
     pub fn commit(&mut self) -> Result<(), Error> {
-        self.log_hot
-            .commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
-        self.log_cold
-            .commit(&mut self.flash, &mut self.sealer, &self.engine.chain)?;
+        let seq_max = self.engine.next_seq.saturating_sub(1);
+        self.log_hot.commit(
+            &mut self.flash,
+            &mut self.sealer,
+            &self.engine.chain,
+            self.engine.epoch,
+            seq_max,
+        )?;
+        self.log_cold.commit(
+            &mut self.flash,
+            &mut self.sealer,
+            &self.engine.chain,
+            self.engine.epoch,
+            seq_max,
+        )?;
+        self.engine.acked_seq = seq_max;
         self.sched.on_commit();
         self.metrics.add_commit();
         Ok(())

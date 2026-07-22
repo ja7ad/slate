@@ -37,14 +37,25 @@ pub trait Sealer {
     /// Verifies a commit marker.
     fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error>;
     /// Seals a checkpoint.
-    fn seal_checkpoint(&mut self, epoch: u64, plain: &[u8], ct_tag_out: &mut [u8]);
+    fn seal_checkpoint(
+        &mut self,
+        epoch: u64,
+        slot: u8,
+        ad: &[u8],
+        plain: &[u8],
+        ct_tag_out: &mut [u8],
+    );
     /// Opens a checkpoint.
     fn open_checkpoint(
         &mut self,
         epoch: u64,
+        slot: u8,
+        ad: &[u8],
         ct_tag: &[u8],
         plain_out: &mut [u8],
     ) -> Result<(), Error>;
+    /// Rotates the epoch key.
+    fn roll_epoch(&mut self, e: u64);
 }
 
 /// Head state for the append log.
@@ -101,46 +112,23 @@ pub struct Log<'a, F: Flash> {
     pub head: HeadState,
     /// Batch buffer.
     pub batch: BatchBuf<'a>,
-    /// Next sequence number.
-    pub next_seq: u64,
-    /// Acknowledged sequence number.
-    pub acked_seq: u64,
-    /// Epoch.
-    pub epoch: u64,
     _flash: core::marker::PhantomData<F>,
 }
 
 impl<'a, F: Flash> Log<'a, F> {
     /// Creates a new Log.
-    pub fn new(
-        buf: &'a mut [u8],
-        next_seq: u64,
-        acked_seq: u64,
-        epoch: u64,
-        head: HeadState,
-    ) -> Self {
+    pub fn new(buf: &'a mut [u8], head: HeadState) -> Self {
         Self {
             head,
             batch: BatchBuf::new(buf),
-            next_seq,
-            acked_seq,
-            epoch,
             _flash: core::marker::PhantomData,
         }
-    }
-
-    fn fingerprint(key: &[u8]) -> u16 {
-        // Mock fingerprint for now
-        let mut fp = 0u16;
-        for &b in key.iter().take(2) {
-            fp = fp.wrapping_add(b as u16);
-        }
-        fp
     }
 
     /// Appends operation to batch.
     pub fn append(
         &mut self,
+        seq: u64,
         op: u8,
         key: &[u8],
         val: &[u8],
@@ -151,12 +139,11 @@ impl<'a, F: Flash> Log<'a, F> {
             return Err(Error::FormatError);
         }
 
-        let seq = self.next_seq;
         let mut hdr = RecordHeader {
             magic: MAGIC_REC,
             seq,
             op,
-            fp: Self::fingerprint(key),
+            fp: crate::index::fingerprint(key) as u16,
             klen: key.len() as u16,
             vlen: val.len() as u16,
             nonce: [0; 12],
@@ -180,7 +167,6 @@ impl<'a, F: Flash> Log<'a, F> {
         s.seal_record(&hdr_bytes, &kv[..kv_idx], &mut rec[REC_HDR_LEN..]);
         chain.fold(&rec[..total_len]);
 
-        self.next_seq += 1;
         Ok(seq)
     }
 
@@ -263,16 +249,17 @@ impl<'a, F: Flash> Log<'a, F> {
         flash: &mut F,
         s: &mut impl Sealer,
         chain: &Chain,
+        epoch: u64,
+        seq_max: u64,
     ) -> Result<(), Error> {
         if self.batch.is_empty() {
             return Ok(());
         }
         self.program_batch_pages(flash)?;
         self.program_xor_parity(flash)?;
-        let cm = s.commit_marker(self.next_seq - 1, self.epoch, &chain.chi);
+        let cm = s.commit_marker(seq_max, epoch, &chain.chi);
         self.program_page(flash, &cm)?;
         self.program_page(flash, &cm)?;
-        self.acked_seq = self.next_seq - 1; // Ack rule
         self.batch.clear();
         Ok(())
     }

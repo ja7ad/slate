@@ -37,6 +37,8 @@ impl From<Error> for MountError {
 
 pub struct EngineState {
     pub epoch: u64,
+    pub next_seq: u64,
+    pub acked_seq: u64,
     pub d_ckpt: [u8; 32],
     pub chain: Chain,
     pub records_in_epoch: usize,
@@ -61,6 +63,7 @@ fn encode_checkpoint(
     _st: &EngineState,
     s: &mut impl Sealer,
     e: u64,
+    slot: u8,
     out: &mut [u8],
 ) -> Result<usize, Error> {
     // For now we just stub the snapshot with dummy bytes since doc 005 uses it conceptually
@@ -86,7 +89,13 @@ fn encode_checkpoint(
     hdr.encode(&mut hdr_bytes);
     out[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
 
-    s.seal_checkpoint(e, snapshot, &mut out[CKPT_HDR_LEN..total_len]);
+    s.seal_checkpoint(
+        e,
+        slot,
+        &hdr_bytes,
+        snapshot,
+        &mut out[CKPT_HDR_LEN..total_len],
+    );
     Ok(total_len)
 }
 
@@ -125,7 +134,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     // 1. write + flush checkpoint carrying counter field e
     let slot = st.next_ckpt_slot();
     let mut ckpt_buf = [0u8; 1024]; // Buffer for checkpoint (stubbed size)
-    let len = encode_checkpoint(st, s, e, &mut ckpt_buf)?;
+    let len = encode_checkpoint(st, s, e, slot, &mut ckpt_buf)?;
     program_checkpoint(flash, slot, &ckpt_buf[..len])?;
     st.d_ckpt = sha256(&ckpt_buf[..len]);
     st.active_ckpt_slot = slot;
@@ -137,7 +146,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
 
     // 3. open epoch e+1
     st.epoch = e + 1;
-    // s.roll_epoch(st.epoch); // Will be added to Sealer trait or called explicitly
+    s.roll_epoch(st.epoch);
     st.chain = Chain::anchor(st.epoch, &st.d_ckpt);
     st.records_in_epoch = 0;
     Ok(())
@@ -210,6 +219,8 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
     // (c) re-anchor chain from the checkpoint and O(Θ) replay of the tail
     let st = EngineState {
         epoch: ckpt.epoch,
+        next_seq: ckpt.seq,
+        acked_seq: ckpt.seq.saturating_sub(1),
         d_ckpt,
         chain: Chain::anchor(ckpt.epoch, &d_ckpt),
         records_in_epoch: 0,

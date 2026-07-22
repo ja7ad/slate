@@ -31,17 +31,27 @@ impl slate_core::log::Sealer for MockSealer {
     fn verify_marker(&self, _cm: &[u8; CM_LEN]) -> Result<slate_core::log::CmFields, Error> {
         Err(Error::FormatError) // Not used in this mock test
     }
-    fn seal_checkpoint(&mut self, _epoch: u64, _plain: &[u8], ct_tag_out: &mut [u8]) {
+    fn seal_checkpoint(
+        &mut self,
+        _epoch: u64,
+        _slot: u8,
+        _ad: &[u8],
+        _plain: &[u8],
+        ct_tag_out: &mut [u8],
+    ) {
         ct_tag_out.fill(0);
     }
     fn open_checkpoint(
         &mut self,
         _epoch: u64,
+        _slot: u8,
+        _ad: &[u8],
         _ct_tag: &[u8],
         _plain_out: &mut [u8],
     ) -> Result<(), Error> {
         Ok(())
     }
+    fn roll_epoch(&mut self, _e: u64) {}
 }
 
 fn create_slate<'a>(
@@ -52,6 +62,8 @@ fn create_slate<'a>(
 ) -> Slate<'a, SimFlash, MockSealer> {
     let engine = EngineState {
         epoch: 1,
+        next_seq: 1,
+        acked_seq: 0,
         d_ckpt: [0u8; 32],
         chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
         records_in_epoch: 0,
@@ -61,9 +73,6 @@ fn create_slate<'a>(
 
     let log_hot = Log::new(
         hot_buf,
-        1,
-        0,
-        1,
         HeadState {
             seg_seq: 1,
             write_offset: 0,
@@ -73,9 +82,6 @@ fn create_slate<'a>(
 
     let log_cold = Log::new(
         cold_buf,
-        1, // cold doesn't really have its own seq, it inherits or generates depending on design
-        0,
-        1,
         HeadState {
             seg_seq: 2,
             write_offset: 4096 * 12, // seg 1
@@ -153,8 +159,16 @@ fn test_wa_accounting() {
 
     // Write a hot put
     st.log_hot
-        .append(OP_PUT, b"key", b"val", &mut st.sealer, &mut st.engine.chain)
+        .append(
+            1,
+            OP_PUT,
+            b"key",
+            b"val",
+            &mut st.sealer,
+            &mut st.engine.chain,
+        )
         .unwrap();
+    st.engine.next_seq = 2;
     st.commit().unwrap();
 
     assert!(st.flash.stats.user_bytes > 0);

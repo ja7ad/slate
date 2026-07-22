@@ -61,7 +61,7 @@ impl Sealer for CryptoSealer {
         cm[17..49].copy_from_slice(chi);
 
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.keys.k_cm).expect("valid key length");
-        mac.update(&cm[1..49]);
+        mac.update(&cm[0..49]);
         let tau = mac.finalize().into_bytes();
         cm[49..81].copy_from_slice(&tau);
         cm
@@ -69,9 +69,12 @@ impl Sealer for CryptoSealer {
 
     fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.keys.k_cm).expect("valid key length");
-        mac.update(&cm[1..49]);
+        mac.update(&cm[0..49]);
         if mac.verify_slice(&cm[49..81]).is_err() {
             return Err(Error::Tampered);
+        }
+        if cm[0] != slate_core::config::MAGIC_CM {
+            return Err(Error::FormatError);
         }
 
         let mut seq_max_bytes = [0u8; 8];
@@ -97,15 +100,23 @@ impl Sealer for CryptoSealer {
         })
     }
 
-    fn seal_checkpoint(&mut self, epoch: u64, plain: &[u8], ct_tag_out: &mut [u8]) {
+    fn seal_checkpoint(
+        &mut self,
+        epoch: u64,
+        slot: u8,
+        ad: &[u8],
+        plain: &[u8],
+        ct_tag_out: &mut [u8],
+    ) {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
+        nonce[8] = slot;
 
         let ct_len = plain.len();
         ct_tag_out[..ct_len].copy_from_slice(plain);
         let tag = cipher
-            .encrypt_in_place_detached(&nonce.into(), &[], &mut ct_tag_out[..ct_len])
+            .encrypt_in_place_detached(&nonce.into(), ad, &mut ct_tag_out[..ct_len])
             .expect("length checked");
         ct_tag_out[ct_len..].copy_from_slice(&tag);
     }
@@ -113,12 +124,15 @@ impl Sealer for CryptoSealer {
     fn open_checkpoint(
         &mut self,
         epoch: u64,
+        slot: u8,
+        ad: &[u8],
         ct_tag: &[u8],
         plain_out: &mut [u8],
     ) -> Result<(), Error> {
         let cipher = ChaCha20Poly1305::new((&self.keys.k_ckpt).into());
         let mut nonce = [0u8; 12];
         nonce[..8].copy_from_slice(&epoch.to_le_bytes());
+        nonce[8] = slot;
 
         let (ct, tag) = ct_tag.split_at(ct_tag.len() - 16);
         plain_out[..ct.len()].copy_from_slice(ct);
@@ -126,7 +140,7 @@ impl Sealer for CryptoSealer {
         cipher
             .decrypt_in_place_detached(
                 &nonce.into(),
-                &[],
+                ad,
                 &mut plain_out[..ct.len()],
                 tag_arr.into(),
             )
@@ -134,6 +148,10 @@ impl Sealer for CryptoSealer {
                 plain_out.zeroize();
                 Error::Tampered
             })
+    }
+
+    fn roll_epoch(&mut self, e: u64) {
+        self.keys.roll_epoch(e);
     }
 }
 

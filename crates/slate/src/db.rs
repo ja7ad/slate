@@ -131,11 +131,13 @@ impl Db {
 
         let mut flash =
             FileFlash::new(flash_file, opts.capacity, 256, 4096).map_err(|e| e.to_string())?;
-        let mut counter =
-            FileCounter::new(counter_file, root_key, u64::MAX).map_err(|e| format!("{:?}", e))?;
-
         let device_key = slate_crypto::keys::DeviceKey(root_key);
         let keyset = slate_crypto::keys::KeySet::derive(&device_key, 1);
+        let k_ctr = keyset.k_ctr;
+
+        let mut counter =
+            FileCounter::new(counter_file, k_ctr, u64::MAX).map_err(|e| format!("{:?}", e))?;
+
         let mut sealer = CryptoSealer::new(keyset);
 
         // Mount
@@ -145,6 +147,8 @@ impl Db {
                 // Formatting new
                 let mut st = EngineState {
                     epoch: 1,
+                    next_seq: 1,
+                    acked_seq: 0,
                     d_ckpt: [0u8; 32],
                     chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
                     records_in_epoch: 0,
@@ -184,9 +188,6 @@ impl Db {
 
         let log_hot = Log::new(
             hot_slice,
-            1,
-            0,
-            1,
             HeadState {
                 seg_seq: 1,
                 write_offset: 0,
@@ -195,9 +196,6 @@ impl Db {
         );
         let log_cold = Log::new(
             cold_slice,
-            1,
-            0,
-            1,
             HeadState {
                 seg_seq: 1,
                 write_offset: 0,
@@ -253,10 +251,19 @@ impl Db {
             .unwrap()
             .as_millis() as u64;
 
+        let seq = slate.engine.next_seq;
         slate
             .log_hot
-            .append(OP_PUT, key, val, &mut slate.sealer, &mut slate.engine.chain)
+            .append(
+                seq,
+                OP_PUT,
+                key,
+                val,
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            )
             .map_err(|e| format!("{:?}", e))?;
+        slate.engine.next_seq += 1;
         mock_store.insert(key.to_vec(), val.to_vec());
         slate
             .metrics
@@ -287,10 +294,19 @@ impl Db {
             .unwrap()
             .as_millis() as u64;
 
+        let seq = slate.engine.next_seq;
         slate
             .log_hot
-            .append(OP_DEL, key, &[], &mut slate.sealer, &mut slate.engine.chain)
+            .append(
+                seq,
+                OP_DEL,
+                key,
+                &[],
+                &mut slate.sealer,
+                &mut slate.engine.chain,
+            )
             .map_err(|e| format!("{:?}", e))?;
+        slate.engine.next_seq += 1;
         mock_store.remove(key);
         slate.metrics.add_user_bytes((44 + key.len()) as u64);
         if slate.sched.on_append(now_ms) {
