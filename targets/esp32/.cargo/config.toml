@@ -7,3 +7,9 @@ rustflags = [
 rustflags = [
   "-C", "link-arg=-Tlinkall.x",
 ]
+
+[env]
+# Allow the binary to boot on QEMU, which emulates efuse blk rev v1.3.
+# Without this, esp-hal 1.x sets a high min revision in the image header
+# and the bootloader rejects it with "Image requires efuse blk rev >= v292.30".
+ESP_HAL_CONFIG_MIN_CHIP_REVISION = "0"
