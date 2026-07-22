@@ -1,0 +1,230 @@
+//! log
+
+use crate::config::*;
+use crate::error::Error;
+use crate::record::RecordHeader;
+use slate_hal::Flash;
+
+/// Commit marker fields.
+pub struct CmFields {
+    /// Magic byte.
+    pub magic: u8,
+    /// Max sequence number.
+    pub seq_max: u64,
+    /// Epoch number.
+    pub epoch: u64,
+    /// Chain hash.
+    pub chi: [u8; 32],
+    /// MAC over marker fields.
+    pub tau_cm: [u8; 32],
+}
+
+/// Crypto seam
+pub trait Sealer {
+    /// Seals a record into out buffer.
+    fn seal_record(&mut self, hdr: &[u8; REC_HDR_LEN], plain_kv: &[u8], ct_tag_out: &mut [u8]);
+    /// Opens a record and returns plain KV.
+    fn open_record(
+        &mut self,
+        hdr: &[u8; REC_HDR_LEN],
+        ct_tag: &[u8],
+        plain_out: &mut [u8],
+    ) -> Result<(), Error>;
+    /// Folds record into chain.
+    fn chain_fold(&mut self, record_bytes: &[u8]);
+    /// Generates a commit marker.
+    fn commit_marker(&mut self, seq_max: u64, epoch: u64) -> [u8; CM_LEN];
+    /// Verifies a commit marker.
+    fn verify_marker(&self, cm: &[u8; CM_LEN]) -> Result<CmFields, Error>;
+}
+
+/// Head state for the append log.
+pub struct HeadState {
+    /// Segment allocation number.
+    pub seg_seq: u64,
+    /// Write offset.
+    pub write_offset: u32,
+    /// Open segment id.
+    pub block_idx: u32,
+}
+
+/// Buffer for batches.
+pub struct BatchBuf<'a> {
+    buf: &'a mut [u8],
+    offset: usize,
+}
+
+impl<'a> BatchBuf<'a> {
+    /// Creates a new BatchBuf.
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, offset: 0 }
+    }
+
+    /// Allocates space in batch.
+    pub fn alloc(&mut self, size: usize) -> Result<&mut [u8], Error> {
+        if self.offset + size > self.buf.len() {
+            return Err(Error::BatchFull);
+        }
+        let start = self.offset;
+        self.offset += size;
+        Ok(&mut self.buf[start..self.offset])
+    }
+
+    /// Checks if batch is empty.
+    pub fn is_empty(&self) -> bool {
+        self.offset == 0
+    }
+
+    /// Clears batch.
+    pub fn clear(&mut self) {
+        self.offset = 0;
+    }
+
+    /// Returns written data.
+    pub fn data(&self) -> &[u8] {
+        &self.buf[0..self.offset]
+    }
+}
+
+/// The log instance.
+pub struct Log<'a, F: Flash> {
+    /// Head state.
+    pub head: HeadState,
+    /// Batch buffer.
+    pub batch: BatchBuf<'a>,
+    /// Next sequence number.
+    pub next_seq: u64,
+    /// Acknowledged sequence number.
+    pub acked_seq: u64,
+    /// Epoch.
+    pub epoch: u64,
+    _flash: core::marker::PhantomData<F>,
+}
+
+impl<'a, F: Flash> Log<'a, F> {
+    /// Creates a new Log.
+    pub fn new(
+        buf: &'a mut [u8],
+        next_seq: u64,
+        acked_seq: u64,
+        epoch: u64,
+        head: HeadState,
+    ) -> Self {
+        Self {
+            head,
+            batch: BatchBuf::new(buf),
+            next_seq,
+            acked_seq,
+            epoch,
+            _flash: core::marker::PhantomData,
+        }
+    }
+
+    fn fingerprint(key: &[u8]) -> u16 {
+        // Mock fingerprint for now
+        let mut fp = 0u16;
+        for &b in key.iter().take(2) {
+            fp = fp.wrapping_add(b as u16);
+        }
+        fp
+    }
+
+    /// Appends operation to batch.
+    pub fn append(
+        &mut self,
+        op: u8,
+        key: &[u8],
+        val: &[u8],
+        s: &mut impl Sealer,
+    ) -> Result<u64, Error> {
+        let seq = self.next_seq;
+        let mut hdr = RecordHeader {
+            magic: MAGIC_REC,
+            seq,
+            op,
+            fp: Self::fingerprint(key),
+            klen: key.len() as u16,
+            vlen: val.len() as u16,
+            nonce: [0; 12],
+        };
+        hdr.nonce[0..8].copy_from_slice(&seq.to_le_bytes());
+
+        let total_len = 44 + key.len() + val.len();
+        let rec = self.batch.alloc(total_len)?;
+
+        let mut hdr_bytes = [0u8; REC_HDR_LEN];
+        hdr.encode(&mut hdr_bytes);
+        rec[..REC_HDR_LEN].copy_from_slice(&hdr_bytes);
+
+        let mut kv_idx = 0;
+        let mut kv = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
+        kv[..key.len()].copy_from_slice(key);
+        kv_idx += key.len();
+        kv[kv_idx..kv_idx + val.len()].copy_from_slice(val);
+        kv_idx += val.len();
+
+        s.seal_record(&hdr_bytes, &kv[..kv_idx], &mut rec[REC_HDR_LEN..]);
+        s.chain_fold(rec);
+
+        self.next_seq += 1;
+        Ok(seq)
+    }
+
+    fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
+        let data = self.batch.data();
+        let page_size = flash.page_size();
+
+        let mut addr = self.head.write_offset;
+        let num_pages = data.len().div_ceil(page_size);
+        let mut page_buf = [0xFF; 512]; // Large enough for any typical page size, or dynamic if we alloc. For now, max 512.
+
+        for i in 0..num_pages {
+            let chunk_start = i * page_size;
+            let chunk_end = core::cmp::min(chunk_start + page_size, data.len());
+            let chunk_len = chunk_end - chunk_start;
+
+            page_buf[..page_size].fill(0xFF);
+            page_buf[..chunk_len].copy_from_slice(&data[chunk_start..chunk_end]);
+
+            flash
+                .program(addr, &page_buf[..page_size])
+                .map_err(|_| Error::Io)?;
+            addr += page_size as u32;
+        }
+
+        self.head.write_offset = addr;
+        Ok(())
+    }
+
+    fn program_xor_parity(&mut self, _flash: &mut F) -> Result<(), Error> {
+        // Doc 006 stub: skip
+        Ok(())
+    }
+
+    fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
+        let page_size = flash.page_size();
+        let mut page_buf = [0xFF; 512];
+        let len = core::cmp::min(data.len(), page_size);
+        page_buf[..len].copy_from_slice(&data[..len]);
+        flash
+            .program(self.head.write_offset, &page_buf[..page_size])
+            .map_err(|_| Error::Io)?;
+        self.head.write_offset += page_size as u32;
+        Ok(())
+    }
+
+    /// Commits batched records to flash.
+    pub fn commit(&mut self, flash: &mut F, s: &mut impl Sealer) -> Result<(), Error> {
+        if self.batch.is_empty() {
+            return Ok(());
+        }
+        self.program_batch_pages(flash)?;
+        self.program_xor_parity(flash)?;
+        let cm = s.commit_marker(self.next_seq - 1, self.epoch);
+        self.program_page(flash, &cm)?;
+        self.program_page(flash, &cm)?;
+        self.acked_seq = self.next_seq - 1; // Ack rule
+        self.batch.clear();
+        Ok(())
+    }
+}
