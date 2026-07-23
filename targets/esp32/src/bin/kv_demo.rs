@@ -271,6 +271,15 @@ where
                 println!("err");
             }
         }
+        Some("seal") => {
+            // Force an epoch seal by pretending we reached THETA
+            slate.engine.records_in_epoch = slate_core::config::THETA;
+            if slate.commit().is_ok() {
+                println!("OK");
+            } else {
+                println!("err");
+            }
+        }
         Some("stats") => {
             #[cfg(feature = "metrics")]
             {
