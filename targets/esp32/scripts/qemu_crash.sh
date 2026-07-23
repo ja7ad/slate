@@ -92,7 +92,7 @@ for i in $(seq 1 $ITERS); do
         sleep 0.1
     done
     
-    EXPECT_STATUS="Format"
+    EXPECT_STATUS="OK"
     if [ "$ATTACK" == "rollback" ] && [ "$i" -eq $ITERS ]; then
         EXPECT_STATUS="Rollback"
     elif [ "$ATTACK" == "tamper" ] && [ "$i" -eq $ITERS ]; then
