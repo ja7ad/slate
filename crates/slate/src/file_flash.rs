@@ -1,6 +1,6 @@
+use crate::io_util::{read_exact_at, write_all_at};
 use slate_hal::Flash;
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 
@@ -67,7 +67,7 @@ impl FileFlash {
             file.set_len(capacity as u64)?;
             // Fill with 0xFF if new
             let ff = vec![0xFF; capacity as usize];
-            file.write_all_at(&ff, 0)?;
+            write_all_at(&file, &ff, 0)?;
             flush_durable(&file, durability)?;
         }
         Ok(Self {
@@ -100,7 +100,7 @@ impl Flash for FileFlash {
         if addr + buf.len() > self.capacity as usize {
             return Err(FileFlashError::OutOfBounds);
         }
-        self.file.read_exact_at(buf, addr as u64)?;
+        read_exact_at(&self.file, buf, addr as u64)?;
         Ok(())
     }
 
@@ -115,13 +115,13 @@ impl Flash for FileFlash {
 
         // Verify erased
         let mut check_buf = vec![0u8; buf.len()];
-        self.file.read_exact_at(&mut check_buf, addr as u64)?;
+        read_exact_at(&self.file, &mut check_buf, addr as u64)?;
         if !check_buf.iter().all(|&b| b == 0xFF) {
             return Err(FileFlashError::ProgramWithoutErase);
         }
 
         // Write and sync
-        self.file.write_all_at(buf, addr as u64)?;
+        write_all_at(&self.file, buf, addr as u64)?;
         flush_durable(&self.file, self.durability)?;
         Ok(())
     }
@@ -136,7 +136,7 @@ impl Flash for FileFlash {
         }
 
         let ff = vec![0xFF; self.block_size];
-        self.file.write_all_at(&ff, block_addr as u64)?;
+        write_all_at(&self.file, &ff, block_addr as u64)?;
         flush_durable(&self.file, self.durability)?;
         Ok(())
     }

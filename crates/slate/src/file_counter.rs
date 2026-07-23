@@ -1,8 +1,8 @@
+use crate::io_util::{read_exact_at, write_all_at};
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use slate_hal::{CounterKind, MonotonicCounter};
 use std::fs::File;
-use std::os::unix::fs::FileExt;
 #[cfg(target_os = "macos")]
 use std::os::unix::io::AsRawFd;
 
@@ -85,7 +85,7 @@ impl FileCounter {
 
     fn read_slot(&self, idx: u64) -> Result<u64, FileCounterError> {
         let mut buf = [0u8; SLOT_SIZE];
-        self.file.read_exact_at(&mut buf, idx * SLOT_SIZE as u64)?;
+        read_exact_at(&self.file, &mut buf, idx * SLOT_SIZE as u64)?;
 
         let mut val_bytes = [0u8; 8];
         val_bytes.copy_from_slice(&buf[0..8]);
@@ -111,7 +111,7 @@ impl FileCounter {
         let tag = mac.finalize().into_bytes();
         buf[8..40].copy_from_slice(&tag);
 
-        self.file.write_all_at(&buf, idx * SLOT_SIZE as u64)?;
+        write_all_at(&self.file, &buf, idx * SLOT_SIZE as u64)?;
         flush_durable(&self.file)?;
         Ok(())
     }
