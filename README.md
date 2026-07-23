@@ -77,7 +77,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### 2. Using `slate-ffi` in C / C++
 
-Include [`slate.h`](crates/slate-ffi/slate.h) and link against `libslate_ffi`:
+Include [`slate.h`](crates/slate-ffi/include/slate.h) and link against `libslate_ffi`:
 
 ```c
 #include "slate.h"
