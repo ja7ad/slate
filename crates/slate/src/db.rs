@@ -610,6 +610,10 @@ impl Db {
         self.inner.lock().unwrap().slate.index.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     pub fn stats(&self) -> Stats {
         let inner = self.inner.lock().unwrap();
         let m = &inner.slate.metrics;

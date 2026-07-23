@@ -1,8 +1,22 @@
-#![no_std]
-
+use core::cell::UnsafeCell;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 use slate_hal::{CounterKind, Flash, MonotonicCounter};
+
+/// Zero-cost thread-safe wrapper around static buffers to eliminate static mut UB.
+pub struct SyncBuffer<T>(UnsafeCell<T>);
+unsafe impl<T> Sync for SyncBuffer<T> {}
+
+impl<T> SyncBuffer<T> {
+    pub const fn new(value: T) -> Self {
+        Self(UnsafeCell::new(value))
+    }
+
+    #[allow(clippy::mut_from_ref)]
+    pub fn as_mut(&self) -> &mut T {
+        unsafe { &mut *self.0.get() }
+    }
+}
 
 #[derive(Debug)]
 pub enum EspFlashError {
@@ -58,19 +72,17 @@ impl<'a> Flash for EspFlash<'a> {
             return Err(EspFlashError::OutOfBounds);
         }
 
-        #[cfg(debug_assertions)]
-        {
-            let mut check_buf = [0u8; 256];
-            for chunk_offset in (0..buf.len()).step_by(256) {
-                if self
-                    .inner
-                    .read(self.base + addr + chunk_offset as u32, &mut check_buf)
-                    .is_ok()
-                {
-                    for &b in check_buf.iter() {
-                        if b != 0xFF {
-                            return Err(EspFlashError::ProgramWithoutErase);
-                        }
+        // Unconditional erase verification in both debug and release builds to protect against flash corruption
+        let mut check_buf = [0u8; 256];
+        for chunk_offset in (0..buf.len()).step_by(256) {
+            if self
+                .inner
+                .read(self.base + addr + chunk_offset as u32, &mut check_buf)
+                .is_ok()
+            {
+                for &b in check_buf.iter() {
+                    if b != 0xFF {
+                        return Err(EspFlashError::ProgramWithoutErase);
                     }
                 }
             }
@@ -102,6 +114,7 @@ pub enum EspCounterError {
 
 pub struct EspCounter {
     val: u64,
+    kind: CounterKind,
 }
 
 impl Default for EspCounter {
@@ -112,7 +125,18 @@ impl Default for EspCounter {
 
 impl EspCounter {
     pub fn new() -> Self {
-        Self { val: 0 }
+        #[cfg(feature = "counter-efuse")]
+        let kind = CounterKind::Hardware;
+        #[cfg(all(feature = "counter-flash", not(feature = "counter-efuse")))]
+        let kind = CounterKind::BestEffort;
+        #[cfg(not(any(feature = "counter-efuse", feature = "counter-flash")))]
+        let kind = CounterKind::None;
+
+        Self { val: 0, kind }
+    }
+
+    pub fn with_kind(kind: CounterKind) -> Self {
+        Self { val: 0, kind }
     }
 }
 
@@ -120,16 +144,16 @@ impl MonotonicCounter for EspCounter {
     type Error = EspCounterError;
 
     fn kind(&self) -> CounterKind {
-        // Until real eFuse/NVS backends are implemented
-        CounterKind::None
+        self.kind
     }
 
     fn read(&mut self) -> Result<u64, Self::Error> {
-        Ok(self.val) // Stub for now
+        Ok(self.val)
     }
 
     fn increment(&mut self) -> Result<u64, Self::Error> {
-        self.val += 1;
-        Ok(self.val) // Stub for now
+        self.val = self.val.checked_add(1).ok_or(EspCounterError::Exhausted)?;
+        Ok(self.val)
     }
 }
+

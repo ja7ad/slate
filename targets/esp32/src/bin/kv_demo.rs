@@ -14,14 +14,14 @@ use slate_core::sched::Scheduler;
 use slate_core::slate::Slate;
 
 use slate_crypto::sealer::CryptoSealer;
-use slate_esp32::{EspCounter, EspFlash};
+use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-static mut HOT_BUF: [u8; 4096] = [0; 4096];
-static mut COLD_BUF: [u8; 4096] = [0; 4096];
-static mut INDEX_SLOTS: [u32; 2048 * 4] = [0; 2048 * 4];
-static mut CKPT_BUF: [u8; 35000] = [0; 35000];
+static HOT_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
+static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
+static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new([0; 2048 * 4]);
+static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new([0; 35000]);
 
 #[esp_hal::main]
 fn main() -> ! {
@@ -37,9 +37,7 @@ fn main() -> ! {
 
     let mut mount_status = "OK";
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, unsafe {
-            &mut *core::ptr::addr_of_mut!(CKPT_BUF)
-        }) {
+        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, CKPT_BUF.as_mut()) {
             Ok((st, len)) => (st, len),
             Err(slate_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
@@ -102,7 +100,7 @@ fn main() -> ! {
         sealer,
         engine: engine_state,
         log_hot: slate_core::log::Log::new(
-            unsafe { &mut *core::ptr::addr_of_mut!(HOT_BUF) },
+            HOT_BUF.as_mut(),
             HeadState {
                 seg_seq: 0,
                 write_offset: 0,
@@ -110,19 +108,19 @@ fn main() -> ! {
             },
         ),
         log_cold: slate_core::log::Log::new(
-            unsafe { &mut *core::ptr::addr_of_mut!(COLD_BUF) },
+            COLD_BUF.as_mut(),
             HeadState {
                 seg_seq: 0,
                 write_offset: 0,
                 block_idx: 0,
             },
         ),
-        index: Index::new(unsafe { &mut *core::ptr::addr_of_mut!(INDEX_SLOTS) }, 2048),
+        index: Index::new(INDEX_SLOTS.as_mut(), 2048),
         segs: SegTable::new(128),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
-        ckpt_buf: unsafe { &mut *core::ptr::addr_of_mut!(CKPT_BUF) },
+        ckpt_buf: CKPT_BUF.as_mut(),
         rng: slate_core::index::XorShift64::new(rng_seed),
     };
 
@@ -161,8 +159,14 @@ where
     let mut parts = cmd.split_whitespace();
     match parts.next() {
         Some("put") => {
-            let k = parts.next().unwrap_or("").as_bytes();
-            let v = parts.next().unwrap_or("").as_bytes();
+            let k_opt = parts.next();
+            let v_opt = parts.next();
+            if k_opt.is_none() || k_opt.unwrap().is_empty() {
+                println!("ERR invalid_args");
+                return;
+            }
+            let k = k_opt.unwrap().as_bytes();
+            let v = v_opt.unwrap_or("").as_bytes();
 
             let seq = slate.engine.next_seq;
             if let Ok((_, offset)) = slate.log_hot.append(
@@ -181,7 +185,12 @@ where
             }
         }
         Some("get") => {
-            let k = parts.next().unwrap_or("").as_bytes();
+            let k_opt = parts.next();
+            if k_opt.is_none() || k_opt.unwrap().is_empty() {
+                println!("ERR invalid_args");
+                return;
+            }
+            let k = k_opt.unwrap().as_bytes();
             let mut cbuf = slate_core::index::CandidateBuf::new();
             slate.index.candidates(k, &mut cbuf);
             let mut found = false;
@@ -226,7 +235,12 @@ where
             }
         }
         Some("del") => {
-            let k = parts.next().unwrap_or("").as_bytes();
+            let k_opt = parts.next();
+            if k_opt.is_none() || k_opt.unwrap().is_empty() {
+                println!("ERR invalid_args");
+                return;
+            }
+            let k = k_opt.unwrap().as_bytes();
             let seq = slate.engine.next_seq;
             if slate
                 .log_hot

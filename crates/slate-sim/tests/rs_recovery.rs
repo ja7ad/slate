@@ -48,16 +48,16 @@ fn test_reed_solomon_database_recovery() {
 
     // Store encrypted log data into data blocks
     let data_len = log.batch.data().len();
-    for i in 0..RS_K {
+    for (i, block) in stripe.iter_mut().take(RS_K).enumerate() {
         let start = i * PAGE_SIZE;
         if start < data_len {
             let end = core::cmp::min(start + PAGE_SIZE, data_len);
-            stripe[i][..end - start].copy_from_slice(&log.batch.data()[start..end]);
+            block[..end - start].copy_from_slice(&log.batch.data()[start..end]);
             if end - start < PAGE_SIZE {
-                stripe[i][end - start..].fill(0xFF);
+                block[end - start..].fill(0xFF);
             }
         } else {
-            stripe[i].fill(0xFF);
+            block.fill(0xFF);
         }
     }
 
