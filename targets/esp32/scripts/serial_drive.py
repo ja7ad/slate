@@ -4,9 +4,10 @@ import serial
 import time
 import argparse
 
-def expect(ser, text, timeout=60.0):
+def expect(ser, text, timeout=60.0, send_nl=False):
     start = time.time()
     buf = ""
+    last_nl = start
     while time.time() - start < timeout:
         if ser.in_waiting:
             chunk = ser.read(ser.in_waiting).decode('utf-8', errors='replace')
@@ -14,6 +15,10 @@ def expect(ser, text, timeout=60.0):
             print(chunk, end='', flush=True)
             if text in buf:
                 return True
+        if send_nl and time.time() - last_nl > 1.0:
+            ser.write(b'\n')
+            ser.flush()
+            last_nl = time.time()
         time.sleep(0.01)
     print(f"\n[ERROR] Timeout waiting for: {text}")
     return False
@@ -36,7 +41,7 @@ def main():
         sys.exit(1)
 
     # Wait for prompt
-    if not expect(ser, "slate> "):
+    if not expect(ser, "slate> ", send_nl=True):
         sys.exit(2)
 
     if args.cmd:

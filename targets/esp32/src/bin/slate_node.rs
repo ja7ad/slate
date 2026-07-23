@@ -35,8 +35,9 @@ fn main() -> ! {
     let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
 
+    let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, CKPT_BUF.take()) {
+        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
             Ok((st, len)) => (st, len),
             Err(_) => {
                 let st = slate_core::epoch::EngineState {

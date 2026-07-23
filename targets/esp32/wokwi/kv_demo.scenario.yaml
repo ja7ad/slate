@@ -8,7 +8,7 @@ steps:
   - wait-serial: "Format"
   - wait-serial: "slate> "
   - write-serial: "mode\n"
-  - wait-serial: "None"
+  - wait-serial: "BestEffortRollback"
   - wait-serial: "slate> "
   - write-serial: "stats\n"
   - wait-serial: "stats:"

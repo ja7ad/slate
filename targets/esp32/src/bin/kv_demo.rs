@@ -36,8 +36,9 @@ fn main() -> ! {
     let mut sealer = CryptoSealer::new(keys);
 
     let mut mount_status = "OK";
+    let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, CKPT_BUF.take()) {
+        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
             Ok((st, len)) => (st, len),
             Err(slate_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
