@@ -4,21 +4,33 @@ import serial
 import time
 import argparse
 
+global_buf = ""
+
 def expect(ser, text, timeout=60.0, send_nl=False):
+    global global_buf
     start = time.time()
-    buf = ""
     last_nl = start
     while time.time() - start < timeout:
+        if text in global_buf:
+            # We found the text. Clear up to the end of the text.
+            idx = global_buf.find(text)
+            global_buf = global_buf[idx + len(text):]
+            return True
+            
         if ser.in_waiting:
             chunk = ser.read(ser.in_waiting).decode('utf-8', errors='replace')
-            buf += chunk
+            global_buf += chunk
             print(chunk, end='', flush=True)
-            if text in buf:
+            if text in global_buf:
+                idx = global_buf.find(text)
+                global_buf = global_buf[idx + len(text):]
                 return True
+                
         if send_nl and time.time() - last_nl > 1.0:
             ser.write(b'\n')
             ser.flush()
             last_nl = time.time()
+            
         time.sleep(0.01)
     print(f"\n[ERROR] Timeout waiting for: {text}")
     return False
