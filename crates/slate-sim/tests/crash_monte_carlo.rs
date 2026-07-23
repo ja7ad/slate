@@ -15,7 +15,7 @@ fn test_crash_monte_carlo() {
     // Run N=100 iterations for the unit test context. Real CI might run 5000.
     for seed in 0..100 {
         let mut rng = SmallRng::seed_from_u64(seed);
-        let mut flash = SimFlash::new(4096 * 10, 256, 4096);
+        let mut flash = SimFlash::new(4096 * 32, 256, 4096);
         let dev_key = DeviceKey([0; 32]);
         let keyset = KeySet::derive(&dev_key, 1);
         let mut sealer = CryptoSealer::new(keyset);
