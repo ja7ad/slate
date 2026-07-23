@@ -36,7 +36,20 @@ cargo test --workspace
 
 # 4. Verify no_std bare-metal build purity
 cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-default-features --target thumbv7em-none-eabihf
+
+# 5. Build ESP32 target firmware (requires Xtensa toolchain)
+cd targets/esp32 && cargo build --release --target xtensa-esp32-none-elf
 ```
+
+You can also use the provided `Makefile` to run these commands quickly:
+```bash
+make fmt       # Format code
+make lint      # Run Clippy lints
+make test      # Run tests
+make build-esp # Build ESP32 target
+make check-all # Run all checks
+```
+
 
 ---
 

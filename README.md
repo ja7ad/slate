@@ -1,6 +1,10 @@
 # SLATE: Secure, Log-structured, Authenticated, Tamper-Evident Key–Value Engine
 
-[![CI](https://github.com/javad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/javad/slate/actions/workflows/ci.yml)
+<p align="center">
+  <img src="docs/slate_logo.png" alt="SLATE Logo" width="300"/>
+</p>
+
+[![CI](https://github.com/ja7ad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/ja7ad/slate/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-core)
 
