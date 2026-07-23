@@ -6,6 +6,17 @@ import argparse
 
 global_buf = ""
 
+def drain(ser, settle=0.3):
+    """Drain any pending data from the serial buffer after a settle period."""
+    time.sleep(settle)
+    while ser.in_waiting:
+        chunk = ser.read(ser.in_waiting).decode('utf-8', errors='replace')
+        print(chunk, end='', flush=True)
+        time.sleep(0.05)
+    # Reset the global buffer so stale prompts don't cause false matches
+    global global_buf
+    global_buf = ""
+
 def expect(ser, text, timeout=60.0, send_nl=False):
     global global_buf
     start = time.time()
@@ -56,13 +67,18 @@ def main():
     if not expect(ser, "slate> ", send_nl=True):
         sys.exit(2)
 
+    # Drain any extra prompts caused by newlines sent during boot wait
+    drain(ser)
+
     if args.cmd:
         for i, cmd in enumerate(args.cmd):
             send(ser, cmd)
-            if args.expect and i < len(args.expect):
-                if not expect(ser, args.expect[i]):
+            exp_text = args.expect[i] if (args.expect and i < len(args.expect)) else None
+            if exp_text:
+                # Non-empty expect: wait for the expected text first
+                if not expect(ser, exp_text):
                     sys.exit(3)
-            # Wait for next prompt
+            # Always wait for the next prompt (command finished)
             if not expect(ser, "slate> "):
                 sys.exit(2)
 

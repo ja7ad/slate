@@ -38,23 +38,45 @@ for i in $(seq 1 $ITERS); do
         kill -9 $QEMU_PID || true
         exit 1
     fi
+    # Strip trailing whitespace/commas from PTY
+    PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+    # Let firmware finish booting before opening serial
+    sleep 1
     
     if [ "$i" -eq 1 ]; then
         # On first iteration, setup an initial valid checkpoint and save old image for rollback
-        if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
-            echo "Failed to seal initial checkpoint!"
-            cat drive.log
+        # Retry once on failure — QEMU boot timing can vary in CI
+        if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+            echo "First seal attempt failed, retrying after delay..."
             kill -9 $QEMU_PID || true
-            exit 1
+            wait $QEMU_PID 2>/dev/null || true
+            sleep 1
+            rm -f qemu.log
+            ./scripts/qemu_run.sh > qemu.log 2>&1 &
+            QEMU_PID=$!
+            PTY=""
+            for try in {1..1000}; do
+                PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
+                if [ -n "$PTY" ]; then break; fi
+                sleep 0.1
+            done
+            PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+            sleep 1
+            if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+                echo "Failed to seal initial checkpoint!"
+                cat drive.log
+                kill -9 $QEMU_PID || true
+                exit 1
+            fi
         fi
         cp flash.img flash_old.img
     fi
 
     # Issue put and commit. If it's a rollback attack, we also force a seal so the counter advances
     if [ "$ATTACK" == "rollback" ]; then
-        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "seal" --expect "" > drive.log 2>&1 &
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --cmd "seal" > drive.log 2>&1 &
     else
-        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "commit" --expect "" > drive.log 2>&1 &
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --cmd "commit" > drive.log 2>&1 &
     fi
     DRIVE_PID=$!
     
@@ -91,6 +113,9 @@ for i in $(seq 1 $ITERS); do
         fi
         sleep 0.1
     done
+    PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+    # Let firmware finish booting
+    sleep 1
     
     EXPECT_STATUS="OK"
     if [ "$ATTACK" == "rollback" ] && [ "$i" -eq $ITERS ]; then
