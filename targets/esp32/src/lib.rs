@@ -1,36 +1,36 @@
 #![no_std]
 
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 use slate_hal::{CounterKind, Flash, MonotonicCounter};
 
-use core::cell::RefCell;
 use critical_section::Mutex;
 
 /// Zero-cost thread-safe wrapper around static buffers.
 pub struct SyncBuffer<T> {
+    name: &'static str,
     data: UnsafeCell<T>,
-    taken: Mutex<RefCell<bool>>,
+    taken: Cell<bool>,
 }
 unsafe impl<T> Sync for SyncBuffer<T> {}
 
 impl<T> SyncBuffer<T> {
-    pub const fn new(value: T) -> Self {
+    pub const fn new(name: &'static str, value: T) -> Self {
         Self {
+            name,
             data: UnsafeCell::new(value),
-            taken: Mutex::new(RefCell::new(false)),
+            taken: Cell::new(false),
         }
     }
 
     #[allow(clippy::mut_from_ref)]
     pub fn take(&self) -> &'static mut T {
-        critical_section::with(|cs| {
-            let mut taken = self.taken.borrow_ref_mut(cs);
-            if *taken {
-                panic!("SyncBuffer already taken");
+        critical_section::with(|_cs| {
+            if self.taken.get() {
+                panic!("SyncBuffer {} already taken", self.name);
             }
-            *taken = true;
+            self.taken.set(true);
             unsafe { &mut *self.data.get() }
         })
     }

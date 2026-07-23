@@ -18,10 +18,10 @@ use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-static HOT_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
-static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
-static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new([0; 2048 * 4]);
-static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new([0; 35000]);
+static HOT_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("HOT_BUF", [0; 4096]);
+static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("COLD_BUF", [0; 4096]);
+static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new("INDEX_SLOTS", [0; 2048 * 4]);
+static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new("CKPT_BUF", [0; 35000]);
 
 #[esp_hal::main]
 fn main() -> ! {
