@@ -170,7 +170,7 @@ where
             let v = v_opt.unwrap_or("").as_bytes();
 
             let seq = slate.engine.next_seq;
-            if let Ok((_, offset)) = slate.log_hot.append(
+            match slate.log_hot.append(
                 seq,
                 slate_core::config::OP_PUT,
                 k,
@@ -178,11 +178,14 @@ where
                 &mut slate.sealer,
                 &mut slate.engine.chain,
             ) {
-                slate.engine.next_seq += 1;
-                slate.index_update_offset(k, offset);
-                // Do not ack here, ack on commit!
-            } else {
-                println!("err");
+                Ok((_, offset)) => {
+                    slate.engine.next_seq += 1;
+                    slate.index_update_offset(k, offset);
+                    // Do not ack here, ack on commit!
+                }
+                Err(e) => {
+                    println!("err put {:?}", e);
+                }
             }
         }
         Some("get") => {
@@ -264,20 +267,26 @@ where
             }
         }
         Some("commit") => {
-            if slate.commit().is_ok() {
-                let ack_seq = slate.engine.acked_seq;
-                println!("ack {}", ack_seq);
-            } else {
-                println!("err");
+            match slate.commit() {
+                Ok(_) => {
+                    let ack_seq = slate.engine.acked_seq;
+                    println!("ack {}", ack_seq);
+                }
+                Err(e) => {
+                    println!("err commit {:?}", e);
+                }
             }
         }
         Some("seal") => {
             // Force an epoch seal by pretending we reached THETA
             slate.engine.records_in_epoch = slate_core::config::THETA;
-            if slate.commit().is_ok() {
-                println!("OK");
-            } else {
-                println!("err");
+            match slate.commit() {
+                Ok(_) => {
+                    println!("OK");
+                }
+                Err(e) => {
+                    println!("err seal {:?}", e);
+                }
             }
         }
         Some("stats") => {
