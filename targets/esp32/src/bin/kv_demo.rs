@@ -37,7 +37,7 @@ fn main() -> ! {
 
     let mut mount_status = "OK";
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, CKPT_BUF.as_mut()) {
+        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, CKPT_BUF.take()) {
             Ok((st, len)) => (st, len),
             Err(slate_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
@@ -100,7 +100,7 @@ fn main() -> ! {
         sealer,
         engine: engine_state,
         log_hot: slate_core::log::Log::new(
-            HOT_BUF.as_mut(),
+            HOT_BUF.take(),
             HeadState {
                 seg_seq: 0,
                 write_offset: 0,
@@ -108,19 +108,19 @@ fn main() -> ! {
             },
         ),
         log_cold: slate_core::log::Log::new(
-            COLD_BUF.as_mut(),
+            COLD_BUF.take(),
             HeadState {
                 seg_seq: 0,
                 write_offset: 0,
                 block_idx: 0,
             },
         ),
-        index: Index::new(INDEX_SLOTS.as_mut(), 2048),
+        index: Index::new(INDEX_SLOTS.take(), 2048),
         segs: SegTable::new(128),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
-        ckpt_buf: CKPT_BUF.as_mut(),
+        ckpt_buf: CKPT_BUF.take(),
         rng: slate_core::index::XorShift64::new(rng_seed),
     };
 
@@ -221,7 +221,11 @@ where
                                 ) {
                                     println!("{}", v_str);
                                 } else {
-                                    println!("<binary>");
+                                    print!("[binary data] ");
+                                    for &b in &scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize] {
+                                        print!("{:02x}", b);
+                                    }
+                                    println!();
                                 }
                                 found = true;
                                 break;

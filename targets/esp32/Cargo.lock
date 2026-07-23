@@ -1214,6 +1214,7 @@ dependencies = [
 name = "slate-core"
 version = "0.1.0"
 dependencies = [
+ "heapless 0.8.0",
  "sha2",
  "slate-erasure",
  "slate-hal",
@@ -1239,6 +1240,7 @@ version = "0.1.0"
 name = "slate-esp32"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "embedded-storage",
  "esp-backtrace",
  "esp-bootloader-esp-idf",

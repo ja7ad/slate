@@ -25,6 +25,7 @@ pub const B_COMMIT: usize = 27;
 pub const B_MAX: usize = 128;
 pub const MAX_PAGE_SIZE: usize = 512;
 pub const MAX_CKPT_LEN: u32 = 40960;
+pub const MAX_SEGS: usize = 256;
 
 // Index constants (ESP32 default 8 k-key config)
 pub const BUCKET_SLOTS: usize = 4;

@@ -71,9 +71,30 @@ fn finish_truncate(off: u32, committed_upto: u64) -> RecoverInfo {
 }
 
 /// Scans for segment headers.
-pub fn scan_segment_headers<F: Flash>(_flash: &mut F) -> Result<[u32; 1], Error> {
-    // Stub: return a single segment at 0 for now. Real implementation in doc 007.
-    Ok([0])
+pub fn scan_segment_headers<F: Flash>(
+    flash: &mut F,
+) -> Result<heapless::Vec<u32, { crate::config::MAX_SEGS }>, Error> {
+    let mut segs: heapless::Vec<(u32, u64), { crate::config::MAX_SEGS }> = heapless::Vec::new();
+    let mut off = 0;
+    let total_len = flash.capacity();
+    let mut hdr_buf = [0u8; crate::segment::SegmentHeader::LEN];
+
+    while off + (crate::config::SEG_BYTES as u32) <= total_len {
+        if flash.read(off, &mut hdr_buf).is_ok() && hdr_buf[0] == crate::config::MAGIC_SEG {
+            if let Ok(hdr) = crate::segment::SegmentHeader::decode(&hdr_buf) {
+                let _ = segs.push((off, hdr.seg_seq));
+            }
+        }
+        off += crate::config::SEG_BYTES as u32;
+    }
+
+    segs.sort_unstable_by_key(|&(_, seq)| seq);
+
+    let mut res = heapless::Vec::new();
+    for &(addr, _) in &segs {
+        let _ = res.push(addr);
+    }
+    Ok(res)
 }
 
 /// Workspace for the recovery process to avoid large stack allocations.

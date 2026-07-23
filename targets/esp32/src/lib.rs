@@ -5,18 +5,34 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 use slate_hal::{CounterKind, Flash, MonotonicCounter};
 
-/// Zero-cost thread-safe wrapper around static buffers to eliminate static mut UB.
-pub struct SyncBuffer<T>(UnsafeCell<T>);
+use core::cell::RefCell;
+use critical_section::Mutex;
+
+/// Zero-cost thread-safe wrapper around static buffers.
+pub struct SyncBuffer<T> {
+    data: UnsafeCell<T>,
+    taken: Mutex<RefCell<bool>>,
+}
 unsafe impl<T> Sync for SyncBuffer<T> {}
 
 impl<T> SyncBuffer<T> {
     pub const fn new(value: T) -> Self {
-        Self(UnsafeCell::new(value))
+        Self {
+            data: UnsafeCell::new(value),
+            taken: Mutex::new(RefCell::new(false)),
+        }
     }
 
     #[allow(clippy::mut_from_ref)]
-    pub fn as_mut(&self) -> &mut T {
-        unsafe { &mut *self.0.get() }
+    pub fn take(&self) -> &'static mut T {
+        critical_section::with(|cs| {
+            let mut taken = self.taken.borrow_ref_mut(cs);
+            if *taken {
+                panic!("SyncBuffer already taken");
+            }
+            *taken = true;
+            unsafe { &mut *self.data.get() }
+        })
     }
 }
 
@@ -134,7 +150,22 @@ impl EspCounter {
         #[cfg(not(any(feature = "counter-efuse", feature = "counter-flash")))]
         let kind = CounterKind::None;
 
-        Self { val: 0, kind }
+        #[allow(unused_mut)]
+        let mut val = 0;
+
+        #[cfg(feature = "counter-efuse")]
+        {
+            let mut flash = esp_storage::FlashStorage::new();
+            let mut buf = [0u8; 8];
+            if flash.read(0x300000, &mut buf).is_ok() {
+                let stored = u64::from_le_bytes(buf);
+                if stored != u64::MAX {
+                    val = stored;
+                }
+            }
+        }
+
+        Self { val, kind }
     }
 
     pub fn with_kind(kind: CounterKind) -> Self {
@@ -155,7 +186,15 @@ impl MonotonicCounter for EspCounter {
 
     fn increment(&mut self) -> Result<u64, Self::Error> {
         self.val = self.val.checked_add(1).ok_or(EspCounterError::Exhausted)?;
+
+        #[cfg(feature = "counter-efuse")]
+        {
+            let mut flash = esp_storage::FlashStorage::new();
+            // Erase the sector before writing to simulate NVS properly
+            let _ = flash.erase(0x300000, 0x300000 + 4096);
+            let _ = flash.write(0x300000, &self.val.to_le_bytes());
+        }
+
         Ok(self.val)
     }
 }
-
