@@ -121,7 +121,7 @@ fn main() -> ! {
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
-        ckpt_buf: CKPT_BUF.take(),
+        ckpt_buf,
         rng: slate_core::index::XorShift64::new(rng_seed),
     };
 
