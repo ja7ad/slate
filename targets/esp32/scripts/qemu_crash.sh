@@ -46,7 +46,7 @@ for i in $(seq 1 $ITERS); do
     if [ "$i" -eq 1 ]; then
         # On first iteration, setup an initial valid checkpoint and save old image for rollback
         # Retry once on failure — QEMU boot timing can vary in CI
-        if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+        if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
             echo "First seal attempt failed, retrying after delay..."
             kill -9 $QEMU_PID || true
             wait $QEMU_PID 2>/dev/null || true
@@ -62,7 +62,7 @@ for i in $(seq 1 $ITERS); do
             done
             PTY=$(echo "$PTY" | tr -d ' ,\r\n')
             sleep 1
-            if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+            if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
                 echo "Failed to seal initial checkpoint!"
                 cat drive.log
                 kill -9 $QEMU_PID || true
@@ -74,9 +74,9 @@ for i in $(seq 1 $ITERS); do
 
     # Issue put and commit. If it's a rollback attack, we also force a seal so the counter advances
     if [ "$ATTACK" == "rollback" ]; then
-        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --cmd "seal" > drive.log 2>&1 &
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "seal" --expect "" > drive.log 2>&1 &
     else
-        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --cmd "commit" > drive.log 2>&1 &
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "commit" --expect "" > drive.log 2>&1 &
     fi
     DRIVE_PID=$!
     

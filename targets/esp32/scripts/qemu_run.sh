@@ -14,7 +14,15 @@ if [ "${1:-}" == "--fresh" ] || [ ! -f "$IMAGE" ]; then
     echo "Creating fresh $IMAGE"
     # Needs espflash installed: cargo install espflash
     espflash save-image --ignore-app-descriptor --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/$BIN $IMAGE
-    truncate -s 4194304 "$IMAGE" 2>/dev/null || dd if=/dev/zero of="$IMAGE" bs=1 count=1 seek=4194303 conv=notrunc 2>/dev/null
+    # Pad to exactly 4MB with 0xFF (NOR flash erased state).
+    # truncate/dd-zero fills with 0x00 which is wrong — EspFlash::program()
+    # rejects writes to non-0xFF pages with ProgramWithoutErase.
+    CURRENT_SIZE=$(wc -c < "$IMAGE" | tr -d ' ')
+    TARGET_SIZE=4194304
+    if [ "$CURRENT_SIZE" -lt "$TARGET_SIZE" ]; then
+        PAD_SIZE=$((TARGET_SIZE - CURRENT_SIZE))
+        python3 -c "import sys; sys.stdout.buffer.write(b'\\xff' * $PAD_SIZE)" >> "$IMAGE"
+    fi
 fi
 
 qemu-system-riscv32 -nographic \
