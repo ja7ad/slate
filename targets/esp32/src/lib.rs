@@ -1,3 +1,5 @@
+#![no_std]
+
 use core::cell::UnsafeCell;
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
