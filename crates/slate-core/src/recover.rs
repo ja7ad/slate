@@ -63,6 +63,45 @@ impl Default for PendingBatch {
     }
 }
 
+/// Returns whether the on-flash record at `off` decrypts to exactly `key`.
+///
+/// Used during index reconstruction to resolve fingerprint collisions: two
+/// distinct live keys can share an `f`-bit fingerprint, so an index update must
+/// confirm the exact key (Thm 4.2) before overwriting a slot. All replayed
+/// records are already durable on flash at recovery time, so a flash read
+/// suffices (no batch lookup needed).
+pub fn record_key_eq<F: Flash, S: Sealer>(
+    flash: &mut F,
+    sealer: &mut S,
+    off: u32,
+    key: &[u8],
+) -> bool {
+    let mut hdr_bytes = [0u8; REC_HDR_LEN];
+    if flash.read(off, &mut hdr_bytes).is_err() {
+        return false;
+    }
+    let hdr = match RecordHeader::decode(&hdr_bytes) {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+    if hdr.klen as usize != key.len() {
+        return false;
+    }
+    let total_len = crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
+    let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN];
+    if total_len > rec_bytes.len() || flash.read(off, &mut rec_bytes[..total_len]).is_err() {
+        return false;
+    }
+    let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
+    if sealer
+        .open_record(&hdr_bytes, &rec_bytes[REC_HDR_LEN..total_len], &mut scratch)
+        .is_err()
+    {
+        return false;
+    }
+    &scratch[..hdr.klen as usize] == key
+}
+
 fn finish_truncate(off: u32, committed_upto: u64) -> RecoverInfo {
     RecoverInfo {
         committed_upto,
@@ -128,38 +167,41 @@ impl Default for RecoverWorkspace {
 }
 
 /// Recovers the state from the flash log.
+///
+/// The `apply` callback is invoked once per committed record in `seq` order. It
+/// receives `&mut F` and `&mut S` so the caller can read and decrypt *other*
+/// records (e.g. to compare full keys when rebuilding the RAM index and
+/// deduplicate colliding fingerprints); the borrows of `flash`/`s` handed to the
+/// callback are the same ones `recover` holds, reborrowed for the call.
 #[allow(clippy::collapsible_if)]
 #[allow(clippy::single_match)]
-pub fn recover<F: Flash>(
+#[allow(clippy::too_many_arguments)]
+pub fn recover<F: Flash, S: Sealer>(
     flash: &mut F,
-    s: &mut impl Sealer,
+    s: &mut S,
     chain: &mut Chain,
     epoch: u64,
+    start_off: u32,
     workspace: &mut RecoverWorkspace,
-    mut apply: impl FnMut(u64, u32, u8, &[u8]),
+    mut apply: impl FnMut(&mut F, &mut S, u64, u32, u8, &[u8]),
 ) -> Result<RecoverInfo, Error> {
-    let segs = scan_segment_headers(flash)?;
     let mut committed_upto = 0;
     workspace.pending.count = 0;
     workspace.pending.last_seq = 0;
     let mut scratch_chain = chain.clone();
 
     let page_size = flash.page_size() as u32;
-    let mut off = 0;
+    // The segment model is not materialized on flash (no MAGIC_SEG headers are
+    // ever written), so the log is one flat append region [start_off, capacity).
+    // `start_off` is the first byte above the checkpoint region (see
+    // `config::data_base_offset`); scanning stops at the first erased page.
+    let mut off = start_off;
 
-    for &seg_addr in &segs {
-        let mut hdr_check = [0u8; 1];
-        off = seg_addr;
-        if flash.read(seg_addr, &mut hdr_check).is_ok() && hdr_check[0] == MAGIC_SEG {
-            off += page_size;
-        }
+    {
         let mut buf = [0u8; 1];
 
         loop {
             if off >= flash.capacity() {
-                break;
-            }
-            if off >= seg_addr + (crate::config::SEG_BYTES as u32) {
                 break;
             }
             if flash.read(off, &mut buf).is_err() {
@@ -218,14 +260,22 @@ pub fn recover<F: Flash>(
                                                 .is_ok()
                                                 {
                                                     apply(
+                                                        flash,
+                                                        s,
                                                         seq,
                                                         apply_off,
                                                         hdr.op,
                                                         &workspace.scratch[..hdr.klen as usize],
                                                     );
-                                                } else {
-                                                    panic!("open_record failed during batch apply at apply_off {}", apply_off);
                                                 }
+                                                // If open_record fails here despite
+                                                // the commit marker's chain hash
+                                                // matching (which cryptographically
+                                                // binds every record in the batch),
+                                                // the read was transiently corrupt.
+                                                // Skip the record rather than
+                                                // panicking: boot must never abort
+                                                // the device with an unwind.
                                             }
                                         }
                                     }

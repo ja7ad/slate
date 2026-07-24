@@ -43,6 +43,18 @@ pub const CKPT_SLOTS: usize = 2;
 pub const CKPT_BASE_BLOCK: u32 = 2;
 pub const EPOCH_ANCHOR_TAG: &[u8] = b"slate/epoch";
 
+/// First flash byte the append log may use. The log grows upward from here and
+/// must never reach the checkpoint region (blocks `CKPT_BASE_BLOCK ..
+/// CKPT_BASE_BLOCK + CKPT_SLOTS * ceil(MAX_CKPT_LEN / block_size)`), or a commit
+/// would try to program the still-live checkpoint pages and fail
+/// `ProgramWithoutErase`. Computed from the runtime block size so it is correct
+/// for both the 4 KiB file/ESP32 blocks and any other geometry.
+pub fn data_base_offset(block_size: usize) -> u32 {
+    let bs = block_size as u32;
+    let blocks_per_slot = MAX_CKPT_LEN.div_ceil(bs);
+    (CKPT_BASE_BLOCK + CKPT_SLOTS as u32 * blocks_per_slot) * bs
+}
+
 #[derive(Clone, Copy)]
 pub struct SchedCfg {
     pub auto_b: bool,

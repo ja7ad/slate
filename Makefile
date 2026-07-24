@@ -18,7 +18,8 @@ build-bare:
 	cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-default-features --target thumbv7em-none-eabihf
 
 build-esp:
-	cd targets/esp32 && cargo build --release --target xtensa-esp32-none-elf
+	cd targets/esp32 && cargo build --release --no-default-features \
+		--features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
 
 check-all: fmt-check lint test build-bare build-esp
 	@echo "All checks passed successfully!"

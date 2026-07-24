@@ -38,8 +38,9 @@ fn main() {
         &mut sealer,
         &mut rec_chain,
         1,
+        0,
         &mut workspace,
-        |seq, off, _op, _key| {
+        |_flash, _sealer, seq, off, _op, _key| {
             println!("Recovered seq: {} off: {}", seq, off);
         },
     )

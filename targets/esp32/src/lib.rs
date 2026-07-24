@@ -5,8 +5,6 @@ use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
 use slate_hal::{CounterKind, Flash, MonotonicCounter};
 
-use critical_section::Mutex;
-
 /// Zero-cost thread-safe wrapper around static buffers.
 pub struct SyncBuffer<T> {
     name: &'static str,
@@ -139,6 +137,14 @@ pub enum EspCounterError {
     Exhausted,
 }
 
+/// Flash byte offset where the best-effort rollback counter persists its value
+/// (its own 4 KiB erase sector). This MUST lie outside every `EspFlash` data
+/// region so the two never write the same sector; the demo binaries map the log
+/// at `[0x100000, 0x180000)`, well below this address. Only referenced by the
+/// `counter-efuse` persistence path.
+#[cfg(feature = "counter-efuse")]
+const COUNTER_FLASH_ADDR: u32 = 0x300000;
+
 pub struct EspCounter {
     val: u64,
     kind: CounterKind,
@@ -164,9 +170,16 @@ impl EspCounter {
 
         #[cfg(feature = "counter-efuse")]
         {
-            let mut flash = esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
+            // SAFETY: `FLASH::steal()` aliases the flash peripheral already owned
+            // by `EspFlash`. This is sound here because (a) the node is
+            // single-threaded with no interrupt touching flash, so no flash
+            // operation is ever in flight concurrently, and (b) this counter only
+            // ever reads/writes `COUNTER_FLASH_ADDR`, a sector disjoint from every
+            // `EspFlash` data region — the two never touch the same bytes.
+            let mut flash =
+                esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
             let mut buf = [0u8; 8];
-            if flash.read(0x300000, &mut buf).is_ok() {
+            if flash.read(COUNTER_FLASH_ADDR, &mut buf).is_ok() {
                 let stored = u64::from_le_bytes(buf);
                 if stored != u64::MAX {
                     val = stored;
@@ -198,10 +211,14 @@ impl MonotonicCounter for EspCounter {
 
         #[cfg(feature = "counter-efuse")]
         {
-            let mut flash = esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
+            // SAFETY: see `EspCounter::new` — single-threaded, and this handle only
+            // ever touches `COUNTER_FLASH_ADDR`, disjoint from every `EspFlash`
+            // region, so aliasing the flash peripheral cannot corrupt log data.
+            let mut flash =
+                esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
             // Erase the sector before writing to simulate NVS properly
-            let _ = flash.erase(0x300000, 0x300000 + 4096);
-            let _ = flash.write(0x300000, &self.val.to_le_bytes());
+            let _ = flash.erase(COUNTER_FLASH_ADDR, COUNTER_FLASH_ADDR + 4096);
+            let _ = flash.write(COUNTER_FLASH_ADDR, &self.val.to_le_bytes());
         }
 
         Ok(self.val)
