@@ -36,11 +36,24 @@ fn main() -> ! {
     let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
 
+    let mut head_state = HeadState {
+        seg_seq: 0,
+        write_offset: 0,
+        block_idx: 0,
+    };
+
     let mut mount_status = "OK";
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
         match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
-            Ok((st, len)) => (st, len),
+            Ok((st, len)) => {
+                if let Ok(hdr) = slate_core::checkpoint::CheckpointHeader::decode(&ckpt_buf[..slate_core::checkpoint::CKPT_HDR_LEN]) {
+                    head_state.seg_seq = hdr.seg_seq;
+                    head_state.write_offset = hdr.write_offset;
+                    head_state.block_idx = hdr.write_offset / 4096;
+                }
+                (st, len)
+            }
             Err(slate_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
                 let st = slate_core::epoch::EngineState {
@@ -103,11 +116,7 @@ fn main() -> ! {
         engine: engine_state,
         log_hot: slate_core::log::Log::new(
             HOT_BUF.take(),
-            HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
-            },
+            head_state,
         ),
         log_cold: slate_core::log::Log::new(
             COLD_BUF.take(),

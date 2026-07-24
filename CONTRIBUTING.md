@@ -39,6 +39,16 @@ cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-def
 
 # 5. Build ESP32 target firmware (requires Xtensa toolchain)
 cd targets/esp32 && cargo build --release --target xtensa-esp32-none-elf
+
+# 6. Install Espressif QEMU and run the crash test suite
+sudo apt-get install -y libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20 python3-serial
+wget https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+export PATH="$PWD/qemu/bin:$PATH"
+cd targets/esp32
+./scripts/qemu_crash.sh --iters 25 --attack none
+./scripts/qemu_crash.sh --iters 2 --attack rollback
+./scripts/qemu_crash.sh --iters 2 --attack tamper
 ```
 
 You can also use the provided `Makefile` to run these commands quickly:

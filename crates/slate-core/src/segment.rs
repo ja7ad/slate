@@ -7,7 +7,7 @@ use slate_erasure::matrix::cauchy_row;
 use slate_erasure::{PAGE_SIZE, RS_K, RS_M};
 use slate_hal::Flash;
 
-/// Segment Header as per design doc 002.
+/// Segment Header.
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentHeader {
     /// Magic byte (0x51).

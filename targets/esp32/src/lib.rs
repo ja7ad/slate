@@ -100,6 +100,7 @@ impl<'a> Flash for EspFlash<'a> {
             {
                 for &b in check_buf.iter() {
                     if b != 0xFF {
+                        esp_println::println!("EspFlash program error: not erased at addr {}", addr + chunk_offset as u32);
                         return Err(EspFlashError::ProgramWithoutErase);
                     }
                 }
@@ -108,19 +109,27 @@ impl<'a> Flash for EspFlash<'a> {
 
         self.inner
             .write(self.base + addr, buf)
-            .map_err(|_| EspFlashError::StorageError)
+            .map_err(|e| {
+                esp_println::println!("EspFlash write error at {}: {:?}", addr, e);
+                EspFlashError::StorageError
+            })
     }
 
     fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
         if !block_addr.is_multiple_of(4096) {
+            esp_println::println!("EspFlash erase alignment error: addr {}", block_addr);
             return Err(EspFlashError::Unaligned);
         }
         if block_addr + 4096 > self.len {
+            esp_println::println!("EspFlash erase bounds error: addr {}", block_addr);
             return Err(EspFlashError::OutOfBounds);
         }
         self.inner
             .erase(self.base + block_addr, self.base + block_addr + 4096)
-            .map_err(|_| EspFlashError::StorageError)
+            .map_err(|e| {
+                esp_println::println!("EspFlash erase error at {}: {:?}", block_addr, e);
+                EspFlashError::StorageError
+            })
     }
 }
 
@@ -155,7 +164,7 @@ impl EspCounter {
 
         #[cfg(feature = "counter-efuse")]
         {
-            let mut flash = esp_storage::FlashStorage::new();
+            let mut flash = esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
             let mut buf = [0u8; 8];
             if flash.read(0x300000, &mut buf).is_ok() {
                 let stored = u64::from_le_bytes(buf);
@@ -189,7 +198,7 @@ impl MonotonicCounter for EspCounter {
 
         #[cfg(feature = "counter-efuse")]
         {
-            let mut flash = esp_storage::FlashStorage::new();
+            let mut flash = esp_storage::FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
             // Erase the sector before writing to simulate NVS properly
             let _ = flash.erase(0x300000, 0x300000 + 4096);
             let _ = flash.write(0x300000, &self.val.to_le_bytes());
