@@ -7,4 +7,4 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-slate = { version = "0.1.0", path = "../slate" }
+slate = { version = "0.3.1", path = "../slate" }

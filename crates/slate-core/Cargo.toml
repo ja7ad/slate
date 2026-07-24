@@ -7,8 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-slate-hal = { version = "0.1.0", path = "../slate-hal" }
-slate-erasure = { version = "0.1.0", path = "../slate-erasure" }
+slate-hal = { version = "0.3.1", path = "../slate-hal" }
+slate-erasure = { version = "0.3.1", path = "../slate-erasure" }
 sha2 = { version = "0.11.0", default-features = false }
 heapless = "0.8.0"
 
