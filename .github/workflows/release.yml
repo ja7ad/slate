@@ -97,7 +97,7 @@ jobs:
             echo "Publishing ${name} ${VERSION}"
             cargo publish -p "${name}" --locked
             echo "Waiting for ${name} ${VERSION} to be indexed on crates.io..."
-            for _ in $(seq 1 30); do
+            for _ in $(seq 1 60); do
               if curl -sf "https://crates.io/api/v1/crates/${name}/${VERSION}" >/dev/null; then
                 echo "${name} ${VERSION} is live"
                 return
