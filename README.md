@@ -8,57 +8,32 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-core)
 
-**SLATE** (*Secure, Log-structured, Authenticated, Tamper-Evident*) is a single-device key–value (KV) storage engine designed from the ground up for the edge computing regime—from bare-metal microcontrollers like the ESP32 to single-board computers like the Raspberry Pi.
+SLATE is a single-device key-value engine for edge computing, from bare-metal microcontrollers like the ESP32 up to boards like the Raspberry Pi. It's built around four goals that usually fight each other: a tiny memory footprint, good performance, low energy use, and real at-rest security.
 
-SLATE provides a mathematically rigorous foundation that balances four simultaneous, often conflicting, objectives: an **ultra-light memory footprint**, **high performance**, **low energy consumption**, and **strong at-rest security**. Rather than claiming an impossible Pareto-dominating point, SLATE delivers a formally specified composition of well-understood primitives whose guarantees are mathematically proven.
-
----
-
-## Key Features
-
-- ⚡ **Freshness-Bound $O(1)$ Authenticated Append-Log:** Offers whole-store tamper-evidence and epoch-granular hardware monotonic counter rollback protection. Features constant-time chain updates and $O(1)$ freshness-tip verification on boot (G1–G3).
-- 🔋 **Energy-Optimal Commit Scheduling:** Utilizes an Economic-Order-Quantity (EOQ) style dynamic integer-only scheduler ($B^\star$) for durable commits, optimizing the trade-off between retention latency and the fixed energy cost of waking the flash (Theorem 9).
-- 🧠 **Ultra-Light RAM Index (`no_std`)**: Operates completely allocation-free with a bounded, compile-time asserted RAM footprint ($\le 32\text{--}64\text{ KB}$). Employs a partial-key cuckoo hash index ensuring worst-case $O(1)$ lookup with a load-factor guarantee.
-- 🛡️ **Proven Prefix-Durability**: Guaranteed zero acknowledged write loss across arbitrary power failures (Theorem 1). Recovery bounds logical reconstruction to a constant $O(\Theta)$ replay from the last checkpoint.
-- 🧩 **Bad-Block Tolerance**: Integrates systematic Reed–Solomon $\mathrm{RS}(n,k)$ erasure coding over $\mathrm{GF}(2^8)$ and per-batch XOR parity to protect both sealed segments and the open head segment against flash bit-rot without hot-path write overhead (Theorem 8).
-- 🌐 **Multi-Target Architecture**: Cleanly separated into a heapless `no_std` core, `std` POSIX wrapper, C ABI FFI, and bare-metal `esp-hal` firmware for ESP32.
+We don't claim to beat every engine on every axis at once — that's not possible. Instead SLATE composes well-understood primitives (log-structured storage, AEAD, cuckoo hashing, Reed-Solomon parity) into a design whose guarantees are proven rather than assumed, and picks concrete operating points on the resulting trade-off curve.
 
 ---
 
-## Workspace Layout
+## Key features
 
-```
-slate/
-├── Cargo.toml                  # Workspace manifest (MIT OR Apache-2.0)
-├── crates/
-│   ├── slate-core/             # Heapless engine core (no_std, zero alloc)
-│   ├── slate-crypto/           # AEAD, KDF key hierarchy, MAC sealer (no_std)
-│   ├── slate-erasure/          # Reed–Solomon RS(n,k) erasure coder (no_std)
-│   ├── slate-hal/              # Hardware Abstraction Layer traits (no_std)
-│   ├── slate/                  # std wrapper & POSIX FileFlash engine
-│   ├── slate-cli/              # CLI binary utility (put, get, del, stats)
-│   ├── slate-ffi/              # C ABI bindings (cbindgen header generation)
-│   └── slate-sim/              # Deterministic crash-injection simulator
-├── targets/
-│   └── esp32/                  # Bare-metal esp-hal port (ESP32-C3 QEMU & Wokwi)
-└── docs/
-    ├── SLATE_FORMAL_SPECIFICATION.md  # Formal mathematical report & theorems
-    └── slate_qemu_benchmarks.md       # Empirical benchmark results
-```
+- **Freshness-bound O(1) authenticated log** — whole-store tamper-evidence plus epoch-granular rollback protection via a hardware monotonic counter. Chain updates and boot-time freshness checks are both O(1) (G1–G3 in the formal spec).
+- **Energy-optimal commit scheduling** — an EOQ-style scheduler picks the commit batch size $B^\star$ that minimizes energy per operation, balancing flash wake-up cost against write latency.
+- **Ultra-light RAM index (`no_std`)** — a partial-key cuckoo hash index with zero heap allocation and a compile-time-bounded footprint (roughly 32–64 KB), giving worst-case O(1) lookups.
+- **Proven prefix-durability** — no acknowledged write is ever lost across arbitrary power failures, and recovery after a crash is bounded to a constant O(Θ) replay from the last checkpoint.
+- **Bad-block tolerance** — Reed–Solomon RS(n,k) erasure coding over GF(2⁸) plus per-batch XOR parity protect both sealed segments and the open head segment, without adding overhead to the write hot path.
+- **Runs everywhere** — a heapless `no_std` core, a `std` wrapper for POSIX systems, a C ABI, and a bare-metal `esp-hal` firmware target for the ESP32.
 
 ---
 
 ## Quickstart
 
-### 1. Using `slate` in Rust (`std`)
+### 1. Rust (`std`)
 
-Add `slate` to your `Cargo.toml`:
 ```toml
 [dependencies]
-slate = "0.1"
+slate = "0.3"
 ```
 
-Basic Put / Get usage:
 ```rust,ignore
 use slate::Db;
 
@@ -79,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 2. Using `slate-ffi` in C / C++
+### 2. C / C++ (`slate-ffi`)
 
 Include [`slate.h`](crates/slate-ffi/include/slate.h) and link against `libslate_ffi`:
 
@@ -109,9 +84,8 @@ int main(void) {
 }
 ```
 
-### 3. Bare-Metal `no_std` Firmware (ESP32)
+### 3. Bare-metal ESP32 firmware
 
-Building firmware for ESP32-C3:
 ```bash
 cd targets/esp32
 cargo build --release --bin kv_demo --target riscv32imc-unknown-none-elf
@@ -119,18 +93,18 @@ cargo build --release --bin kv_demo --target riscv32imc-unknown-none-elf
 
 ---
 
-## Formal Specification & Benchmarks
+## Formal spec & benchmarks
 
-- **Formal Mathematical Specification**: See [`docs/SLATE_FORMAL_SPECIFICATION.md`](docs/SLATE_FORMAL_SPECIFICATION.md) for formal proofs of prefix-durability, index reconstructibility, security reductions, and cost models.
-- **Empirical QEMU Benchmarks**: See [`docs/slate_qemu_benchmarks.md`](docs/slate_qemu_benchmarks.md) for crash Monte-Carlo results, write-amplification under Zipf skew, and energy decay sweeps.
+- [`docs/SLATE_FORMAL_SPECIFICATION.md`](docs/SLATE_FORMAL_SPECIFICATION.md) has the full formal model: proofs of prefix-durability, index reconstructibility, security reductions, and the cost models.
+- [`docs/slate_qemu_benchmarks.md`](docs/slate_qemu_benchmarks.md) has empirical results from the QEMU harness — crash Monte-Carlo runs, write-amplification under skewed workloads, and energy sweeps.
 
-> **Honesty Note**: If deploying to a high-throughput desktop OS server where active tamper-resistance and deterministic low-RAM footprint are not required, standard engines (e.g., RocksDB or SQLite) may provide higher raw I/O throughput. SLATE is specifically engineered for edge environments requiring tamper-evidence, crash-safety, and tight RAM budgets.
+If you're deploying to a high-throughput server where active tamper-resistance and a tight RAM budget aren't requirements, a general-purpose engine like RocksDB or SQLite will likely give you more raw I/O throughput. SLATE is built for edge environments where tamper-evidence, crash-safety, and tight RAM budgets actually matter.
 
 ---
 
 ## Contributing
 
-We welcome contributions! Please review our [`CONTRIBUTING.md`](CONTRIBUTING.md) guide before submitting pull requests or issues.
+Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR or issue.
 
 ---
 
@@ -147,7 +121,7 @@ at your option.
 
 ## Citation
 
-If you use SLATE or reference its formal specification, correctness proofs, or energy models in your research or system design, please cite:
+If you use SLATE or reference its formal specification, correctness proofs, or energy models, please cite:
 
 ```bibtex
 @techreport{slate2026formal,
@@ -159,4 +133,3 @@ If you use SLATE or reference its formal specification, correctness proofs, or e
   note        = {Available at docs/SLATE_FORMAL_SPECIFICATION.md}
 }
 ```
-
