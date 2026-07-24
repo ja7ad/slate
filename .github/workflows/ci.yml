@@ -78,11 +78,11 @@ jobs:
           tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           echo "$PWD/qemu/bin" >> $GITHUB_PATH
       - name: Run QEMU Crash Suite (None)
-        run: ./targets/esp32/scripts/qemu_crash.sh --iters 25 --attack none
+        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 25 --attack none
       - name: Run QEMU Crash Suite (Rollback)
-        run: ./targets/esp32/scripts/qemu_crash.sh --iters 2 --attack rollback
+        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack rollback
       - name: Run QEMU Crash Suite (Tamper)
-        run: ./targets/esp32/scripts/qemu_crash.sh --iters 2 --attack tamper
+        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack tamper
 
   wokwi-sim:
     name: Wokwi Simulator

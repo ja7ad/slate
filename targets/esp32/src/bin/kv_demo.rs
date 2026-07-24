@@ -18,15 +18,16 @@ use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
-static HOT_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
-static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new([0; 4096]);
-static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new([0; 2048 * 4]);
-static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new([0; 35000]);
+static HOT_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("HOT_BUF", [0; 4096]);
+static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("COLD_BUF", [0; 4096]);
+static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new("INDEX_SLOTS", [0; 2048 * 4]);
+static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new("CKPT_BUF", [0; 35000]);
 
 #[esp_hal::main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
+    println!("kv_demo main started");
 
     let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
     let mut counter = EspCounter::new();
@@ -35,11 +36,24 @@ fn main() -> ! {
     let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
 
+    let mut head_state = HeadState {
+        seg_seq: 0,
+        write_offset: 0,
+        block_idx: 0,
+    };
+
     let mut mount_status = "OK";
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
         match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
-            Ok((st, len)) => (st, len),
+            Ok((st, len)) => {
+                if let Ok(hdr) = slate_core::checkpoint::CheckpointHeader::decode(&ckpt_buf[..slate_core::checkpoint::CKPT_HDR_LEN]) {
+                    head_state.seg_seq = hdr.seg_seq;
+                    head_state.write_offset = hdr.write_offset;
+                    head_state.block_idx = hdr.write_offset / 4096;
+                }
+                (st, len)
+            }
             Err(slate_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
                 let st = slate_core::epoch::EngineState {
@@ -102,11 +116,7 @@ fn main() -> ! {
         engine: engine_state,
         log_hot: slate_core::log::Log::new(
             HOT_BUF.take(),
-            HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
-            },
+            head_state,
         ),
         log_cold: slate_core::log::Log::new(
             COLD_BUF.take(),
@@ -121,7 +131,7 @@ fn main() -> ! {
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
-        ckpt_buf: CKPT_BUF.take(),
+        ckpt_buf,
         rng: slate_core::index::XorShift64::new(rng_seed),
     };
 
@@ -170,7 +180,7 @@ where
             let v = v_opt.unwrap_or("").as_bytes();
 
             let seq = slate.engine.next_seq;
-            if let Ok((_, offset)) = slate.log_hot.append(
+            match slate.log_hot.append(
                 seq,
                 slate_core::config::OP_PUT,
                 k,
@@ -178,11 +188,14 @@ where
                 &mut slate.sealer,
                 &mut slate.engine.chain,
             ) {
-                slate.engine.next_seq += 1;
-                slate.index_update_offset(k, offset);
-                // Do not ack here, ack on commit!
-            } else {
-                println!("err");
+                Ok((_, offset)) => {
+                    slate.engine.next_seq += 1;
+                    slate.index_update_offset(k, offset);
+                    // Do not ack here, ack on commit!
+                }
+                Err(e) => {
+                    println!("err put {:?}", e);
+                }
             }
         }
         Some("get") => {
@@ -264,11 +277,26 @@ where
             }
         }
         Some("commit") => {
-            if slate.commit().is_ok() {
-                let ack_seq = slate.engine.acked_seq;
-                println!("ack {}", ack_seq);
-            } else {
-                println!("err");
+            match slate.commit() {
+                Ok(_) => {
+                    let ack_seq = slate.engine.acked_seq;
+                    println!("ack {}", ack_seq);
+                }
+                Err(e) => {
+                    println!("err commit {:?}", e);
+                }
+            }
+        }
+        Some("seal") => {
+            // Force an epoch seal by pretending we reached THETA
+            slate.engine.records_in_epoch = slate_core::config::THETA;
+            match slate.commit() {
+                Ok(_) => {
+                    println!("OK");
+                }
+                Err(e) => {
+                    println!("err seal {:?}", e);
+                }
             }
         }
         Some("stats") => {

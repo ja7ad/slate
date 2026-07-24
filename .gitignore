@@ -34,3 +34,4 @@ targets/esp32/*.log
 
 # macOS
 .DS_Store
+qemu/

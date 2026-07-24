@@ -1,22 +1,26 @@
 # SLATE: Secure, Log-structured, Authenticated, Tamper-Evident Key–Value Engine
 
-[![CI](https://github.com/javad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/javad/slate/actions/workflows/ci.yml)
+<p align="center">
+  <img src="docs/slate_logo.png" alt="SLATE Logo" width="300"/>
+</p>
+
+[![CI](https://github.com/ja7ad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/ja7ad/slate/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-core)
 
-**SLATE** is a single-device, log-structured key–value storage engine designed for resource-constrained edge devices — from bare-metal microcontrollers (e.g., ESP32) to single-board computers (Raspberry Pi) and OS-backed environments.
+**SLATE** (*Secure, Log-structured, Authenticated, Tamper-Evident*) is a single-device key–value (KV) storage engine designed from the ground up for the edge computing regime—from bare-metal microcontrollers like the ESP32 to single-board computers like the Raspberry Pi.
 
-SLATE balances four competing objectives: **ultra-light memory footprint**, **high performance**, **low energy consumption**, and **strong at-rest security**.
+SLATE provides a mathematically rigorous foundation that balances four simultaneous, often conflicting, objectives: an **ultra-light memory footprint**, **high performance**, **low energy consumption**, and **strong at-rest security**. Rather than claiming an impossible Pareto-dominating point, SLATE delivers a formally specified composition of well-understood primitives whose guarantees are mathematically proven.
 
 ---
 
 ## Key Features
 
-- 🔒 **At-Rest Security (G1–G3)**: Per-record ChaCha20-Poly1305 / AES-GCM AEAD encryption, rolling hash-chain tamper-evidence, and epoch-granular hardware monotonic counter rollback protection.
-- ⚡ **Zero-Heap `no_std` Core**: [`slate-core`](crates/slate-core) operates completely allocation-free with bounded, compile-time asserted RAM footprint ($\le 32\text{--}64\text{ KB}$).
-- 🛡️ **Proven Prefix-Durability**: Guaranteed zero acknowledged write loss across arbitrary power failures (Theorem 1).
-- 🧩 **Reed–Solomon Erasure Coding**: Systematic $\mathrm{RS}(n,k)$ over $\mathrm{GF}(2^8)$ repairs flash bit-rot and bad blocks without hot-path write overhead (Theorem 8).
-- 🔋 **Energy-Optimal Commit Scheduling**: Dynamic integer-only $B^\star$ scheduler minimizes wake-up and flash program power (Theorem 9).
+- ⚡ **Freshness-Bound $O(1)$ Authenticated Append-Log:** Offers whole-store tamper-evidence and epoch-granular hardware monotonic counter rollback protection. Features constant-time chain updates and $O(1)$ freshness-tip verification on boot (G1–G3).
+- 🔋 **Energy-Optimal Commit Scheduling:** Utilizes an Economic-Order-Quantity (EOQ) style dynamic integer-only scheduler ($B^\star$) for durable commits, optimizing the trade-off between retention latency and the fixed energy cost of waking the flash (Theorem 9).
+- 🧠 **Ultra-Light RAM Index (`no_std`)**: Operates completely allocation-free with a bounded, compile-time asserted RAM footprint ($\le 32\text{--}64\text{ KB}$). Employs a partial-key cuckoo hash index ensuring worst-case $O(1)$ lookup with a load-factor guarantee.
+- 🛡️ **Proven Prefix-Durability**: Guaranteed zero acknowledged write loss across arbitrary power failures (Theorem 1). Recovery bounds logical reconstruction to a constant $O(\Theta)$ replay from the last checkpoint.
+- 🧩 **Bad-Block Tolerance**: Integrates systematic Reed–Solomon $\mathrm{RS}(n,k)$ erasure coding over $\mathrm{GF}(2^8)$ and per-batch XOR parity to protect both sealed segments and the open head segment against flash bit-rot without hot-path write overhead (Theorem 8).
 - 🌐 **Multi-Target Architecture**: Cleanly separated into a heapless `no_std` core, `std` POSIX wrapper, C ABI FFI, and bare-metal `esp-hal` firmware for ESP32.
 
 ---

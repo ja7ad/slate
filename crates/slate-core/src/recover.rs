@@ -94,6 +94,9 @@ pub fn scan_segment_headers<F: Flash>(
     for &(addr, _) in &segs {
         let _ = res.push(addr);
     }
+    if res.is_empty() {
+        let _ = res.push(0);
+    }
     Ok(res)
 }
 
@@ -154,6 +157,9 @@ pub fn recover<F: Flash>(
 
         loop {
             if off >= flash.capacity() {
+                break;
+            }
+            if off >= seg_addr + (crate::config::SEG_BYTES as u32) {
                 break;
             }
             if flash.read(off, &mut buf).is_err() {

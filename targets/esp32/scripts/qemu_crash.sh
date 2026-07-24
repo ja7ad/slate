@@ -17,6 +17,13 @@ done
 
 echo "Running crash campaign (iters: $ITERS, attack: $ATTACK)..."
 
+rm -f flash.img flash_old.img
+./scripts/qemu_run.sh --fresh > qemu.log 2>&1 &
+QEMU_PID=$!
+sleep 2
+kill -9 $QEMU_PID || true
+wait $QEMU_PID 2>/dev/null || true
+
 for i in $(seq 1 $ITERS); do
     echo "Iteration $i..."
     rm -f qemu.log
@@ -38,41 +45,70 @@ for i in $(seq 1 $ITERS); do
         kill -9 $QEMU_PID || true
         exit 1
     fi
+    # Strip trailing whitespace/commas from PTY
+    PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+    # Let firmware finish booting before opening serial
+    sleep 1
     
     if [ "$i" -eq 1 ]; then
-        # On first iteration, just wait for prompt and save old image for rollback
-        if ! python3 ./scripts/serial_drive.py --port "$PTY" > drive.log 2>&1; then
-            echo "serial_drive.py failed on iteration 1!"
-            cat drive.log
-            cat qemu.log
+        # On first iteration, setup an initial valid checkpoint and save old image for rollback
+        # Retry once on failure — QEMU boot timing can vary in CI
+        if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" --cmd "put kx vx" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+            echo "First seal attempt failed, retrying after delay..."
             kill -9 $QEMU_PID || true
-            exit 1
+            wait $QEMU_PID 2>/dev/null || true
+            sleep 1
+            rm -f qemu.log
+            ./scripts/qemu_run.sh > qemu.log 2>&1 &
+            QEMU_PID=$!
+            PTY=""
+            for try in {1..1000}; do
+                PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
+                if [ -n "$PTY" ]; then break; fi
+                sleep 0.1
+            done
+            PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+            sleep 1
+            if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" --cmd "put kx vx" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
+                echo "Failed to seal initial checkpoint!"
+                cat drive.log
+                kill -9 $QEMU_PID || true
+                exit 1
+            fi
         fi
         cp flash.img flash_old.img
     fi
 
-    # Issue put and commit
-    python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "commit" --expect "" > drive.log 2>&1 &
-    DRIVE_PID=$!
-    
-    # Wait for the drive to start sending
-    sleep 0.2
-    
-    RND=$RANDOM
-    DELAY=$(echo "scale=3; 0.05 + 0.45 * ($RND / 32767)" | bc)
-    sleep $DELAY
-    
-    kill -9 $QEMU_PID || true
-    kill -9 $DRIVE_PID 2>/dev/null || true
-    wait $QEMU_PID 2>/dev/null || true
+    # Issue put and commit. If it's a rollback attack, we also force a seal so the counter advances
+    if [ "$ATTACK" == "rollback" ]; then
+        # For rollback, we MUST let seal finish so the hardware counter actually increments!
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1
+        kill -9 $QEMU_PID || true
+        wait $QEMU_PID 2>/dev/null || true
+    else
+        python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k$i v$i" --expect "" --cmd "commit" --expect "" > drive.log 2>&1 &
+        DRIVE_PID=$!
+        
+        # Wait for the drive to start sending
+        sleep 0.2
+        
+        RND=$RANDOM
+        DELAY=$(echo "scale=3; 0.05 + 0.45 * ($RND / 32767)" | bc)
+        sleep $DELAY
+        
+        kill -9 $QEMU_PID || true
+        kill -9 $DRIVE_PID 2>/dev/null || true
+        wait $QEMU_PID 2>/dev/null || true
+    fi
     
     if [ "$ATTACK" == "rollback" ] && [ "$i" -eq $ITERS ]; then
         echo "Injecting rollback attack..."
-        cp flash_old.img flash.img
+        # Copy only the first 2MB to revert the SLATE partition, PRESERVING the monotonic counter!
+        dd if=flash_old.img of=flash.img bs=1048576 count=2 conv=notrunc 2>/dev/null
     elif [ "$ATTACK" == "tamper" ] && [ "$i" -eq $ITERS ]; then
         echo "Injecting tamper attack..."
-        # Corrupt data in middle
-        printf '\x00' | dd of=flash.img bs=1 seek=1000000 count=1 conv=notrunc 2>/dev/null
+        # Corrupt monotonic counter at 0x300000 to trigger Tampered
+        printf '\x00' | dd of=flash.img bs=1 seek=3145728 count=1 conv=notrunc 2>/dev/null
     fi
     
     # Verify by restarting
@@ -88,6 +124,9 @@ for i in $(seq 1 $ITERS); do
         fi
         sleep 0.1
     done
+    PTY=$(echo "$PTY" | tr -d ' ,\r\n')
+    # Let firmware finish booting
+    sleep 1
     
     EXPECT_STATUS="OK"
     if [ "$ATTACK" == "rollback" ] && [ "$i" -eq $ITERS ]; then
