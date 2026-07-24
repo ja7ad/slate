@@ -169,7 +169,7 @@ pub fn compact_one<
                                 }
                                 if is_live {
                                     let new_off = st.append_cold(key, val, 0)?;
-                                    st.index_update_offset(key, new_off);
+                                    st.index_update_offset(key, new_off)?;
                                 }
                             } else if hdr.op == crate::config::OP_DEL && hdr.seq > watermark {
                                 st.append_cold_tombstone(key, 0)?;

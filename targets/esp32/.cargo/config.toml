@@ -3,11 +3,6 @@ rustflags = [
   "-C", "link-arg=-Tlinkall.x",
 ]
 
-[target.xtensa-esp32-none-elf]
-rustflags = [
-  "-C", "link-arg=-Tlinkall.x",
-]
-
 [env]
 # Allow the binary to boot on QEMU, which emulates efuse blk rev v1.3.
 # Without this, esp-hal 1.x sets a high min revision in the image header

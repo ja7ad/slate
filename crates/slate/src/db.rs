@@ -316,27 +316,45 @@ impl Db {
         let mut index_upsert_error = false;
         let mut rng = slate_core::index::XorShift64::new(42);
         let mut workspace = Box::new(slate_core::recover::RecoverWorkspace::new());
+        // The log lives above the checkpoint region; recovery scans from there.
+        // (block size 4096 matches the FileFlash constructed above.)
+        let data_base = slate_core::config::data_base_offset(4096);
         let rec_info = slate_core::recover::recover(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
             slate.engine.epoch,
+            data_base,
             &mut workspace,
-            |_seq, off, op, key| {
+            |flash, sealer, _seq, off, op, key| {
+                // Replay in seq order, deduplicating by the full key so repeated
+                // Puts/Deletes to the same key collapse to a single live slot
+                // rather than filling the table with superseded entries.
                 if op == slate_core::config::OP_PUT {
-                    if slate.index.upsert(key, off, &mut rng, |_| false).is_err() {
+                    let res = slate.index.upsert(key, off, &mut rng, |cand_off| {
+                        slate_core::recover::record_key_eq(flash, sealer, cand_off, key)
+                    });
+                    if res.is_err() {
                         index_upsert_error = true;
                     }
                 } else if op == slate_core::config::OP_DEL {
-                    slate.index.remove(key, |_| true);
+                    slate.index.remove(key, |cand_off| {
+                        slate_core::recover::record_key_eq(flash, sealer, cand_off, key)
+                    });
                 }
             },
         )
         .map_err(|e| DbError::Config(format!("{:?}", e)))?;
 
         slate.log_hot.head.write_offset = rec_info.head_pos;
-        slate.engine.acked_seq = rec_info.committed_upto;
-        slate.engine.next_seq = rec_info.committed_upto + 1;
+        // `mount` seeded next_seq from the checkpoint (= ckpt.seq). Never let the
+        // tail replay regress the sequence counter below it — a crash immediately
+        // after a checkpoint leaves committed_upto == 0 with a non-trivial
+        // checkpoint seq, and reusing those seq numbers would break AEAD nonce
+        // uniqueness and the total order.
+        let mount_next = slate.engine.next_seq;
+        slate.engine.next_seq = (rec_info.committed_upto + 1).max(mount_next);
+        slate.engine.acked_seq = rec_info.committed_upto.max(mount_next.saturating_sub(1));
 
         if index_upsert_error {
             return Err("Index capacity exceeded during recovery".into());
@@ -370,8 +388,7 @@ impl Db {
             &mut slate.engine.chain,
         )?;
         slate.engine.next_seq += 1;
-        let mut rng = slate_core::index::XorShift64::new(42);
-        slate.index.upsert(key, offset, &mut rng, |_| false)?;
+        slate.index_update_offset(key, offset)?;
         slate
             .metrics
             .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len() + val.len()) as u64);
@@ -528,7 +545,7 @@ impl Db {
         )?;
         slate.engine.next_seq += 1;
 
-        slate.index.remove(key, |_| true);
+        slate.index_remove_key(key);
         slate
             .metrics
             .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);
@@ -560,7 +577,7 @@ impl Db {
         )?;
         slate.engine.next_seq += 1;
 
-        slate.index.remove(key, |_| true);
+        slate.index_remove_key(key);
         slate
             .metrics
             .add_user_bytes((slate_core::config::REC_OVERHEAD + key.len()) as u64);

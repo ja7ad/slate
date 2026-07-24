@@ -72,8 +72,9 @@ fn test_crash_monte_carlo() {
             &mut sealer,
             &mut rec_chain,
             1,
+            0,
             &mut workspace,
-            |seq, _off, _op, _key| recovered_seqs.push(seq),
+            |_flash, _sealer, seq, _off, _op, _key| recovered_seqs.push(seq),
         )
         .unwrap();
 

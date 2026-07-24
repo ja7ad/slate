@@ -74,7 +74,9 @@ fn main() -> ! {
             HOT_BUF.take(),
             HeadState {
                 seg_seq: 0,
-                write_offset: 0,
+                // Start the append log above the checkpoint region so commits
+                // never program the live checkpoint pages.
+                write_offset: slate_core::config::data_base_offset(4096),
                 block_idx: 0,
             },
         ),
@@ -151,8 +153,7 @@ where
                 &mut slate.engine.chain,
             ) {
                 slate.engine.next_seq += 1;
-                let mut rng = slate_core::index::XorShift64::new(42);
-                let _ = slate.index.upsert(key, offset, &mut rng, |_| false);
+                let _ = slate.index_update_offset(key, offset);
                 println!("OK seq={}", seq);
             } else {
                 println!("ERR append_failed");
@@ -195,7 +196,7 @@ where
                 &mut slate.engine.chain,
             ) {
                 slate.engine.next_seq += 1;
-                slate.index.remove(key, |_| true);
+                slate.index_remove_key(key);
                 println!("OK seq={}", seq);
             } else {
                 println!("ERR del_failed");

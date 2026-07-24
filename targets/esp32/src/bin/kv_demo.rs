@@ -98,6 +98,14 @@ fn main() -> ! {
             }
         };
 
+    // The append log must never overlap the checkpoint region (blocks 2..22),
+    // whether we mounted a checkpoint that predates this rule or formatted fresh.
+    let data_base = slate_core::config::data_base_offset(4096);
+    if head_state.write_offset < data_base {
+        head_state.write_offset = data_base;
+        head_state.block_idx = data_base / 4096;
+    }
+
     let sched_cfg = SchedCfg {
         auto_b: false,
         fixed_cost_uj: 1000,
@@ -190,7 +198,7 @@ where
             ) {
                 Ok((_, offset)) => {
                     slate.engine.next_seq += 1;
-                    slate.index_update_offset(k, offset);
+                    let _ = slate.index_update_offset(k, offset);
                     // Do not ack here, ack on commit!
                 }
                 Err(e) => {
