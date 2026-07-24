@@ -31,7 +31,7 @@ For log-structured stores, garbage collection induces Write Amplification (WA). 
 
 We tested a Zipfian distribution of updates ($s \in \{0, 0.6, 0.9, 1.2\}$) under both greedy and hot/cold-aware GC. The empirical simulation establishes that the $\frac{1}{1-u}$ model acts as a conservative *upper bound*. High skew reduces WA because frequently updated (hot) keys quickly invalidate their old segments, making them cheaper to reclaim.
 
-![Write Amplification](artifacts/wa_plot.png)
+![Write Amplification](artifacts/skew_wa.png)
 
 ---
 
@@ -44,7 +44,7 @@ By §5.3, the required RAM is precisely bounded by $\frac{f+p}{\alpha}$ bits per
 \varepsilon_{\mathrm{FP}} \le 2b \cdot 2^{-f}
 ```
 
-The plot below visualizes this trade-off for a target load factor of $\alpha = 0.95$ and an ESP32 flash configuration ($p = 24$ bits). At $f = 12$ bits, the index footprint requires roughly **4.5 Bytes per key** ($\sim 50\text{ KB}$ for 11,000 keys) while keeping false-positive reads near zero, whereas at the recommended Pareto pick of $f = 8$ bits, it requires **4.0 Bytes per key** ($32\text{ KB}$ for 8,192 keys). This ensures the zero-heap constraints are perfectly respected on the edge node.
+The plot below visualizes this trade-off for a target load factor of $\alpha = 0.95$ and an ESP32 flash configuration ($p = 22$ bits, for 4 MB flash). At $f = 12$ bits, the index footprint requires roughly **4.5 Bytes per key** ($\sim 50\text{ KB}$ for 11,000 keys) while keeping false-positive reads near zero, whereas at the recommended Pareto pick of $f = 8$ bits, it requires **4.0 Bytes per key** ($32\text{ KB}$ for 8,192 keys). This ensures the zero-heap constraints are perfectly respected on the edge node.
 
 ![Index RAM Trade-off](artifacts/ram_tradeoff_plot.png)
 
