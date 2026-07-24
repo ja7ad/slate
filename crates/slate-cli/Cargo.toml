@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 description = "Command-line interface (CLI) tool for SLATE key-value database files"
 license.workspace = true
+readme.workspace = true
 repository.workspace = true
 
 [dependencies]

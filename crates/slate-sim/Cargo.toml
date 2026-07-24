@@ -3,6 +3,7 @@ name = "slate-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+readme.workspace = true
 
 [dependencies]
 slate-hal = { version = "0.3.1", path = "../slate-hal" }

@@ -14,6 +14,7 @@ edition = "2021"
 description = "A secure, log-structured, authenticated, tamper-evident key-value engine for edge devices"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/javad/slate"
+readme = "README.md"
 
 [workspace.lints.clippy]
 all = "deny"

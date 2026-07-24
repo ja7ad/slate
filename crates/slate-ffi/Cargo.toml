@@ -3,6 +3,7 @@ name = "slate-ffi"
 version.workspace = true
 edition = "2021"
 license.workspace = true
+readme.workspace = true
 build = "build.rs"
 
 [lib]
