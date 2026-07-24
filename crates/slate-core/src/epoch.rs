@@ -62,12 +62,15 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
     // Checkpoint area is after superblock.
     // Each slot requires MAX_CKPT_LEN / block_size blocks.
     let blocks_per_slot = crate::config::MAX_CKPT_LEN / flash.block_size() as u32;
-    let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot) * flash.block_size() as u32;
-    
+    let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot)
+        * flash.block_size() as u32;
+
     // Erase enough blocks for the serialized checkpoint
     let num_blocks = bytes.len().div_ceil(flash.block_size());
     for i in 0..num_blocks {
-        flash.erase(block_addr + (i * flash.block_size()) as u32).map_err(|_| Error::Io)?;
+        flash
+            .erase(block_addr + (i * flash.block_size()) as u32)
+            .map_err(|_| Error::Io)?;
     }
     // Pad bytes to page size
     let page_size = flash.page_size();
@@ -166,7 +169,8 @@ fn load_best_checkpoint<F: Flash>(
 
     for slot in 0..(CKPT_SLOTS as u8) {
         let blocks_per_slot = crate::config::MAX_CKPT_LEN / flash.block_size() as u32;
-        let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot) * flash.block_size() as u32;
+        let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot)
+            * flash.block_size() as u32;
         let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
 
         if flash.read(block_addr, &mut hdr_bytes).is_err() {
