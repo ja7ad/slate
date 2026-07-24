@@ -8,4 +8,4 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-slate = { version = "0.3.1", path = "../slate" }
+slate = { version = "0.3.2", path = "../slate" }
