@@ -5,6 +5,7 @@ members = [
 ]
 exclude = [
     "targets/esp32",
+    "bind",
 ]
 resolver = "2"
 

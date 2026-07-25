@@ -35,3 +35,8 @@ targets/esp32/*.log
 # macOS
 .DS_Store
 qemu/
+
+# FFI and Binding test binaries
+/crates/slate-kv-ffi/tests/ffi_smoke
+/bind/go/conformance
+

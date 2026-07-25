@@ -122,3 +122,30 @@ jobs:
           wokwi-cli --timeout 120000 --scenario kv_demo.scenario.yaml wokwi
         env:
           WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN || vars.WOKWI_CLI_TOKEN }}
+
+  bindings:
+    name: Language Bindings
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+      - name: Build FFI static library
+        run: make ffi-staticlib
+      - name: Run Go conformance tests
+        run: make bind-test
+      # Non-blocking until the TinyGo + Rust staticlib link is settled (doc 017 §Risks).
+      # Flip continue-on-error to false in the same PR that settles it.
+      - name: Set up TinyGo
+        uses: acifani/setup-tinygo@v3
+        with:
+          tinygo-version: '0.40.1'
+      - name: Run TinyGo conformance tests
+        continue-on-error: true
+        run: cd bind/go && tinygo test ./...
+

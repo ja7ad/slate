@@ -24,6 +24,20 @@
 
 #define SLATE_ERR_IO -100
 
+#define SLATE_ABI_VERSION_MAJOR 1
+
+#define SLATE_ABI_VERSION_MINOR 0
+
+/**
+ * `slate_options::profile` selector: Raspberry-Pi-class host (report §9: B = 9).
+ */
+#define SLATE_PROFILE_PI 0
+
+/**
+ * `slate_options::profile` selector: ESP32-class device (report §9: B = 27).
+ */
+#define SLATE_PROFILE_ESP32 1
+
 typedef struct slate_db slate_db;
 
 typedef struct slate_options {
@@ -33,6 +47,8 @@ typedef struct slate_options {
   uint32_t theta;
   uint8_t profile;
 } slate_options;
+
+uint32_t slate_abi_version(void);
 
 int32_t slate_open(const char *path,
                    const uint8_t *key,

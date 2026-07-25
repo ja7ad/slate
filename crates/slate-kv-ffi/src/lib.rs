@@ -1,6 +1,7 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 use slate_kv::{Db, KeySource, Options, Profile};
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::catch_unwind;
@@ -16,6 +17,19 @@ pub const SLATE_ERR_ROLLBACK: i32 = -11;
 pub const SLATE_ERR_INTERNAL: i32 = -99;
 pub const SLATE_ERR_IO: i32 = -100;
 
+pub const SLATE_ABI_VERSION_MAJOR: u16 = 1;
+pub const SLATE_ABI_VERSION_MINOR: u16 = 0;
+
+/// `slate_options::profile` selector: Raspberry-Pi-class host (report §9: B = 9).
+pub const SLATE_PROFILE_PI: u8 = 0;
+/// `slate_options::profile` selector: ESP32-class device (report §9: B = 27).
+pub const SLATE_PROFILE_ESP32: u8 = 1;
+
+#[no_mangle]
+pub extern "C" fn slate_abi_version() -> u32 {
+    ((SLATE_ABI_VERSION_MAJOR as u32) << 16) | (SLATE_ABI_VERSION_MINOR as u32)
+}
+
 #[repr(C)]
 pub struct slate_options {
     pub capacity_bytes: u64,
@@ -23,6 +37,16 @@ pub struct slate_options {
     pub b_commit: u32,
     pub theta: u32,
     pub profile: u8, // 0 = Pi, 1 = Esp32
+}
+
+thread_local! {
+    static LAST_OPEN_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
+}
+
+fn set_open_error(msg: String) {
+    LAST_OPEN_ERROR.with(|e| {
+        *e.borrow_mut() = msg;
+    });
 }
 
 pub struct slate_db {
@@ -75,6 +99,7 @@ pub extern "C" fn slate_open(
     out: *mut *mut slate_db,
 ) -> i32 {
     if path.is_null() || key.is_null() || opts.is_null() || out.is_null() {
+        set_open_error("null pointer passed to slate_open".to_string());
         return SLATE_ERR_INVALID_ARG;
     }
     unsafe { *out = std::ptr::null_mut() };
@@ -84,9 +109,9 @@ pub extern "C" fn slate_open(
         let path_str = match path_c.to_str() {
             Ok(s) => s,
             Err(_) => {
-                return Err(slate_kv::DbError::Config(
-                    "Invalid UTF-8 in path".to_string(),
-                ))
+                let err_msg = "Invalid UTF-8 in path".to_string();
+                set_open_error(err_msg.clone());
+                return Err(slate_kv::DbError::Config(err_msg));
             }
         };
 
@@ -96,13 +121,19 @@ pub extern "C" fn slate_open(
         }
 
         let opts_ref = unsafe { &*opts };
+        if opts_ref.capacity_bytes > u32::MAX as u64 {
+            let err_msg = "capacity_bytes exceeds u32::MAX".to_string();
+            set_open_error(err_msg.clone());
+            return Err(slate_kv::DbError::InvalidArg(err_msg));
+        }
+
         let rs_opts = Options {
             capacity: opts_ref.capacity_bytes as u32,
             b_commit: opts_ref.b_commit,
             auto_b: opts_ref.b_commit == 0,
             staleness_budget_ms: 1000,
             n_keys: opts_ref.max_keys as usize,
-            profile: if opts_ref.profile == 0 {
+            profile: if opts_ref.profile == SLATE_PROFILE_PI {
                 Profile::Pi
             } else {
                 Profile::Esp32
@@ -112,7 +143,10 @@ pub extern "C" fn slate_open(
 
         let db = match Db::open(Path::new(path_str), KeySource::Bytes(root_key), rs_opts) {
             Ok(d) => d,
-            Err(e) => return Err(e),
+            Err(e) => {
+                set_open_error(format!("{:?}", e));
+                return Err(e);
+            }
         };
 
         let slate_db_ptr = Box::into_raw(Box::new(slate_db {
@@ -120,12 +154,16 @@ pub extern "C" fn slate_open(
             last_error: Mutex::new(String::new()),
         }));
 
+        set_open_error(String::new());
         unsafe { *out = slate_db_ptr };
         Ok::<i32, slate_kv::DbError>(SLATE_OK)
     }) {
         Ok(Ok(code)) => code,
         Ok(Err(e)) => map_err(&e),
-        Err(_) => SLATE_ERR_INTERNAL,
+        Err(_) => {
+            set_open_error("internal panic during open".to_string());
+            SLATE_ERR_INTERNAL
+        }
     }
 }
 
@@ -137,12 +175,16 @@ pub extern "C" fn slate_put(
     v: *const u8,
     vlen: usize,
 ) -> i32 {
-    if db.is_null() || k.is_null() || (v.is_null() && vlen > 0) {
+    if db.is_null() || k.is_null() || klen == 0 || (v.is_null() && vlen > 0) {
         return SLATE_ERR_INVALID_ARG;
     }
     catch_ffi!(db, {
         let key_slice = unsafe { std::slice::from_raw_parts(k, klen) };
-        let val_slice = unsafe { std::slice::from_raw_parts(v, vlen) };
+        let val_slice = if vlen == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(v, vlen) }
+        };
         unsafe { (*db).db.put(key_slice, val_slice) }.map(|_| SLATE_OK)
     })
 }
@@ -155,12 +197,16 @@ pub extern "C" fn slate_put_durable(
     v: *const u8,
     vlen: usize,
 ) -> i32 {
-    if db.is_null() || k.is_null() || (v.is_null() && vlen > 0) {
+    if db.is_null() || k.is_null() || klen == 0 || (v.is_null() && vlen > 0) {
         return SLATE_ERR_INVALID_ARG;
     }
     catch_ffi!(db, {
         let key_slice = unsafe { std::slice::from_raw_parts(k, klen) };
-        let val_slice = unsafe { std::slice::from_raw_parts(v, vlen) };
+        let val_slice = if vlen == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(v, vlen) }
+        };
         unsafe { (*db).db.put_durable(key_slice, val_slice) }.map(|_| SLATE_OK)
     })
 }
@@ -173,7 +219,7 @@ pub extern "C" fn slate_get(
     v_out: *mut u8,
     vlen_inout: *mut usize,
 ) -> i32 {
-    if db.is_null() || k.is_null() || vlen_inout.is_null() {
+    if db.is_null() || k.is_null() || klen == 0 || vlen_inout.is_null() {
         return SLATE_ERR_INVALID_ARG;
     }
 
@@ -192,7 +238,7 @@ pub extern "C" fn slate_get(
                 if capacity < val.len() {
                     Ok::<i32, slate_kv::DbError>(SLATE_ERR_BUFFER_TOO_SMALL)
                 } else {
-                    if !v_out.is_null() {
+                    if !v_out.is_null() && !val.is_empty() {
                         unsafe {
                             std::ptr::copy_nonoverlapping(val.as_ptr(), v_out, val.len());
                         }
@@ -207,7 +253,7 @@ pub extern "C" fn slate_get(
 
 #[no_mangle]
 pub extern "C" fn slate_delete(db: *mut slate_db, k: *const u8, klen: usize) -> i32 {
-    if db.is_null() || k.is_null() {
+    if db.is_null() || k.is_null() || klen == 0 {
         return SLATE_ERR_INVALID_ARG;
     }
     catch_ffi!(db, {
@@ -268,14 +314,20 @@ pub extern "C" fn slate_last_error_message(
     buf: *mut c_char,
     len: usize,
 ) -> usize {
-    if db.is_null() || buf.is_null() || len == 0 {
+    if buf.is_null() || len == 0 {
         return 0;
     }
-    let msg = match catch_unwind(|| unsafe {
-        if let Ok(lock) = (*db).last_error.lock() {
-            lock.clone()
+    let msg = match catch_unwind(|| {
+        if db.is_null() {
+            LAST_OPEN_ERROR.with(|e| e.borrow().clone())
         } else {
-            String::new()
+            unsafe {
+                if let Ok(lock) = (*db).last_error.lock() {
+                    lock.clone()
+                } else {
+                    String::new()
+                }
+            }
         }
     }) {
         Ok(s) => s,

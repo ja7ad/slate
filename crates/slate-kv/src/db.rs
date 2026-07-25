@@ -189,8 +189,18 @@ impl Db {
         let keyset = slate_kv_crypto::keys::KeySet::derive(&device_key, 1);
         let k_ctr = keyset.k_ctr;
 
-        let mut counter = FileCounter::new(counter_file, k_ctr, u64::MAX)
-            .map_err(|e| DbError::Config(format!("{:?}", e)))?;
+        let mut counter = FileCounter::new(counter_file, k_ctr, u64::MAX).map_err(|e| match e {
+            // FormatError is only ever returned when a counter slot fails HMAC
+            // verification, i.e. it is a tamper signal, not a config problem —
+            // it must stay distinguishable from operational errors (RULES.md).
+            crate::file_counter::FileCounterError::FormatError => {
+                DbError::Mount(MountError::Tampered)
+            }
+            crate::file_counter::FileCounterError::Io(err) => DbError::Io(err),
+            crate::file_counter::FileCounterError::Exhausted => {
+                DbError::Config("monotonic counter budget exhausted".to_string())
+            }
+        })?;
 
         let mut sealer = CryptoSealer::new(keyset);
 
