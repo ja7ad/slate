@@ -106,7 +106,7 @@ impl Flash for FileFlash {
 
     fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
         let addr = addr as usize;
-        if !addr.is_multiple_of(self.page_size) || !buf.len().is_multiple_of(self.page_size) {
+        if addr % self.page_size != 0 || buf.len() % self.page_size != 0 {
             return Err(FileFlashError::Unaligned);
         }
         if addr + buf.len() > self.capacity as usize {
@@ -128,7 +128,7 @@ impl Flash for FileFlash {
 
     fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
         let block_addr = block_addr as usize;
-        if !block_addr.is_multiple_of(self.block_size) {
+        if block_addr % self.block_size != 0 {
             return Err(FileFlashError::Unaligned);
         }
         if block_addr + self.block_size > self.capacity as usize {

@@ -31,7 +31,7 @@ ffi-native-libs:
 	cargo rustc -p slate-kv-ffi --release --crate-type staticlib -- --print native-static-libs
 
 bind-test: ffi-staticlib
-	@if [ -d bind/go ]; then cd bind/go && go test -v ./...; fi
+	@if [ -d bind/go ]; then cd bind/go && LD_LIBRARY_PATH=../../target/release DYLD_FALLBACK_LIBRARY_PATH=../../target/release go test -v ./...; fi
 
 clean:
 	cargo clean

@@ -1,3 +1,5 @@
+#![allow(clippy::manual_is_multiple_of)]
+
 pub mod db;
 pub mod file_counter;
 pub mod file_flash;
