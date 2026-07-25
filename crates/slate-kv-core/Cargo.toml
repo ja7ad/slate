@@ -8,8 +8,8 @@ readme.workspace = true
 repository.workspace = true
 
 [dependencies]
-slate-kv-hal = { version = "0.3.2", path = "../slate-kv-hal" }
-slate-kv-erasure = { version = "0.3.2", path = "../slate-kv-erasure" }
+slate-kv-hal = { version = "0.3.3", path = "../slate-kv-hal" }
+slate-kv-erasure = { version = "0.3.3", path = "../slate-kv-erasure" }
 sha2 = { version = "0.11.0", default-features = false }
 heapless = "0.8.0"
 
