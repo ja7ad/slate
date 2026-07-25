@@ -5,8 +5,6 @@ package slate
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../crates/slate-kv-ffi/include
-#cgo darwin LDFLAGS: ${SRCDIR}/../../target/release/libslate_kv_ffi.a -liconv -lSystem -lc -lm
-#cgo linux LDFLAGS: ${SRCDIR}/../../target/release/libslate_kv_ffi.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc
 #include "slate.h"
 #include <stdlib.h>
 */
