@@ -1211,32 +1211,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "slate-core"
-version = "0.3.2"
-dependencies = [
- "heapless 0.8.0",
- "sha2",
- "slate-erasure",
- "slate-hal",
-]
-
-[[package]]
-name = "slate-crypto"
-version = "0.3.2"
-dependencies = [
- "chacha20poly1305",
- "hkdf",
- "hmac",
- "sha2",
- "slate-core",
- "zeroize",
-]
-
-[[package]]
-name = "slate-erasure"
-version = "0.3.2"
-
-[[package]]
 name = "slate-esp32"
 version = "0.3.2"
 dependencies = [
@@ -1247,13 +1221,39 @@ dependencies = [
  "esp-hal",
  "esp-println",
  "esp-storage",
- "slate-core",
- "slate-crypto",
- "slate-hal",
+ "slate-kv-core",
+ "slate-kv-crypto",
+ "slate-kv-hal",
 ]
 
 [[package]]
-name = "slate-hal"
+name = "slate-kv-core"
+version = "0.3.2"
+dependencies = [
+ "heapless 0.8.0",
+ "sha2",
+ "slate-kv-erasure",
+ "slate-kv-hal",
+]
+
+[[package]]
+name = "slate-kv-crypto"
+version = "0.3.2"
+dependencies = [
+ "chacha20poly1305",
+ "hkdf",
+ "hmac",
+ "sha2",
+ "slate-kv-core",
+ "zeroize",
+]
+
+[[package]]
+name = "slate-kv-erasure"
+version = "0.3.2"
+
+[[package]]
+name = "slate-kv-hal"
 version = "0.3.2"
 
 [[package]]

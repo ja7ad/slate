@@ -39,33 +39,33 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            asset_name: slate-ffi-linux-amd64
+            asset_name: slate-kv-ffi-linux-amd64
           - os: macos-latest
             target: aarch64-apple-darwin
-            asset_name: slate-ffi-macos-arm64
+            asset_name: slate-kv-ffi-macos-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            asset_name: slate-ffi-windows-amd64
+            asset_name: slate-kv-ffi-windows-amd64
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
       - name: Build FFI Library
-        run: cargo build --release -p slate-ffi --target ${{ matrix.target }}
+        run: cargo build --release -p slate-kv-ffi --target ${{ matrix.target }}
       - name: Package FFI Artifacts (Unix)
         if: matrix.os != 'windows-latest'
         run: |
           mkdir -p dist
-          cp crates/slate-ffi/include/slate.h dist/
-          cp target/${{ matrix.target }}/release/libslate_ffi.* dist/ 2>/dev/null || true
+          cp crates/slate-kv-ffi/include/slate.h dist/
+          cp target/${{ matrix.target }}/release/libslate_kv_ffi.* dist/ 2>/dev/null || true
           tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
       - name: Package FFI Artifacts (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
           mkdir -p dist
-          cp crates/slate-ffi/include/slate.h dist/
-          cp target/${{ matrix.target }}/release/slate_ffi.* dist/ 2>/dev/null || true
+          cp crates/slate-kv-ffi/include/slate.h dist/
+          cp target/${{ matrix.target }}/release/slate_kv_ffi.* dist/ 2>/dev/null || true
           tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
       - name: Upload FFI Release Asset
         uses: softprops/action-gh-release@v2
@@ -88,9 +88,39 @@ jobs:
           VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
           echo "Publishing workspace version ${VERSION}"
 
+          # crates.io's web API (crates.io/api/v1/...) enforces a crawler policy
+          # that 403s any request without a descriptive User-Agent, independent
+          # of whether the crate/version exists. index.crates.io (the sparse
+          # index cargo itself reads to resolve dependencies) has no such
+          # requirement, and is the thing that actually gates whether the next
+          # crate's `cargo publish` can resolve this one as a dependency - so
+          # poll that directly instead of the web API.
+          USER_AGENT="slate-release-ci (${VERSION}; +https://github.com/ja7ad/slate)"
+
+          sparse_index_url() {
+            local name
+            name=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+            local len=${#name}
+            if [ "$len" -eq 1 ]; then
+              echo "https://index.crates.io/1/${name}"
+            elif [ "$len" -eq 2 ]; then
+              echo "https://index.crates.io/2/${name}"
+            elif [ "$len" -eq 3 ]; then
+              echo "https://index.crates.io/3/${name:0:1}/${name}"
+            else
+              echo "https://index.crates.io/${name:0:2}/${name:2:2}/${name}"
+            fi
+          }
+
+          is_indexed() {
+            local name="$1"
+            curl -sf -A "$USER_AGENT" "$(sparse_index_url "$name")" \
+              | grep -q "\"vers\":\"${VERSION}\""
+          }
+
           publish_crate() {
             local name="$1"
-            if curl -sf "https://crates.io/api/v1/crates/${name}/${VERSION}" >/dev/null; then
+            if is_indexed "$name"; then
               echo "${name} ${VERSION} is already published, skipping"
               return
             fi
@@ -98,7 +128,7 @@ jobs:
             cargo publish -p "${name}" --locked
             echo "Waiting for ${name} ${VERSION} to be indexed on crates.io..."
             for _ in $(seq 1 60); do
-              if curl -sf "https://crates.io/api/v1/crates/${name}/${VERSION}" >/dev/null; then
+              if is_indexed "$name"; then
                 echo "${name} ${VERSION} is live"
                 return
               fi
@@ -110,9 +140,9 @@ jobs:
 
           # Dependency order matters: a crate can only publish once every
           # path-dependency it points at is already live on crates.io.
-          publish_crate slate-hal
-          publish_crate slate-erasure
-          publish_crate slate-core
-          publish_crate slate-crypto
-          publish_crate slate
-          publish_crate slate-cli
+          publish_crate slate-kv-hal
+          publish_crate slate-kv-erasure
+          publish_crate slate-kv-core
+          publish_crate slate-kv-crypto
+          publish_crate slate-kv
+          publish_crate slate-kv-cli

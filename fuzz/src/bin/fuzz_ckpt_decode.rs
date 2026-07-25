@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use slate_core::checkpoint::CheckpointHeader;
+use slate_kv_core::checkpoint::CheckpointHeader;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() >= 44 {

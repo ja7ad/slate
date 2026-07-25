@@ -5,15 +5,15 @@ use esp_backtrace as _;
 use esp_hal::uart::Uart;
 use esp_println::{print, println};
 
-use slate_core::config::SchedCfg;
-use slate_core::gc::SegTable;
-use slate_core::index::Index;
-use slate_core::log::HeadState;
-use slate_core::metrics::Metrics;
-use slate_core::sched::Scheduler;
-use slate_core::slate::Slate;
+use slate_kv_core::config::SchedCfg;
+use slate_kv_core::gc::SegTable;
+use slate_kv_core::index::Index;
+use slate_kv_core::log::HeadState;
+use slate_kv_core::metrics::Metrics;
+use slate_kv_core::sched::Scheduler;
+use slate_kv_core::slate::Slate;
 
-use slate_crypto::sealer::CryptoSealer;
+use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -32,8 +32,8 @@ fn main() -> ! {
     let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
     let mut counter = EspCounter::new();
 
-    let dev_key = slate_crypto::keys::DeviceKey([0u8; 32]);
-    let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
+    let dev_key = slate_kv_crypto::keys::DeviceKey([0u8; 32]);
+    let keys = slate_kv_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
 
     let mut head_state = HeadState {
@@ -45,53 +45,53 @@ fn main() -> ! {
     let mut mount_status = "OK";
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
+        match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
             Ok((st, len)) => {
-                if let Ok(hdr) = slate_core::checkpoint::CheckpointHeader::decode(&ckpt_buf[..slate_core::checkpoint::CKPT_HDR_LEN]) {
+                if let Ok(hdr) = slate_kv_core::checkpoint::CheckpointHeader::decode(&ckpt_buf[..slate_kv_core::checkpoint::CKPT_HDR_LEN]) {
                     head_state.seg_seq = hdr.seg_seq;
                     head_state.write_offset = hdr.write_offset;
                     head_state.block_idx = hdr.write_offset / 4096;
                 }
                 (st, len)
             }
-            Err(slate_core::epoch::MountError::Tampered) => {
+            Err(slate_kv_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
-                let st = slate_core::epoch::EngineState {
+                let st = slate_kv_core::epoch::EngineState {
                     epoch: 1,
                     next_seq: 1,
                     acked_seq: 0,
                     d_ckpt: [0u8; 32],
-                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                    chain: slate_kv_core::chain::Chain::anchor(1, &[0u8; 32]),
                     records_in_epoch: 0,
-                    security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                    security_mode: slate_kv_core::epoch::SecurityMode::BestEffortRollback,
                     active_ckpt_slot: 0,
                 };
                 (st, 0)
             }
-            Err(slate_core::epoch::MountError::Rollback) => {
+            Err(slate_kv_core::epoch::MountError::Rollback) => {
                 mount_status = "Rollback";
-                let st = slate_core::epoch::EngineState {
+                let st = slate_kv_core::epoch::EngineState {
                     epoch: 1,
                     next_seq: 1,
                     acked_seq: 0,
                     d_ckpt: [0u8; 32],
-                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                    chain: slate_kv_core::chain::Chain::anchor(1, &[0u8; 32]),
                     records_in_epoch: 0,
-                    security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                    security_mode: slate_kv_core::epoch::SecurityMode::BestEffortRollback,
                     active_ckpt_slot: 0,
                 };
                 (st, 0)
             }
             Err(_) => {
                 mount_status = "Format";
-                let st = slate_core::epoch::EngineState {
+                let st = slate_kv_core::epoch::EngineState {
                     epoch: 1,
                     next_seq: 1,
                     acked_seq: 0,
                     d_ckpt: [0u8; 32],
-                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                    chain: slate_kv_core::chain::Chain::anchor(1, &[0u8; 32]),
                     records_in_epoch: 0,
-                    security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                    security_mode: slate_kv_core::epoch::SecurityMode::BestEffortRollback,
                     active_ckpt_slot: 0,
                 };
                 (st, 0)
@@ -100,7 +100,7 @@ fn main() -> ! {
 
     // The append log must never overlap the checkpoint region (blocks 2..22),
     // whether we mounted a checkpoint that predates this rule or formatted fresh.
-    let data_base = slate_core::config::data_base_offset(4096);
+    let data_base = slate_kv_core::config::data_base_offset(4096);
     if head_state.write_offset < data_base {
         head_state.write_offset = data_base;
         head_state.block_idx = data_base / 4096;
@@ -122,11 +122,11 @@ fn main() -> ! {
         counter,
         sealer,
         engine: engine_state,
-        log_hot: slate_core::log::Log::new(
+        log_hot: slate_kv_core::log::Log::new(
             HOT_BUF.take(),
             head_state,
         ),
-        log_cold: slate_core::log::Log::new(
+        log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
                 seg_seq: 0,
@@ -140,7 +140,7 @@ fn main() -> ! {
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
         ckpt_buf,
-        rng: slate_core::index::XorShift64::new(rng_seed),
+        rng: slate_kv_core::index::XorShift64::new(rng_seed),
     };
 
     println!("slate> ");
@@ -171,9 +171,9 @@ fn main() -> ! {
 
 fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str, mount_status: &str)
 where
-    F: slate_hal::Flash,
-    C: slate_hal::MonotonicCounter,
-    S: slate_core::log::Sealer,
+    F: slate_kv_hal::Flash,
+    C: slate_kv_hal::MonotonicCounter,
+    S: slate_kv_core::log::Sealer,
 {
     let mut parts = cmd.split_whitespace();
     match parts.next() {
@@ -190,7 +190,7 @@ where
             let seq = slate.engine.next_seq;
             match slate.log_hot.append(
                 seq,
-                slate_core::config::OP_PUT,
+                slate_kv_core::config::OP_PUT,
                 k,
                 v,
                 &mut slate.sealer,
@@ -213,15 +213,15 @@ where
                 return;
             }
             let k = k_opt.unwrap().as_bytes();
-            let mut cbuf = slate_core::index::CandidateBuf::new();
+            let mut cbuf = slate_kv_core::index::CandidateBuf::new();
             slate.index.candidates(k, &mut cbuf);
             let mut found = false;
             for &off in cbuf.as_slice() {
-                let mut hdr_bytes = [0u8; slate_core::config::REC_HDR_LEN];
+                let mut hdr_bytes = [0u8; slate_kv_core::config::REC_HDR_LEN];
                 if slate.flash.read(off, &mut hdr_bytes).is_err() {
                     continue;
                 }
-                if let Ok(hdr) = slate_core::record::RecordHeader::decode(&hdr_bytes) {
+                if let Ok(hdr) = slate_kv_core::record::RecordHeader::decode(&hdr_bytes) {
                     if hdr.klen as usize == k.len() {
                         let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
                         let mut rec_bytes = [0u8; 44 + 256 + 1024];
@@ -231,7 +231,7 @@ where
                                 .sealer
                                 .open_record(
                                     &hdr_bytes,
-                                    &rec_bytes[slate_core::config::REC_HDR_LEN..total_len],
+                                    &rec_bytes[slate_kv_core::config::REC_HDR_LEN..total_len],
                                     &mut scratch,
                                 )
                                 .is_ok()
@@ -272,7 +272,7 @@ where
                 .log_hot
                 .append(
                     seq,
-                    slate_core::config::OP_DEL,
+                    slate_kv_core::config::OP_DEL,
                     k,
                     &[],
                     &mut slate.sealer,
@@ -297,7 +297,7 @@ where
         }
         Some("seal") => {
             // Force an epoch seal by pretending we reached THETA
-            slate.engine.records_in_epoch = slate_core::config::THETA;
+            slate.engine.records_in_epoch = slate_kv_core::config::THETA;
             match slate.commit() {
                 Ok(_) => {
                     println!("OK");
@@ -320,9 +320,9 @@ where
             }
         }
         Some("mode") => match slate.counter.kind() {
-            slate_hal::CounterKind::BestEffort => println!("BestEffortRollback"),
-            slate_hal::CounterKind::Hardware => println!("Hardware"),
-            slate_hal::CounterKind::None => println!("None"),
+            slate_kv_hal::CounterKind::BestEffort => println!("BestEffortRollback"),
+            slate_kv_hal::CounterKind::Hardware => println!("Hardware"),
+            slate_kv_hal::CounterKind::None => println!("None"),
         },
         Some("selftest") => {
             println!("{}", mount_status);

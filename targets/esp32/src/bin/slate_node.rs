@@ -5,15 +5,15 @@ use esp_backtrace as _;
 use esp_hal::uart::Uart;
 use esp_println::{print, println};
 
-use slate_core::config::{SchedCfg, OP_DEL, OP_PUT};
-use slate_core::gc::SegTable;
-use slate_core::index::Index;
-use slate_core::log::HeadState;
-use slate_core::metrics::Metrics;
-use slate_core::sched::Scheduler;
-use slate_core::slate::Slate;
+use slate_kv_core::config::{SchedCfg, OP_DEL, OP_PUT};
+use slate_kv_core::gc::SegTable;
+use slate_kv_core::index::Index;
+use slate_kv_core::log::HeadState;
+use slate_kv_core::metrics::Metrics;
+use slate_kv_core::sched::Scheduler;
+use slate_kv_core::slate::Slate;
 
-use slate_crypto::sealer::CryptoSealer;
+use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
 
 esp_bootloader_esp_idf::esp_app_desc!();
@@ -31,23 +31,23 @@ fn main() -> ! {
     let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
     let mut counter = EspCounter::new();
 
-    let dev_key = slate_crypto::keys::DeviceKey([0x53u8; 32]); // Node master key
-    let keys = slate_crypto::keys::KeySet::derive(&dev_key, 1);
+    let dev_key = slate_kv_crypto::keys::DeviceKey([0x53u8; 32]); // Node master key
+    let keys = slate_kv_crypto::keys::KeySet::derive(&dev_key, 1);
     let mut sealer = CryptoSealer::new(keys);
 
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
-        match slate_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
+        match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
             Ok((st, len)) => (st, len),
             Err(_) => {
-                let st = slate_core::epoch::EngineState {
+                let st = slate_kv_core::epoch::EngineState {
                     epoch: 1,
                     next_seq: 1,
                     acked_seq: 0,
                     d_ckpt: [0u8; 32],
-                    chain: slate_core::chain::Chain::anchor(1, &[0u8; 32]),
+                    chain: slate_kv_core::chain::Chain::anchor(1, &[0u8; 32]),
                     records_in_epoch: 0,
-                    security_mode: slate_core::epoch::SecurityMode::BestEffortRollback,
+                    security_mode: slate_kv_core::epoch::SecurityMode::BestEffortRollback,
                     active_ckpt_slot: 0,
                 };
                 (st, 0)
@@ -70,17 +70,17 @@ fn main() -> ! {
         counter,
         sealer,
         engine: engine_state,
-        log_hot: slate_core::log::Log::new(
+        log_hot: slate_kv_core::log::Log::new(
             HOT_BUF.take(),
             HeadState {
                 seg_seq: 0,
                 // Start the append log above the checkpoint region so commits
                 // never program the live checkpoint pages.
-                write_offset: slate_core::config::data_base_offset(4096),
+                write_offset: slate_kv_core::config::data_base_offset(4096),
                 block_idx: 0,
             },
         ),
-        log_cold: slate_core::log::Log::new(
+        log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
                 seg_seq: 0,
@@ -94,7 +94,7 @@ fn main() -> ! {
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
         ckpt_buf,
-        rng: slate_core::index::XorShift64::new(rng_seed),
+        rng: slate_kv_core::index::XorShift64::new(rng_seed),
     };
 
     println!("[SLATE ESP32 Storage Node Online]");
@@ -126,9 +126,9 @@ fn main() -> ! {
 
 fn process_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
 where
-    F: slate_hal::Flash,
-    C: slate_hal::MonotonicCounter,
-    S: slate_core::log::Sealer,
+    F: slate_kv_hal::Flash,
+    C: slate_kv_hal::MonotonicCounter,
+    S: slate_kv_core::log::Sealer,
 {
     let parts: Vec<&str, 4> = parse_words(cmd);
     if parts.is_empty() {
@@ -172,7 +172,7 @@ where
                 return;
             }
             let key = parts[1].as_bytes();
-            let mut cbuf = slate_core::index::CandidateBuf::new();
+            let mut cbuf = slate_kv_core::index::CandidateBuf::new();
             slate.index.candidates(key, &mut cbuf);
             if cbuf.as_slice().is_empty() {
                 println!("ERR not_found");

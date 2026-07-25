@@ -1,0 +1,11 @@
+[package]
+name = "slate-kv-cli"
+version.workspace = true
+edition.workspace = true
+description = "Command-line interface (CLI) tool for SLATE key-value database files"
+license.workspace = true
+readme.workspace = true
+repository.workspace = true
+
+[dependencies]
+slate-kv = { version = "0.3.2", path = "../slate-kv" }

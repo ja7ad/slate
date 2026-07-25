@@ -9,10 +9,10 @@ SLATE is designed to be a provably secure, ultra-light, and zero-heap key–valu
 ## Code of Conduct & Development Principles
 
 ### 1. `no_std` and Zero Heap Discipline
-- Core crates ([`slate-core`](crates/slate-core), [`slate-crypto`](crates/slate-crypto), [`slate-erasure`](crates/slate-erasure), [`slate-hal`](crates/slate-hal)) are `#![no_std]` and **zero allocation**. No `alloc`, `Vec`, `Box`, or `String` in the core engine.
+- Core crates ([`slate-kv-core`](crates/slate-kv-core), [`slate-kv-crypto`](crates/slate-kv-crypto), [`slate-kv-erasure`](crates/slate-kv-erasure), [`slate-kv-hal`](crates/slate-kv-hal)) are `#![no_std]` and **zero allocation**. No `alloc`, `Vec`, `Box`, or `String` in the core engine.
 - RAM working sets must stay bounded and caller-provided via fixed buffers.
 - `#![forbid(unsafe_code)]` is enforced across core crates. Any exception requires explicit justification and review.
-- No floating-point math (`#![deny(clippy::float_arithmetic)]`) in `slate-core`.
+- No floating-point math (`#![deny(clippy::float_arithmetic)]`) in `slate-kv-core`.
 
 ### 2. Durability & Crash Safety
 - Writes are acknowledged **only** after both record pages and twin commit markers are durably programmed.
@@ -35,7 +35,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
 # 4. Verify no_std bare-metal build purity
-cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-default-features --target thumbv7em-none-eabihf
+cargo build -p slate-kv-core -p slate-kv-hal -p slate-kv-crypto -p slate-kv-erasure --no-default-features --target thumbv7em-none-eabihf
 
 # 5. Build ESP32 target firmware (requires Xtensa toolchain)
 cd targets/esp32 && cargo build --release --target xtensa-esp32-none-elf

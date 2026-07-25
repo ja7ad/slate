@@ -10,7 +10,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-slate-core = { path = "../crates/slate-core" }
+slate-kv-core = { path = "../crates/slate-kv-core" }
 
 [[bin]]
 name = "fuzz_record_decode"

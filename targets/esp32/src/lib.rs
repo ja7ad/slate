@@ -3,7 +3,7 @@
 use core::cell::{Cell, UnsafeCell};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
-use slate_hal::{CounterKind, Flash, MonotonicCounter};
+use slate_kv_hal::{CounterKind, Flash, MonotonicCounter};
 
 /// Zero-cost thread-safe wrapper around static buffers.
 pub struct SyncBuffer<T> {

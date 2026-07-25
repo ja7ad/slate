@@ -1,0 +1,17 @@
+[package]
+name = "slate-kv-ffi"
+version.workspace = true
+edition = "2021"
+license.workspace = true
+readme.workspace = true
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+slate-kv = { path = "../slate-kv" }
+slate-kv-core = { path = "../slate-kv-core" }
+
+[build-dependencies]
+cbindgen = "0.27.0"

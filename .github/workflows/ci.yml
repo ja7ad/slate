@@ -40,7 +40,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal --target thumbv7em-none-eabihf
-      - run: cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-default-features --target thumbv7em-none-eabihf
+      - run: cargo build -p slate-kv-core -p slate-kv-hal -p slate-kv-crypto -p slate-kv-erasure --no-default-features --target thumbv7em-none-eabihf
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal -c llvm-tools
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      - name: Generate coverage report
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: true
 
   deny:
     name: Cargo Deny
@@ -59,7 +76,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install nightly --profile minimal -c miri
       - run: rustup default nightly
-      - run: cargo miri test -p slate-core
+      - run: cargo miri test -p slate-kv-core
 
   qemu-sim:
     name: QEMU Crash Simulator

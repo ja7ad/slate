@@ -15,7 +15,7 @@ test:
 	cargo test --workspace
 
 build-bare:
-	cargo build -p slate-core -p slate-hal -p slate-crypto -p slate-erasure --no-default-features --target thumbv7em-none-eabihf
+	cargo build -p slate-kv-core -p slate-kv-hal -p slate-kv-crypto -p slate-kv-erasure --no-default-features --target thumbv7em-none-eabihf
 
 build-esp:
 	cd targets/esp32 && cargo build --release --no-default-features \

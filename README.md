@@ -1,12 +1,13 @@
 # SLATE: Secure, Log-structured, Authenticated, Tamper-Evident Key–Value Engine
 
 <p align="center">
-  <img src="docs/slate_logo.png" alt="SLATE Logo" width="300"/>
+  <img src="https://raw.githubusercontent.com/ja7ad/slate/main/docs/slate_logo.png" alt="SLATE Logo" width="300"/>
 </p>
 
+[![codecov](https://codecov.io/gh/ja7ad/slate/graph/badge.svg?token=leYIzSiuLf)](https://codecov.io/gh/ja7ad/slate)
 [![CI](https://github.com/ja7ad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/ja7ad/slate/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
-[![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-core)
+[![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-kv-core)
 
 SLATE is a single-device key-value engine for edge computing, from bare-metal microcontrollers like the ESP32 up to boards like the Raspberry Pi. It's built around four goals that usually fight each other: a tiny memory footprint, good performance, low energy use, and real at-rest security.
 
@@ -31,11 +32,11 @@ We don't claim to beat every engine on every axis at once — that's not possibl
 
 ```toml
 [dependencies]
-slate = "0.3"
+slate-kv = "0.3"
 ```
 
 ```rust,ignore
-use slate::Db;
+use slate_kv::Db;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Open or create a database using file-backed flash emulation
@@ -54,9 +55,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### 2. C / C++ (`slate-ffi`)
+### 2. C / C++ (`slate-kv-ffi`)
 
-Include [`slate.h`](crates/slate-ffi/include/slate.h) and link against `libslate_ffi`:
+Include [`slate.h`](crates/slate-kv-ffi/include/slate.h) and link against `libslate_kv_ffi`:
 
 ```c
 #include "slate.h"
@@ -102,6 +103,24 @@ If you're deploying to a high-throughput server where active tamper-resistance a
 
 ---
 
+
+## Citation
+
+If you use SLATE or reference its formal specification, correctness proofs, or energy models, please cite:
+
+```bibtex
+@techreport{slate2026formal,
+  title       = {SLATE: A Provably Secure, Ultra-Light, Low-Power Key--Value Engine for Edge Devices},
+  subtitle    = {Formal model, correctness and security theorems, cost models, and a Pareto-optimal operating point},
+  author      = {Javad Rajabzadeh},
+  year        = {2026},
+  institution = {SLATE Project},
+  note        = {Available at docs/SLATE_FORMAL_SPECIFICATION.md}
+}
+```
+
+---
+
 ## Contributing
 
 Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR or issue.
@@ -119,17 +138,3 @@ at your option.
 
 ---
 
-## Citation
-
-If you use SLATE or reference its formal specification, correctness proofs, or energy models, please cite:
-
-```bibtex
-@techreport{slate2026formal,
-  title       = {SLATE: A Provably Secure, Ultra-Light, Low-Power Key--Value Engine for Edge Devices},
-  subtitle    = {Formal model, correctness and security theorems, cost models, and a Pareto-optimal operating point},
-  author      = {SLATE Technical Team},
-  year        = {2026},
-  institution = {SLATE Project},
-  note        = {Available at docs/SLATE_FORMAL_SPECIFICATION.md}
-}
-```

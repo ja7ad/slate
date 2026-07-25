@@ -730,82 +730,82 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
-name = "slate"
+name = "slate-fuzz"
+version = "0.3.2"
+dependencies = [
+ "libfuzzer-sys",
+ "slate-kv-core",
+]
+
+[[package]]
+name = "slate-kv"
 version = "0.3.2"
 dependencies = [
  "hmac",
  "libc",
  "sha2",
- "slate-core",
- "slate-crypto",
- "slate-hal",
+ "slate-kv-core",
+ "slate-kv-crypto",
+ "slate-kv-hal",
 ]
 
 [[package]]
-name = "slate-cli"
+name = "slate-kv-cli"
 version = "0.3.2"
 dependencies = [
- "slate",
+ "slate-kv",
 ]
 
 [[package]]
-name = "slate-core"
+name = "slate-kv-core"
 version = "0.3.2"
 dependencies = [
  "heapless",
  "sha2",
- "slate-erasure",
- "slate-hal",
+ "slate-kv-erasure",
+ "slate-kv-hal",
 ]
 
 [[package]]
-name = "slate-crypto"
+name = "slate-kv-crypto"
 version = "0.3.2"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
  "hmac",
  "sha2",
- "slate-core",
+ "slate-kv-core",
  "zeroize",
 ]
 
 [[package]]
-name = "slate-erasure"
+name = "slate-kv-erasure"
 version = "0.3.2"
 
 [[package]]
-name = "slate-ffi"
+name = "slate-kv-ffi"
 version = "0.3.2"
 dependencies = [
  "cbindgen",
- "slate",
- "slate-core",
+ "slate-kv",
+ "slate-kv-core",
 ]
 
 [[package]]
-name = "slate-fuzz"
-version = "0.3.2"
-dependencies = [
- "libfuzzer-sys",
- "slate-core",
-]
-
-[[package]]
-name = "slate-hal"
+name = "slate-kv-hal"
 version = "0.3.2"
 
 [[package]]
-name = "slate-sim"
+name = "slate-kv-sim"
 version = "0.3.2"
 dependencies = [
  "proptest",
  "rand 0.8.7",
  "serde",
- "slate-core",
- "slate-crypto",
- "slate-erasure",
- "slate-hal",
+ "slate-kv-core",
+ "slate-kv-crypto",
+ "slate-kv-erasure",
+ "slate-kv-hal",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use slate_core::record::RecordHeader;
+use slate_kv_core::record::RecordHeader;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() >= 28 {
