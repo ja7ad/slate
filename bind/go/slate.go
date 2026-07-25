@@ -5,6 +5,7 @@ package slate
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../crates/slate-kv-ffi/include -I../../crates/slate-kv-ffi/include
+#cgo LDFLAGS: -L${SRCDIR}/../../target/release -L../../target/release -lslate_kv_ffi
 #include "slate.h"
 #include <stdlib.h>
 */
