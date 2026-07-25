@@ -38,8 +38,6 @@ var (
 	ErrClosed = errors.New("slate: database is closed")
 	// ErrBufferTooSmall is returned by GetInto when the destination buffer is smaller than the value length.
 	ErrBufferTooSmall = errors.New("slate: buffer too small")
-
-	emptySentinel = []byte{0}
 )
 
 // TamperedError indicates that cryptographic verification of the database state failed.
@@ -123,20 +121,13 @@ type DB struct {
 	closed bool
 }
 
-func slicePtr(s []byte) *C.uint8_t {
-	if len(s) == 0 {
-		return (*C.uint8_t)(&emptySentinel[0])
-	}
-	return (*C.uint8_t)(&s[0])
-}
-
 func lastErrorMessage(ptr *C.slate_db) string {
 	var buf [512]C.char
-	n := C.slate_last_error_message(ptr, &buf[0], C.uintptr_t(len(buf)))
+	n := C.slate_last_error_message(ptr, (*C.char)(unsafe.Pointer(&buf[0])), C.uintptr_t(len(buf)))
 	if n == 0 {
 		return ""
 	}
-	return C.GoString(&buf[0])
+	return C.GoString((*C.char)(unsafe.Pointer(&buf[0])))
 }
 
 func (db *DB) mapErrorLocked(rc int32) error {
@@ -206,7 +197,7 @@ func Open(path string, rootKey []byte, opts *Options) (*DB, error) {
 	defer C.free(unsafe.Pointer(cPath))
 
 	var ptr *C.slate_db
-	rc := int32(C.slate_open(cPath, (*C.uint8_t)(&keyBuf[0]), &cOpts, &ptr))
+	rc := int32(C.slate_open(cPath, (*C.uint8_t)(unsafe.SliceData(keyBuf[:])), &cOpts, &ptr))
 	if rc != CodeOk {
 		msg := lastErrorMessage(nil)
 		if rc == CodeTampered {
@@ -251,7 +242,7 @@ func (db *DB) Put(key, val []byte) error {
 	if db.closed {
 		return ErrClosed
 	}
-	rc := int32(C.slate_put(db.ptr, slicePtr(key), C.uintptr_t(len(key)), slicePtr(val), C.uintptr_t(len(val))))
+	rc := int32(C.slate_put(db.ptr, (*C.uint8_t)(unsafe.SliceData(key)), C.uintptr_t(len(key)), (*C.uint8_t)(unsafe.SliceData(val)), C.uintptr_t(len(val))))
 	return db.mapErrorLocked(rc)
 }
 
@@ -265,7 +256,7 @@ func (db *DB) PutDurable(key, val []byte) error {
 	if db.closed {
 		return ErrClosed
 	}
-	rc := int32(C.slate_put_durable(db.ptr, slicePtr(key), C.uintptr_t(len(key)), slicePtr(val), C.uintptr_t(len(val))))
+	rc := int32(C.slate_put_durable(db.ptr, (*C.uint8_t)(unsafe.SliceData(key)), C.uintptr_t(len(key)), (*C.uint8_t)(unsafe.SliceData(val)), C.uintptr_t(len(val))))
 	return db.mapErrorLocked(rc)
 }
 
@@ -273,7 +264,7 @@ func (db *DB) PutDurable(key, val []byte) error {
 // must already have checked db.closed.
 func (db *DB) getIntoLocked(key, dst []byte) (int, error) {
 	vlen := C.uintptr_t(len(dst))
-	rc := int32(C.slate_get(db.ptr, slicePtr(key), C.uintptr_t(len(key)), slicePtr(dst), &vlen))
+	rc := int32(C.slate_get(db.ptr, (*C.uint8_t)(unsafe.SliceData(key)), C.uintptr_t(len(key)), (*C.uint8_t)(unsafe.SliceData(dst)), &vlen))
 	if rc == CodeBufferTooSmall {
 		return int(vlen), ErrBufferTooSmall
 	}
@@ -339,7 +330,7 @@ func (db *DB) Delete(key []byte) error {
 	if db.closed {
 		return ErrClosed
 	}
-	rc := int32(C.slate_delete(db.ptr, slicePtr(key), C.uintptr_t(len(key))))
+	rc := int32(C.slate_delete(db.ptr, (*C.uint8_t)(unsafe.SliceData(key)), C.uintptr_t(len(key))))
 	return db.mapErrorLocked(rc)
 }
 
