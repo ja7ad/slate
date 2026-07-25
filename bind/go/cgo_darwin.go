@@ -3,6 +3,6 @@
 package slate
 
 /*
-#cgo LDFLAGS: ${SRCDIR}/../../target/release/libslate_kv_ffi.a -liconv -lSystem -lc -lm
+#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lslate_kv_ffi -liconv -lSystem -lc -lm
 */
 import "C"
