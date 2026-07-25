@@ -4,8 +4,12 @@ version.workspace = true
 edition.workspace = true
 description = "Command-line interface (CLI) tool for SLATE key-value database files"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/slate-kv-cli"
+keywords = ["cli", "key-value", "database", "storage", "embedded"]
+categories = ["command-line-utilities", "database"]
 
 [dependencies]
-slate-kv = { version = "0.3.3", path = "../slate-kv" }
+slate-kv = { version = "0.3.5", path = "../slate-kv" }

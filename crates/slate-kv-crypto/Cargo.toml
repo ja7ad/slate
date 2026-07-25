@@ -2,15 +2,19 @@
 name = "slate-kv-crypto"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "AEAD record sealing, HKDF key hierarchy and commit-marker MACs for the SLATE key-value engine"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/slate-kv-crypto"
+keywords = ["cryptography", "aead", "chacha20", "hkdf", "no-std"]
+categories = ["cryptography", "no-std::no-alloc", "embedded"]
 
 [dependencies]
 chacha20poly1305 = { version = "0.11.0", default-features = false }
 hkdf = { version = "0.13.0", default-features = false }
 hmac = { version = "0.13.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
-slate-kv-core = { version = "0.3.3", path = "../slate-kv-core" }
+slate-kv-core = { version = "0.3.5", path = "../slate-kv-core" }
 zeroize = { version = "1.9.0", default-features = false, features = ["zeroize_derive"] }

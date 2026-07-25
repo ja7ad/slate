@@ -2,14 +2,20 @@
 name = "slate-kv-sim"
 version.workspace = true
 edition.workspace = true
+description = "Fault-injecting flash simulator and model-validation harness for the SLATE key-value engine"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
+# Development-only harness: it exists to turn the formal report's claims into
+# CI-enforced tests, and has no stable API for downstream users.
+publish = false
 
 [dependencies]
-slate-kv-hal = { version = "0.3.3", path = "../slate-kv-hal" }
+slate-kv-hal = { version = "0.3.5", path = "../slate-kv-hal" }
 rand = { version = "0.8", features = ["small_rng"] }
 proptest = "1.5"
-slate-kv-core = { version = "0.3.3", path = "../slate-kv-core" }
-slate-kv-crypto = { version = "0.3.3", path = "../slate-kv-crypto" }
-slate-kv-erasure = { version = "0.3.3", path = "../slate-kv-erasure" }
+slate-kv-core = { version = "0.3.5", path = "../slate-kv-core" }
+slate-kv-crypto = { version = "0.3.5", path = "../slate-kv-crypto" }
+slate-kv-erasure = { version = "0.3.5", path = "../slate-kv-erasure" }
 serde = { version = "1.0", features = ["derive"] }

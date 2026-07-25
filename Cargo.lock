@@ -731,7 +731,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "slate-fuzz"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "libfuzzer-sys",
  "slate-kv-core",
@@ -739,7 +739,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "hmac",
  "libc",
@@ -751,14 +751,14 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-cli"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "slate-kv",
 ]
 
 [[package]]
 name = "slate-kv-core"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "heapless",
  "sha2",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-crypto"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
@@ -780,11 +780,11 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-erasure"
-version = "0.3.3"
+version = "0.3.5"
 
 [[package]]
 name = "slate-kv-ffi"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "cbindgen",
  "slate-kv",
@@ -793,11 +793,11 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-hal"
-version = "0.3.3"
+version = "0.3.5"
 
 [[package]]
 name = "slate-kv-sim"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "proptest",
  "rand 0.8.7",

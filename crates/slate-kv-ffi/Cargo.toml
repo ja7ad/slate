@@ -2,9 +2,15 @@
 name = "slate-kv-ffi"
 version.workspace = true
 edition = "2021"
+description = "Stable C ABI (cdylib + staticlib + generated slate.h) over the SLATE key-value store"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
+repository.workspace = true
+homepage.workspace = true
 build = "build.rs"
+# Shipped as a build artifact, not a crates.io crate: consumers link the
+# generated `libslate_kv_ffi` + `slate.h`, they do not `cargo add` this.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "staticlib"]

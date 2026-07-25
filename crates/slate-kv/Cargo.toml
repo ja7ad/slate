@@ -2,15 +2,19 @@
 name = "slate-kv"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "Secure, log-structured, authenticated, tamper-evident key-value store for edge devices (std API)"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/slate-kv"
+keywords = ["key-value", "database", "embedded", "encryption", "storage"]
+categories = ["database-implementations", "embedded", "cryptography"]
 
 [dependencies]
-slate-kv-core = { version = "0.3.3", path = "../slate-kv-core", features = ["metrics"] }
-slate-kv-hal = { version = "0.3.3", path = "../slate-kv-hal" }
-slate-kv-crypto = { version = "0.3.3", path = "../slate-kv-crypto" }
+slate-kv-core = { version = "0.3.5", path = "../slate-kv-core", features = ["metrics"] }
+slate-kv-hal = { version = "0.3.5", path = "../slate-kv-hal" }
+slate-kv-crypto = { version = "0.3.5", path = "../slate-kv-crypto" }
 sha2 = "0.11.0"
 hmac = "0.13.0"
 libc = "0.2"

@@ -1212,7 +1212,7 @@ dependencies = [
 
 [[package]]
 name = "slate-esp32"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "critical-section",
  "embedded-storage",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-core"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "heapless 0.8.0",
  "sha2",
@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-crypto"
-version = "0.3.3"
+version = "0.3.5"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
@@ -1250,11 +1250,11 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-erasure"
-version = "0.3.3"
+version = "0.3.5"
 
 [[package]]
 name = "slate-kv-hal"
-version = "0.3.3"
+version = "0.3.5"
 
 [[package]]
 name = "somni-expr"

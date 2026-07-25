@@ -2,9 +2,13 @@
 name = "slate-kv-erasure"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "Heapless Reed-Solomon RS(12,8) erasure coding over GF(2^8) for the SLATE key-value engine"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/slate-kv-erasure"
+keywords = ["reed-solomon", "erasure-coding", "no-std", "gf256", "embedded"]
+categories = ["algorithms", "encoding", "no-std::no-alloc", "embedded"]
 
 [dependencies]

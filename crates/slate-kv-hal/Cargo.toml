@@ -2,9 +2,13 @@
 name = "slate-kv-hal"
 version.workspace = true
 edition.workspace = true
-description.workspace = true
+description = "Hardware abstraction traits (flash, monotonic counter, entropy, clock) for the SLATE key-value engine"
 license.workspace = true
-readme.workspace = true
+readme = "README.md"
 repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/slate-kv-hal"
+keywords = ["no-std", "embedded", "flash", "hal", "kv"]
+categories = ["embedded", "no-std::no-alloc", "hardware-support"]
 
 [dependencies]

@@ -1,8 +1,11 @@
 [package]
 name = "slate-fuzz"
-version = "0.3.3"
+version = "0.3.5"
 edition = "2021"
+description = "cargo-fuzz targets for the SLATE on-flash decoders and the recovery path"
 license.workspace = true
+readme = "README.md"
+repository.workspace = true
 publish = false
 
 [package.metadata]
