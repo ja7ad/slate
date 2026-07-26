@@ -58,7 +58,12 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result<(), Error> {
+fn program_checkpoint<F: Flash>(
+    flash: &mut F,
+    slot: u8,
+    bytes: &[u8],
+    page_buf: &mut [u8],
+) -> Result<(), Error> {
     // Checkpoint area sits above the superblock; slot addressing is shared with
     // the reader and with `data_base_offset` so the three can never disagree.
     let block_addr = crate::config::ckpt_slot_addr(slot, flash.block_size());
@@ -74,11 +79,10 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
     let page_size = flash.page_size();
     // A device page must fit the fixed-size staging buffer; a larger page would
     // otherwise silently write past it.
-    if page_size > crate::config::MAX_PAGE_SIZE {
+    if page_size > crate::config::MAX_PAGE_SIZE || page_buf.len() < page_size {
         return Err(Error::FormatError);
     }
     let num_pages = bytes.len().div_ceil(page_size);
-    let mut page_buf = [0xFF; crate::config::MAX_PAGE_SIZE];
 
     for i in 0..num_pages {
         let start = i * page_size;
@@ -106,6 +110,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     n_keys: u16,
     ckpt_buf: &mut [u8],
     index_len: usize,
+    page_buf: &mut [u8],
 ) -> Result<(), Error> {
     let e = st.epoch;
 
@@ -151,7 +156,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     );
     ckpt_buf[CKPT_HDR_LEN + index_len..total_len].copy_from_slice(&tag);
 
-    program_checkpoint(flash, slot, &ckpt_buf[..total_len])?;
+    program_checkpoint(flash, slot, &ckpt_buf[..total_len], page_buf)?;
     st.d_ckpt = sha256(&ckpt_buf[..total_len]);
     st.active_ckpt_slot = slot;
 

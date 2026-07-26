@@ -141,6 +141,7 @@ fn main() -> ! {
         metrics: Metrics::default(),
         ckpt_buf,
         rng: slate_kv_core::index::XorShift64::new(rng_seed),
+        scratch_buf: slate_kv_core::slate::ScratchWorkspace::new(),
     };
 
     println!("slate> ");

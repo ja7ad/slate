@@ -8,6 +8,44 @@ use crate::gc::SegTable;
 use crate::index::Index;
 use crate::log::{Log, Sealer};
 use slate_kv_hal::{Flash, MonotonicCounter};
+/// Workspace for record staging and cryptography scratch space to avoid stack allocations.
+pub struct ScratchWorkspace {
+    /// Buffer for reading/staging records in gc/compaction.
+    pub gc_rec_bytes:
+        [u8; crate::config::REC_OVERHEAD + crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+    /// Scratch buffer for gc/compaction decryption.
+    pub gc_scratch: [u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+    /// Buffer for reading candidate records during index collision check.
+    pub cand_rec_bytes:
+        [u8; crate::config::REC_OVERHEAD + crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+    /// Scratch buffer for candidate record decryption.
+    pub cand_scratch: [u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+    /// Page buffer for checkpoint programming.
+    pub page_buf: [u8; crate::config::MAX_PAGE_SIZE],
+}
+
+impl ScratchWorkspace {
+    /// Creates a new scratch workspace with zeroed arrays.
+    pub const fn new() -> Self {
+        Self {
+            gc_rec_bytes: [0u8; crate::config::REC_OVERHEAD
+                + crate::config::MAX_KEY_LEN
+                + crate::config::MAX_VAL_LEN],
+            gc_scratch: [0u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+            cand_rec_bytes: [0u8; crate::config::REC_OVERHEAD
+                + crate::config::MAX_KEY_LEN
+                + crate::config::MAX_VAL_LEN],
+            cand_scratch: [0u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN],
+            page_buf: [0u8; crate::config::MAX_PAGE_SIZE],
+        }
+    }
+}
+
+impl Default for ScratchWorkspace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
     pub flash: F,
@@ -23,6 +61,7 @@ pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
     pub metrics: crate::metrics::Metrics,
     pub ckpt_buf: &'a mut [u8],
     pub rng: crate::index::XorShift64,
+    pub scratch_buf: ScratchWorkspace,
 }
 
 impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
@@ -51,9 +90,20 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         let hot_data = self.log_hot.batch.data();
         let cold_base = self.log_cold.head.write_offset;
         let cold_data = self.log_cold.batch.data();
+        let cand_rec = &mut self.scratch_buf.cand_rec_bytes;
+        let cand_scratch = &mut self.scratch_buf.cand_scratch;
         self.index.upsert(key, new_off, &mut self.rng, |cand_off| {
             cand_matches_key(
-                flash, sealer, hot_base, hot_data, cold_base, cold_data, cand_off, key,
+                flash,
+                sealer,
+                hot_base,
+                hot_data,
+                cold_base,
+                cold_data,
+                cand_rec,
+                cand_scratch,
+                cand_off,
+                key,
             )
         })
     }
@@ -68,9 +118,20 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         let hot_data = self.log_hot.batch.data();
         let cold_base = self.log_cold.head.write_offset;
         let cold_data = self.log_cold.batch.data();
+        let cand_rec = &mut self.scratch_buf.cand_rec_bytes;
+        let cand_scratch = &mut self.scratch_buf.cand_scratch;
         self.index.remove(key, |cand_off| {
             cand_matches_key(
-                flash, sealer, hot_base, hot_data, cold_base, cold_data, cand_off, key,
+                flash,
+                sealer,
+                hot_base,
+                hot_data,
+                cold_base,
+                cold_data,
+                cand_rec,
+                cand_scratch,
+                cand_off,
+                key,
             )
         })
     }
@@ -193,6 +254,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
             n_keys,
             self.ckpt_buf,
             index_len,
+            &mut self.scratch_buf.page_buf,
         )?;
 
         // The checkpoint just written durably records the index as of `seg_seq`,
@@ -258,18 +320,19 @@ fn read_candidate<F: Flash>(
 /// Returns whether the record at `cand_off` decrypts to exactly `key`. Used to
 /// resolve fingerprint collisions when updating/removing index entries.
 #[allow(clippy::too_many_arguments)]
-fn cand_matches_key<F: Flash, S: Sealer>(
+pub(crate) fn cand_matches_key<F: Flash, S: Sealer>(
     flash: &mut F,
     sealer: &mut S,
     hot_base: u32,
     hot_data: &[u8],
     cold_base: u32,
     cold_data: &[u8],
+    cand_rec_bytes: &mut [u8],
+    cand_scratch: &mut [u8],
     cand_off: u32,
     key: &[u8],
 ) -> bool {
     let mut hdr_bytes = [0u8; REC_HDR_LEN];
-    let mut rec_bytes = [0u8; REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN];
     let total = match read_candidate(
         flash,
         hot_base,
@@ -278,7 +341,7 @@ fn cand_matches_key<F: Flash, S: Sealer>(
         cold_data,
         cand_off,
         &mut hdr_bytes,
-        &mut rec_bytes,
+        cand_rec_bytes,
     ) {
         Some(t) => t,
         None => return false,
@@ -290,12 +353,15 @@ fn cand_matches_key<F: Flash, S: Sealer>(
     if hdr.klen as usize != key.len() {
         return false;
     }
-    let mut scratch = [0u8; MAX_KEY_LEN + MAX_VAL_LEN];
     if sealer
-        .open_record(&hdr_bytes, &rec_bytes[REC_HDR_LEN..total], &mut scratch)
+        .open_record(
+            &hdr_bytes,
+            &cand_rec_bytes[REC_HDR_LEN..total],
+            cand_scratch,
+        )
         .is_err()
     {
         return false;
     }
-    &scratch[..hdr.klen as usize] == key
+    &cand_scratch[..hdr.klen as usize] == key
 }

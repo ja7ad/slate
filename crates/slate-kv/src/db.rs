@@ -290,6 +290,7 @@ impl Db {
                     // where the log actually begins. Recording 0 here would make
                     // the next mount replay the reserved checkpoint region as if
                     // it were log data.
+                    let mut page_buf = [0u8; 512];
                     slate_kv_core::epoch::seal_epoch(
                         &mut st,
                         &mut flash,
@@ -300,6 +301,7 @@ impl Db {
                         0,
                         ckpt_slice,
                         0,
+                        &mut page_buf,
                     )?;
                     (st, 0, data_base, 1)
                 }
@@ -380,6 +382,7 @@ impl Db {
             metrics: Metrics::default(),
             ckpt_buf: ckpt_slice,
             rng: slate_kv_core::index::XorShift64::new(rng_seed),
+            scratch_buf: slate_kv_core::slate::ScratchWorkspace::new(),
         };
 
         if plain_len > 0 {

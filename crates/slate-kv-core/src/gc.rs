@@ -78,6 +78,59 @@ impl SegTable {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn reappend_cold<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
+    log_cold: &mut crate::log::Log<'_, F>,
+    sealer: &mut S,
+    engine: &mut crate::epoch::EngineState,
+    sched: &mut crate::sched::Scheduler,
+    op: u8,
+    key: &[u8],
+    val: &[u8],
+) -> Result<(u32, bool), crate::error::Error> {
+    let seq = engine.next_seq;
+    let epoch = engine.epoch;
+    let (_seq_ret, offset) =
+        log_cold.append(seq, epoch, op, key, val, sealer, &mut engine.chain)?;
+    engine.next_seq += 1;
+    engine.records_in_epoch += 1;
+    let need_commit = sched.on_append(0);
+    Ok((offset, need_commit))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reindex_update_offset<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
+    index: &mut crate::index::Index<'_>,
+    rng: &mut crate::index::XorShift64,
+    flash: &mut F,
+    sealer: &mut S,
+    log_hot: &crate::log::Log<'_, F>,
+    log_cold: &crate::log::Log<'_, F>,
+    cand_rec: &mut [u8],
+    cand_scratch: &mut [u8],
+    key: &[u8],
+    new_off: u32,
+) -> Result<(), crate::error::Error> {
+    let hot_base = log_hot.head.write_offset;
+    let hot_data = log_hot.batch.data();
+    let cold_base = log_cold.head.write_offset;
+    let cold_data = log_cold.batch.data();
+    index.upsert(key, new_off, rng, |cand_off| {
+        crate::slate::cand_matches_key(
+            flash,
+            sealer,
+            hot_base,
+            hot_data,
+            cold_base,
+            cold_data,
+            cand_rec,
+            cand_scratch,
+            cand_off,
+            key,
+        )
+    })
+}
+
 pub fn compact_one<
     'a,
     F: slate_kv_hal::Flash,
@@ -111,10 +164,6 @@ pub fn compact_one<
     let mut off = seg_base + page_size; // Skip segment header
 
     let mut buf = [0u8; 1];
-    let mut rec_bytes = [0u8; crate::config::REC_OVERHEAD
-        + crate::config::MAX_KEY_LEN
-        + crate::config::MAX_VAL_LEN];
-    let mut scratch = [0u8; crate::config::MAX_KEY_LEN + crate::config::MAX_VAL_LEN];
 
     while off < seg_base + crate::config::SEG_BYTES as u32 {
         if st.flash.read(off, &mut buf).is_err() {
@@ -144,21 +193,25 @@ pub fn compact_one<
                 if let Ok(hdr) = crate::record::RecordHeader::decode(&hdr_bytes) {
                     let total_len =
                         crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
-                    if total_len <= rec_bytes.len()
-                        && st.flash.read(off, &mut rec_bytes[..total_len]).is_ok()
+                    if total_len <= st.scratch_buf.gc_rec_bytes.len()
+                        && st
+                            .flash
+                            .read(off, &mut st.scratch_buf.gc_rec_bytes[..total_len])
+                            .is_ok()
                     {
                         if st
                             .sealer
                             .open_record(
                                 &hdr_bytes,
-                                &rec_bytes[crate::config::REC_HDR_LEN..total_len],
-                                &mut scratch,
+                                &st.scratch_buf.gc_rec_bytes[crate::config::REC_HDR_LEN..total_len],
+                                &mut st.scratch_buf.gc_scratch,
                             )
                             .is_ok()
                         {
-                            let key = &scratch[..hdr.klen as usize];
-                            let val =
-                                &scratch[hdr.klen as usize..hdr.klen as usize + hdr.vlen as usize];
+                            let key_len = hdr.klen as usize;
+                            let val_len = hdr.vlen as usize;
+                            let key = &st.scratch_buf.gc_scratch[..key_len];
+                            let val = &st.scratch_buf.gc_scratch[key_len..key_len + val_len];
 
                             if hdr.op == crate::config::OP_PUT {
                                 let mut is_live = false;
@@ -168,11 +221,45 @@ pub fn compact_one<
                                     is_live = true;
                                 }
                                 if is_live {
-                                    let new_off = st.append_cold(key, val, 0)?;
-                                    st.index_update_offset(key, new_off)?;
+                                    let (new_off, need_commit) = reappend_cold(
+                                        &mut st.log_cold,
+                                        &mut st.sealer,
+                                        &mut st.engine,
+                                        &mut st.sched,
+                                        crate::config::OP_PUT,
+                                        key,
+                                        val,
+                                    )?;
+                                    if need_commit {
+                                        st.commit()?;
+                                    }
+                                    let key = &st.scratch_buf.gc_scratch[..key_len];
+                                    reindex_update_offset(
+                                        &mut st.index,
+                                        &mut st.rng,
+                                        &mut st.flash,
+                                        &mut st.sealer,
+                                        &st.log_hot,
+                                        &st.log_cold,
+                                        &mut st.scratch_buf.cand_rec_bytes,
+                                        &mut st.scratch_buf.cand_scratch,
+                                        key,
+                                        new_off,
+                                    )?;
                                 }
                             } else if hdr.op == crate::config::OP_DEL && hdr.seq > watermark {
-                                st.append_cold_tombstone(key, 0)?;
+                                let (_, need_commit) = reappend_cold(
+                                    &mut st.log_cold,
+                                    &mut st.sealer,
+                                    &mut st.engine,
+                                    &mut st.sched,
+                                    crate::config::OP_DEL,
+                                    key,
+                                    &[],
+                                )?;
+                                if need_commit {
+                                    st.commit()?;
+                                }
                             }
                         }
                     }
