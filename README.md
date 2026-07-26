@@ -32,7 +32,7 @@ We don't claim to beat every engine on every axis at once — that's not possibl
 
 ```toml
 [dependencies]
-slate-kv = "0.3"
+slate-kv = "0.4"
 ```
 
 ```rust,ignore
