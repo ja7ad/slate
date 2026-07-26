@@ -245,6 +245,41 @@ impl MonotonicCounter for SimCounter {
     }
 }
 
+impl slate_kv_hal::AsyncFlash for SimFlash {
+    type Error = SimFlashError;
+    fn page_size(&self) -> usize {
+        Flash::page_size(self)
+    }
+    fn block_size(&self) -> usize {
+        Flash::block_size(self)
+    }
+    fn capacity(&self) -> u32 {
+        Flash::capacity(self)
+    }
+    async fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
+        Flash::read(self, addr, buf)
+    }
+    async fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
+        Flash::program(self, addr, buf)
+    }
+    async fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
+        Flash::erase(self, block_addr)
+    }
+}
+
+impl slate_kv_hal::AsyncMonotonicCounter for SimCounter {
+    type Error = SimCounterError;
+    fn kind(&self) -> slate_kv_hal::CounterKind {
+        MonotonicCounter::kind(self)
+    }
+    async fn read(&mut self) -> Result<u64, Self::Error> {
+        MonotonicCounter::read(self)
+    }
+    async fn increment(&mut self) -> Result<u64, Self::Error> {
+        MonotonicCounter::increment(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

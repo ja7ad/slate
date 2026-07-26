@@ -70,7 +70,6 @@ pub mod storage_async;
 /// internally (DMA completion, status-poll interrupt), but a caller can never
 /// observe a half-erased block, and cancellation of the returned future does
 /// NOT abort an erase already latched into the die (§7).
-#[cfg(feature = "async")]
 pub trait AsyncFlash {
     /// Flash error type.
     type Error: core::fmt::Debug;
@@ -104,7 +103,6 @@ pub trait AsyncFlash {
 /// Async twin of [`MonotonicCounter`]. `increment` is a DURABLE write on every
 /// backend that matters (RTC-backed NVS, I2C EEPROM, secure element), so it is
 /// exactly as deserving of a yield point as `Flash::program`.
-#[cfg(feature = "async")]
 pub trait AsyncMonotonicCounter {
     /// Counter error type.
     type Error: core::fmt::Debug;
@@ -120,10 +118,8 @@ pub trait AsyncMonotonicCounter {
 /// futures. This is the zero-cost bridge that keeps `targets/esp32`,
 /// `slate-kv`, `slate-kv-ffi` and every existing board crate compiling
 /// unchanged.
-#[cfg(feature = "async")]
 pub struct BlockingFlash<F: Flash>(pub F);
 
-#[cfg(feature = "async")]
 impl<F: Flash> AsyncFlash for BlockingFlash<F> {
     type Error = F::Error;
     fn page_size(&self) -> usize {
@@ -158,10 +154,8 @@ impl<F: Flash> AsyncFlash for BlockingFlash<F> {
 }
 
 /// Same bridge for the counter.
-#[cfg(feature = "async")]
 pub struct BlockingCounter<C: MonotonicCounter>(pub C);
 
-#[cfg(feature = "async")]
 impl<C: MonotonicCounter> AsyncMonotonicCounter for BlockingCounter<C> {
     type Error = C::Error;
     fn kind(&self) -> CounterKind {
@@ -172,6 +166,111 @@ impl<C: MonotonicCounter> AsyncMonotonicCounter for BlockingCounter<C> {
     }
     fn increment(&mut self) -> impl core::future::Future<Output = Result<u64, Self::Error>> {
         core::future::ready(self.0.increment())
+    }
+}
+
+impl<F: Flash> Flash for BlockingFlash<F> {
+    type Error = F::Error;
+    fn page_size(&self) -> usize {
+        self.0.page_size()
+    }
+    fn block_size(&self) -> usize {
+        self.0.block_size()
+    }
+    fn capacity(&self) -> u32 {
+        self.0.capacity()
+    }
+    fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.read(addr, buf)
+    }
+    fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
+        self.0.program(addr, buf)
+    }
+    fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
+        self.0.erase(block_addr)
+    }
+}
+
+impl<C: MonotonicCounter> MonotonicCounter for BlockingCounter<C> {
+    type Error = C::Error;
+    fn kind(&self) -> CounterKind {
+        self.0.kind()
+    }
+    fn read(&mut self) -> Result<u64, Self::Error> {
+        self.0.read()
+    }
+    fn increment(&mut self) -> Result<u64, Self::Error> {
+        self.0.increment()
+    }
+}
+
+impl<F: Flash + ?Sized> Flash for &mut F {
+    type Error = F::Error;
+    fn page_size(&self) -> usize {
+        (**self).page_size()
+    }
+    fn block_size(&self) -> usize {
+        (**self).block_size()
+    }
+    fn capacity(&self) -> u32 {
+        (**self).capacity()
+    }
+    fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
+        (**self).read(addr, buf)
+    }
+    fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
+        (**self).program(addr, buf)
+    }
+    fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
+        (**self).erase(block_addr)
+    }
+}
+
+impl<F: AsyncFlash + ?Sized> AsyncFlash for &mut F {
+    type Error = F::Error;
+    fn page_size(&self) -> usize {
+        (**self).page_size()
+    }
+    fn block_size(&self) -> usize {
+        (**self).block_size()
+    }
+    fn capacity(&self) -> u32 {
+        (**self).capacity()
+    }
+    async fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
+        (**self).read(addr, buf).await
+    }
+    async fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
+        (**self).program(addr, buf).await
+    }
+    async fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
+        (**self).erase(block_addr).await
+    }
+}
+
+impl<C: MonotonicCounter + ?Sized> MonotonicCounter for &mut C {
+    type Error = C::Error;
+    fn kind(&self) -> CounterKind {
+        (**self).kind()
+    }
+    fn read(&mut self) -> Result<u64, Self::Error> {
+        (**self).read()
+    }
+    fn increment(&mut self) -> Result<u64, Self::Error> {
+        (**self).increment()
+    }
+}
+
+impl<C: AsyncMonotonicCounter + ?Sized> AsyncMonotonicCounter for &mut C {
+    type Error = C::Error;
+    fn kind(&self) -> CounterKind {
+        (**self).kind()
+    }
+    async fn read(&mut self) -> Result<u64, Self::Error> {
+        (**self).read().await
+    }
+    async fn increment(&mut self) -> Result<u64, Self::Error> {
+        (**self).increment().await
     }
 }
 
@@ -318,12 +417,11 @@ mod tests {
         assert_eq!(buf, [0xFF; 256]);
     }
 
-    #[cfg(feature = "async")]
     #[test]
     fn test_blocking_adapters() {
         let flash = BlockingFlash(StubFlash::new(4096, 256, 4096));
-        assert_eq!(flash.capacity(), 4096);
+        assert_eq!(Flash::capacity(&flash), 4096);
         let counter = BlockingCounter(StubCounter::new(10, CounterKind::BestEffort));
-        assert_eq!(counter.kind(), CounterKind::BestEffort);
+        assert_eq!(MonotonicCounter::kind(&counter), CounterKind::BestEffort);
     }
 }

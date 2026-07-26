@@ -133,7 +133,7 @@ impl Drop for Buffers {
 }
 
 struct OwnedEngine {
-    slate: Slate<'static, FileFlash, FileCounter, CryptoSealer>,
+    slate: slate_kv_core::slate::Slate<'static, slate_kv_hal::BlockingFlash<FileFlash>, slate_kv_hal::BlockingCounter<FileCounter>, CryptoSealer>,
     #[allow(dead_code)]
     bufs: Buffers, // Dropped after slate because of declaration order
 }
@@ -366,8 +366,8 @@ impl Db {
 
         let rng_seed = engine_state.epoch.max(1) ^ 42;
         let mut slate = Slate {
-            flash,
-            counter,
+            flash: slate_kv_hal::BlockingFlash(flash),
+            counter: slate_kv_hal::BlockingCounter(counter),
             sealer,
             engine: engine_state,
             log_hot,

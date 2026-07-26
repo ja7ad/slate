@@ -79,7 +79,7 @@ impl SegTable {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reappend_cold<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
+fn reappend_cold<F: slate_kv_hal::AsyncFlash, S: crate::log::Sealer>(
     log_cold: &mut crate::log::Log<'_, F>,
     sealer: &mut S,
     engine: &mut crate::epoch::EngineState,
@@ -99,7 +99,7 @@ fn reappend_cold<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn reindex_update_offset<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
+async fn reindex_update_offset<F: slate_kv_hal::AsyncFlash, S: crate::log::Sealer>(
     index: &mut crate::index::Index<'_>,
     rng: &mut crate::index::XorShift64,
     flash: &mut F,
@@ -115,8 +115,11 @@ fn reindex_update_offset<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
     let hot_data = log_hot.batch.data();
     let cold_base = log_cold.head.write_offset;
     let cold_data = log_cold.batch.data();
-    index.upsert(key, new_off, rng, |cand_off| {
-        crate::slate::cand_matches_key(
+    let mut cbuf = crate::index::CandidateBuf::new();
+    index.candidates(key, &mut cbuf);
+    let mut matching_off = None;
+    for &cand_off in cbuf.as_slice() {
+        if crate::slate::cand_matches_key_async(
             flash,
             sealer,
             hot_base,
@@ -127,14 +130,20 @@ fn reindex_update_offset<F: slate_kv_hal::Flash, S: crate::log::Sealer>(
             cand_scratch,
             cand_off,
             key,
-        )
+        ).await {
+            matching_off = Some(cand_off);
+            break;
+        }
+    }
+    index.upsert(key, new_off, rng, |cand_off| {
+        Some(cand_off) == matching_off
     })
 }
 
-pub fn compact_one<
+pub async fn compact_one_async<
     'a,
-    F: slate_kv_hal::Flash,
-    C: slate_kv_hal::MonotonicCounter,
+    F: slate_kv_hal::AsyncFlash,
+    C: slate_kv_hal::AsyncMonotonicCounter,
     S: crate::log::Sealer,
 >(
     st: &mut crate::slate::Slate<'a, F, C, S>,
@@ -164,9 +173,15 @@ pub fn compact_one<
     let mut off = seg_base + page_size; // Skip segment header
 
     let mut buf = [0u8; 1];
+    let mut since_yield = 0u16;
 
     while off < seg_base + crate::config::SEG_BYTES as u32 {
-        if st.flash.read(off, &mut buf).is_err() {
+        if since_yield >= crate::config::GC_YIELD_EVERY_RECORDS {
+            crate::task::yield_now().await;
+            since_yield = 0;
+        }
+        since_yield += 1;
+        if st.flash.read(off, &mut buf).await.is_err() {
             break;
         }
 
@@ -187,7 +202,7 @@ pub fn compact_one<
             }
             crate::config::MAGIC_REC => {
                 let mut hdr_bytes = [0u8; crate::config::REC_HDR_LEN];
-                if st.flash.read(off, &mut hdr_bytes).is_err() {
+                if st.flash.read(off, &mut hdr_bytes).await.is_err() {
                     break;
                 }
                 if let Ok(hdr) = crate::record::RecordHeader::decode(&hdr_bytes) {
@@ -196,8 +211,7 @@ pub fn compact_one<
                     if total_len <= st.scratch_buf.gc_rec_bytes.len()
                         && st
                             .flash
-                            .read(off, &mut st.scratch_buf.gc_rec_bytes[..total_len])
-                            .is_ok()
+                            .read(off, &mut st.scratch_buf.gc_rec_bytes[..total_len]).await.is_ok()
                     {
                         if st
                             .sealer
@@ -231,7 +245,7 @@ pub fn compact_one<
                                         val,
                                     )?;
                                     if need_commit {
-                                        st.commit()?;
+                                        st.commit_async().await?;
                                     }
                                     let key = &st.scratch_buf.gc_scratch[..key_len];
                                     reindex_update_offset(
@@ -245,7 +259,7 @@ pub fn compact_one<
                                         &mut st.scratch_buf.cand_scratch,
                                         key,
                                         new_off,
-                                    )?;
+                                    ).await?;
                                 }
                             } else if hdr.op == crate::config::OP_DEL && hdr.seq > watermark {
                                 let (_, need_commit) = reappend_cold(
@@ -258,7 +272,7 @@ pub fn compact_one<
                                     &[],
                                 )?;
                                 if need_commit {
-                                    st.commit()?;
+                                    st.commit_async().await?;
                                 }
                             }
                         }
@@ -274,16 +288,18 @@ pub fn compact_one<
         }
     }
 
-    if st.cold_batch_full() {
-        st.commit()?;
+    if false {
+        st.commit_async().await?;
     }
 
-    st.commit()?;
+    st.commit_async().await?;
 
     for b in 0..(crate::config::SEG_BLOCKS_DATA + crate::config::SEG_BLOCKS_PARITY) {
         st.flash
             .erase(seg_base + (b as u32) * st.flash.block_size() as u32)
+            .await
             .map_err(|_| Error::Io)?;
+        crate::task::yield_now().await;
     }
     st.segs.entries[victim as usize].reset_to_free();
     Ok(())

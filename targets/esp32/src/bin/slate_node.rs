@@ -66,8 +66,8 @@ fn main() -> ! {
 
     let rng_seed = engine_state.epoch.max(1) ^ 42;
     let mut slate = Slate {
-        flash,
-        counter,
+        flash: slate_kv_hal::BlockingFlash(flash),
+        counter: slate_kv_hal::BlockingCounter(counter),
         sealer,
         engine: engine_state,
         log_hot: slate_kv_core::log::Log::new(

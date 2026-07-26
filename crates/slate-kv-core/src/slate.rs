@@ -7,7 +7,7 @@ use crate::error::Error;
 use crate::gc::SegTable;
 use crate::index::Index;
 use crate::log::{Log, Sealer};
-use slate_kv_hal::{Flash, MonotonicCounter};
+
 /// Workspace for record staging and cryptography scratch space to avoid stack allocations.
 pub struct ScratchWorkspace {
     /// Buffer for reading/staging records in gc/compaction.
@@ -47,7 +47,7 @@ impl Default for ScratchWorkspace {
     }
 }
 
-pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
+pub struct Slate<'a, F, C, S> {
     pub flash: F,
     pub counter: C,
     pub sealer: S,
@@ -64,7 +64,7 @@ pub struct Slate<'a, F: Flash, C: MonotonicCounter, S: Sealer> {
     pub scratch_buf: ScratchWorkspace,
 }
 
-impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
+impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
     pub fn index_points_to(&self, key_candidates: &[&[u8]], offset: u32) -> bool {
         // Stub: check if index maps any candidate key to this offset
         for &k in key_candidates {
@@ -83,56 +83,58 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
     /// cold batch, or on flash, then AEAD-opened to compare the exact key
     /// (fingerprints collide freely, §3.1/Thm 4.2). Returns `Err(IndexFull)` if
     /// the cuckoo table and stash cannot absorb a new key.
-    pub fn index_update_offset(&mut self, key: &[u8], new_off: u32) -> Result<(), Error> {
-        let flash = &mut self.flash;
-        let sealer = &mut self.sealer;
-        let hot_base = self.log_hot.head.write_offset;
-        let hot_data = self.log_hot.batch.data();
-        let cold_base = self.log_cold.head.write_offset;
-        let cold_data = self.log_cold.batch.data();
-        let cand_rec = &mut self.scratch_buf.cand_rec_bytes;
-        let cand_scratch = &mut self.scratch_buf.cand_scratch;
-        self.index.upsert(key, new_off, &mut self.rng, |cand_off| {
-            cand_matches_key(
-                flash,
-                sealer,
-                hot_base,
-                hot_data,
-                cold_base,
-                cold_data,
-                cand_rec,
-                cand_scratch,
+    pub async fn index_update_offset_async(&mut self, key: &[u8], new_off: u32) -> Result<(), Error> {
+        let mut cbuf = crate::index::CandidateBuf::new();
+        self.index.candidates(key, &mut cbuf);
+        let mut matching_off = None;
+        for &cand_off in cbuf.as_slice() {
+            if cand_matches_key_async(
+                &mut self.flash,
+                &mut self.sealer,
+                self.log_hot.head.write_offset,
+                self.log_hot.batch.data(),
+                self.log_cold.head.write_offset,
+                self.log_cold.batch.data(),
+                &mut self.scratch_buf.cand_rec_bytes,
+                &mut self.scratch_buf.cand_scratch,
                 cand_off,
                 key,
-            )
+            ).await {
+                matching_off = Some(cand_off);
+                break;
+            }
+        }
+        self.index.upsert(key, new_off, &mut self.rng, |cand_off| {
+            Some(cand_off) == matching_off
         })
     }
 
     /// Removes `key` from the index, matching the *full* key so a fingerprint
     /// collision cannot evict a different live key's slot. Returns whether an
     /// entry was removed.
-    pub fn index_remove_key(&mut self, key: &[u8]) -> bool {
-        let flash = &mut self.flash;
-        let sealer = &mut self.sealer;
-        let hot_base = self.log_hot.head.write_offset;
-        let hot_data = self.log_hot.batch.data();
-        let cold_base = self.log_cold.head.write_offset;
-        let cold_data = self.log_cold.batch.data();
-        let cand_rec = &mut self.scratch_buf.cand_rec_bytes;
-        let cand_scratch = &mut self.scratch_buf.cand_scratch;
-        self.index.remove(key, |cand_off| {
-            cand_matches_key(
-                flash,
-                sealer,
-                hot_base,
-                hot_data,
-                cold_base,
-                cold_data,
-                cand_rec,
-                cand_scratch,
+    pub async fn index_remove_key_async(&mut self, key: &[u8]) -> bool {
+        let mut cbuf = crate::index::CandidateBuf::new();
+        self.index.candidates(key, &mut cbuf);
+        let mut matching_off = None;
+        for &cand_off in cbuf.as_slice() {
+            if cand_matches_key_async(
+                &mut self.flash,
+                &mut self.sealer,
+                self.log_hot.head.write_offset,
+                self.log_hot.batch.data(),
+                self.log_cold.head.write_offset,
+                self.log_cold.batch.data(),
+                &mut self.scratch_buf.cand_rec_bytes,
+                &mut self.scratch_buf.cand_scratch,
                 cand_off,
                 key,
-            )
+            ).await {
+                matching_off = Some(cand_off);
+                break;
+            }
+        }
+        self.index.remove(key, |cand_off| {
+            Some(cand_off) == matching_off
         })
     }
 
@@ -159,7 +161,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         Ok(offset)
     }
 
-    pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
+    pub async fn append_cold_async(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
         let seq = self.engine.next_seq;
         let (_seq_ret, offset) = self.log_cold.append(
             seq,
@@ -173,12 +175,12 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         self.engine.next_seq += 1;
         self.engine.records_in_epoch += 1;
         if self.sched.on_append(now_ms) {
-            self.commit()?;
+            self.commit_async().await?;
         }
         Ok(offset)
     }
 
-    pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
+    pub async fn append_cold_tombstone_async(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
         let seq = self.engine.next_seq;
         let _ = self.log_cold.append(
             seq,
@@ -192,7 +194,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         self.engine.next_seq += 1;
         self.engine.records_in_epoch += 1;
         if self.sched.on_append(now_ms) {
-            self.commit()?;
+            self.commit_async().await?;
         }
         Ok(())
     }
@@ -202,22 +204,22 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         self.log_cold.batch.data().len() >= 1024
     }
 
-    pub fn commit(&mut self) -> Result<(), Error> {
+    pub async fn commit_async(&mut self) -> Result<(), Error> {
         let seq_max = self.engine.next_seq.saturating_sub(1);
-        self.log_hot.commit(
+        self.log_hot.commit_async(
             &mut self.flash,
             &mut self.sealer,
             &self.engine.chain,
             self.engine.epoch,
             seq_max,
-        )?;
-        self.log_cold.commit(
+        ).await?;
+        self.log_cold.commit_async(
             &mut self.flash,
             &mut self.sealer,
             &self.engine.chain,
             self.engine.epoch,
             seq_max,
-        )?;
+        ).await?;
         self.engine.acked_seq = seq_max;
         self.sched.on_commit();
         self.metrics.add_commit();
@@ -227,7 +229,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         self.metrics.add_wake();
 
         if self.engine.records_in_epoch >= crate::config::THETA {
-            self.seal_epoch_now()?;
+            self.seal_epoch_now_async().await?;
         }
         Ok(())
     }
@@ -236,7 +238,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
     /// records the current epoch holds. `commit` calls this on the Θ trigger;
     /// it is also public so an application can force a checkpoint before a
     /// planned shutdown (bounding the work a later mount has to replay).
-    pub fn seal_epoch_now(&mut self) -> Result<(), Error> {
+    pub async fn seal_epoch_now_async(&mut self) -> Result<(), Error> {
         let index_len = self
             .index
             .serialize(&mut self.ckpt_buf[crate::config::CKPT_HDR_LEN..]);
@@ -244,7 +246,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         let write_offset = self.log_hot.head.write_offset;
         let n_keys = self.index.len() as u16;
 
-        crate::epoch::seal_epoch(
+        crate::epoch::seal_epoch_async(
             &mut self.engine,
             &mut self.flash,
             &mut self.counter,
@@ -255,7 +257,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
             self.ckpt_buf,
             index_len,
             &mut self.scratch_buf.page_buf,
-        )?;
+        ).await?;
 
         // The checkpoint just written durably records the index as of `seg_seq`,
         // so every segment allocated strictly before it is now reclaimable:
@@ -267,8 +269,43 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         Ok(())
     }
 
+    pub async fn compact_async(&mut self) -> Result<(), Error> {
+        crate::gc::compact_one_async(self).await
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn index_update_offset(&mut self, key: &[u8], new_off: u32) -> Result<(), Error> {
+        crate::task::block_on(self.index_update_offset_async(key, new_off))
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn index_remove_key(&mut self, key: &[u8]) -> bool {
+        crate::task::block_on(self.index_remove_key_async(key))
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
+        crate::task::block_on(self.append_cold_async(key, val, now_ms))
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn append_cold_tombstone(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
+        crate::task::block_on(self.append_cold_tombstone_async(key, now_ms))
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn commit(&mut self) -> Result<(), Error> {
+        crate::task::block_on(self.commit_async())
+    }
+
+    #[cfg(feature = "blocking")]
+    pub fn seal_epoch_now(&mut self) -> Result<(), Error> {
+        crate::task::block_on(self.seal_epoch_now_async())
+    }
+
+    #[cfg(feature = "blocking")]
     pub fn compact(&mut self) -> Result<(), Error> {
-        crate::gc::compact_one(self)
+        crate::task::block_on(self.compact_async())
     }
 }
 
@@ -278,7 +315,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
 /// that was just handed out by `Log::append` points into a not-yet-flushed batch,
 /// so a flash read there would see the erased/old page.
 #[allow(clippy::too_many_arguments)]
-fn read_candidate<F: Flash>(
+async fn read_candidate_async<F: slate_kv_hal::AsyncFlash>(
     flash: &mut F,
     hot_base: u32,
     hot_data: &[u8],
@@ -303,7 +340,7 @@ fn read_candidate<F: Flash>(
         }
     }
 
-    if flash.read(off, hdr_out).is_err() {
+    if flash.read(off, hdr_out).await.is_err() {
         return None;
     }
     let hdr = crate::record::RecordHeader::decode(hdr_out).ok()?;
@@ -311,7 +348,7 @@ fn read_candidate<F: Flash>(
     if total > rec_out.len() {
         return None;
     }
-    if flash.read(off, &mut rec_out[..total]).is_err() {
+    if flash.read(off, &mut rec_out[..total]).await.is_err() {
         return None;
     }
     Some(total)
@@ -320,7 +357,7 @@ fn read_candidate<F: Flash>(
 /// Returns whether the record at `cand_off` decrypts to exactly `key`. Used to
 /// resolve fingerprint collisions when updating/removing index entries.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn cand_matches_key<F: Flash, S: Sealer>(
+pub(crate) async fn cand_matches_key_async<F: slate_kv_hal::AsyncFlash, S: Sealer>(
     flash: &mut F,
     sealer: &mut S,
     hot_base: u32,
@@ -333,7 +370,7 @@ pub(crate) fn cand_matches_key<F: Flash, S: Sealer>(
     key: &[u8],
 ) -> bool {
     let mut hdr_bytes = [0u8; REC_HDR_LEN];
-    let total = match read_candidate(
+    let total = match read_candidate_async(
         flash,
         hot_base,
         hot_data,
@@ -342,7 +379,7 @@ pub(crate) fn cand_matches_key<F: Flash, S: Sealer>(
         cand_off,
         &mut hdr_bytes,
         cand_rec_bytes,
-    ) {
+    ).await {
         Some(t) => t,
         None => return false,
     };
@@ -364,4 +401,5 @@ pub(crate) fn cand_matches_key<F: Flash, S: Sealer>(
         return false;
     }
     &cand_scratch[..hdr.klen as usize] == key
+
 }

@@ -4,7 +4,7 @@ use crate::chain::Chain;
 use crate::config::*;
 use crate::error::Error;
 use crate::record::RecordHeader;
-use slate_kv_hal::Flash;
+
 
 /// Commit marker fields.
 pub struct CmFields {
@@ -108,7 +108,7 @@ impl<'a> BatchBuf<'a> {
 }
 
 /// The log instance.
-pub struct Log<'a, F: Flash> {
+pub struct Log<'a, F> {
     /// Head state.
     pub head: HeadState,
     /// Batch buffer.
@@ -116,7 +116,7 @@ pub struct Log<'a, F: Flash> {
     _flash: core::marker::PhantomData<F>,
 }
 
-impl<'a, F: Flash> Log<'a, F> {
+impl<'a, F> Log<'a, F> {
     /// Creates a new Log.
     pub fn new(buf: &'a mut [u8], head: HeadState) -> Self {
         Self {
@@ -182,7 +182,12 @@ impl<'a, F: Flash> Log<'a, F> {
         Ok((seq, offset))
     }
 
-    fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
+
+}
+
+impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
+    /// Commits the current batch.
+        async fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
         let data = self.batch.data();
         let page_size = flash.page_size();
 
@@ -200,7 +205,7 @@ impl<'a, F: Flash> Log<'a, F> {
 
             flash
                 .program(addr, &page_buf[..page_size])
-                .map_err(|_| Error::Io)?;
+                .await.map_err(|_| Error::Io)?;
             addr += page_size as u32;
         }
 
@@ -208,7 +213,7 @@ impl<'a, F: Flash> Log<'a, F> {
         Ok(())
     }
 
-    fn program_xor_parity(&mut self, flash: &mut F) -> Result<u16, Error> {
+    async fn program_xor_parity(&mut self, flash: &mut F) -> Result<u16, Error> {
         let data = self.batch.data();
         if data.is_empty() {
             return Ok(0);
@@ -235,25 +240,25 @@ impl<'a, F: Flash> Log<'a, F> {
         xor_page[0] = crate::config::MAGIC_XOR;
         flash
             .program(self.head.write_offset, &xor_page[..page_size])
-            .map_err(|_| Error::Io)?;
+            .await.map_err(|_| Error::Io)?;
         self.head.write_offset += page_size as u32;
         Ok(num_pages as u16)
     }
 
-    fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
+    async fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
         let page_size = flash.page_size();
         let mut page_buf = [0xFF; MAX_PAGE_SIZE];
         let len = core::cmp::min(data.len(), page_size);
         page_buf[..len].copy_from_slice(&data[..len]);
         flash
             .program(self.head.write_offset, &page_buf[..page_size])
-            .map_err(|_| Error::Io)?;
+            .await.map_err(|_| Error::Io)?;
         self.head.write_offset += page_size as u32;
         Ok(())
     }
 
-    /// Commits batched records to flash.
-    pub fn commit(
+    /// Commits the current batch to flash.
+    pub async fn commit_async(
         &mut self,
         flash: &mut F,
         s: &mut impl Sealer,
@@ -264,12 +269,24 @@ impl<'a, F: Flash> Log<'a, F> {
         if self.batch.is_empty() {
             return Ok(());
         }
-        self.program_batch_pages(flash)?;
-        let xor_pages = self.program_xor_parity(flash)?;
+        self.program_batch_pages(flash).await?;
+        let xor_pages = self.program_xor_parity(flash).await?;
         let cm = s.commit_marker(seq_max, epoch, xor_pages, &chain.chi);
-        self.program_page(flash, &cm)?;
-        self.program_page(flash, &cm)?;
+        self.program_page(flash, &cm).await?;
+        self.program_page(flash, &cm).await?;
         self.batch.clear();
         Ok(())
+    }
+    /// Commits the current batch synchronously.
+    #[cfg(feature = "blocking")]
+    pub fn commit(
+        &mut self,
+        flash: &mut F,
+        s: &mut impl Sealer,
+        chain: &crate::chain::Chain,
+        epoch: u64,
+        seq_max: u64,
+    ) -> Result<(), Error> {
+        crate::task::block_on(self.commit_async(flash, s, chain, epoch, seq_max))
     }
 }
