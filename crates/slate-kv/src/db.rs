@@ -55,11 +55,18 @@ pub enum KeySource {
     Env(&'static str),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Profile {
     Esp32,
     Pi,
 }
 
+/// Tuning knobs for [`Db::open`].
+///
+/// `Clone` so a caller can open the same configuration twice — reopening a
+/// database after a drop is the normal way to test durability, and without
+/// `Clone` every such call site has to rebuild the struct field by field.
+#[derive(Clone, Debug)]
 pub struct Options {
     pub capacity: u32,
     pub b_commit: u32,
@@ -138,6 +145,22 @@ pub struct Db {
     inner: Mutex<OwnedEngine>,
 }
 
+impl Drop for Db {
+    /// Best-effort flush of the pending batch on a clean close.
+    ///
+    /// Records sit in the in-memory batch until a commit marker is written, so
+    /// without this a `drop` after a successful `put` loses up to `b_max`
+    /// records — a surprising result for callers who never crashed. This is a
+    /// convenience, not a durability guarantee: the error is deliberately
+    /// swallowed because `drop` cannot report one, so any caller that must know
+    /// its data is durable has to call [`Db::commit`] and check the result.
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.inner.lock() {
+            let _ = inner.slate.commit();
+        }
+    }
+}
+
 impl Db {
     #[allow(clippy::collapsible_if)]
     pub fn open(path: &Path, key: KeySource, opts: Options) -> Result<Self, DbError> {
@@ -207,19 +230,50 @@ impl Db {
         // Allocate buffers
         let hot_box = vec![0u8; 65536].into_boxed_slice();
         let cold_box = vec![0u8; 65536].into_boxed_slice();
-        let index_slots_count = (opts.n_keys.max(2048) as f64 / 0.95) as usize; // rough capacity
-        let index_slots_count = index_slots_count.next_power_of_two() * 4; // BUCKET_SLOTS
+        // Size the cuckoo table for the requested key count, then reject up
+        // front anything whose serialized form would not fit in a checkpoint
+        // slot. The whole index goes into one checkpoint, so exceeding
+        // MAX_CKPT_LEN does not degrade gracefully: every epoch seal would fail
+        // and the database would run without checkpoints entirely.
+        let n_buckets = (opts.n_keys.max(2048) as f64 / 0.95) as usize;
+        let index_slots_count = n_buckets.next_power_of_two() * slate_kv_core::config::BUCKET_SLOTS;
+        let max_slots = slate_kv_core::config::max_index_slots();
+        if index_slots_count > max_slots {
+            return Err(DbError::Config(format!(
+                "n_keys={} needs {} index slots but the checkpoint format allows at most {} \
+                 (MAX_CKPT_LEN={}); reduce n_keys to at most {}",
+                opts.n_keys,
+                index_slots_count,
+                max_slots,
+                slate_kv_core::config::MAX_CKPT_LEN,
+                max_slots / slate_kv_core::config::BUCKET_SLOTS * 95 / 100,
+            )));
+        }
         let index_box = vec![0u32; index_slots_count].into_boxed_slice();
         let index_len = index_box.len();
 
-        let ckpt_box = vec![0u8; index_len + 1024].into_boxed_slice();
+        // The checkpoint buffer must hold header + serialized index + AEAD tag.
+        // Sizing it from the same helper the format uses keeps the two in step;
+        // the previous `index_len + 1024` under-counted because the index costs
+        // 4 bytes per slot, not 1.
+        let ckpt_box =
+            vec![0u8; slate_kv_core::config::ckpt_len_for_slots(index_len)].into_boxed_slice();
         let ckpt_ptr = Box::into_raw(ckpt_box);
         let ckpt_slice = unsafe { &mut *ckpt_ptr };
 
-        // Mount
-        let (engine_state, plain_len) =
+        // Mount. `replay_from` is where tail replay begins: the log head as of
+        // the newest checkpoint, or the base of the log for a freshly formatted
+        // volume. Everything below it is already captured in the checkpointed
+        // index.
+        let data_base = slate_kv_core::config::data_base_offset(4096);
+        let (engine_state, plain_len, replay_from, ckpt_seg_seq) =
             match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, ckpt_slice) {
-                Ok((st, len)) => (st, len),
+                Ok(mi) => (
+                    mi.state,
+                    mi.plain_len,
+                    mi.ckpt_write_offset.max(data_base),
+                    mi.ckpt_seg_seq,
+                ),
                 Err(MountError::FormatError) => {
                     // Formatting new
                     let mut st = EngineState {
@@ -232,18 +286,22 @@ impl Db {
                         security_mode: SecurityMode::BestEffortRollback,
                         active_ckpt_slot: 0,
                     };
+                    // The genesis checkpoint records the head at `data_base`,
+                    // where the log actually begins. Recording 0 here would make
+                    // the next mount replay the reserved checkpoint region as if
+                    // it were log data.
                     slate_kv_core::epoch::seal_epoch(
                         &mut st,
                         &mut flash,
                         &mut counter,
                         &mut sealer,
                         1,
-                        0,
+                        data_base,
                         0,
                         ckpt_slice,
                         0,
                     )?;
-                    (st, 0)
+                    (st, 0, data_base, 1)
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -266,11 +324,16 @@ impl Db {
         let cold_slice = unsafe { &mut *cold_ptr };
         let index_slice = unsafe { &mut *index_ptr };
 
+        // Both logs start above the reserved checkpoint region. Starting at 0
+        // would put the first records on top of the live checkpoint slots: the
+        // hot head is repositioned by recovery below, but the cold head is not,
+        // so a cold write would program still-live checkpoint pages.
+        let data_base = slate_kv_core::config::data_base_offset(4096);
         let log_hot = Log::new(
             hot_slice,
             HeadState {
                 seg_seq: 1,
-                write_offset: 0,
+                write_offset: data_base,
                 block_idx: 0,
             },
         );
@@ -278,7 +341,7 @@ impl Db {
             cold_slice,
             HeadState {
                 seg_seq: 1,
-                write_offset: 0,
+                write_offset: data_base,
                 block_idx: 0,
             },
         );
@@ -309,7 +372,10 @@ impl Db {
             log_cold,
             index: Index::new(index_slice, index_len / 4),
             segs: SegTable::new(128),
-            ckpt_seg_seq: 0,
+            // Seeded from the checkpoint so GC's reclaim watermark survives a
+            // remount; starting at 0 would block victim selection until the
+            // next epoch seal.
+            ckpt_seg_seq,
             sched: Scheduler::new(sched_cfg),
             metrics: Metrics::default(),
             ckpt_buf: ckpt_slice,
@@ -326,15 +392,17 @@ impl Db {
         let mut index_upsert_error = false;
         let mut rng = slate_kv_core::index::XorShift64::new(42);
         let mut workspace = Box::new(slate_kv_core::recover::RecoverWorkspace::new());
-        // The log lives above the checkpoint region; recovery scans from there.
-        // (block size 4096 matches the FileFlash constructed above.)
-        let data_base = slate_kv_core::config::data_base_offset(4096);
+        // Replay only the tail: records written after the newest checkpoint.
+        // The checkpointed index already accounts for everything below
+        // `replay_from`, so rescanning from the base of the log would both cost
+        // O(log length) and fail to validate — those older batches' commit
+        // markers belong to earlier epochs.
         let rec_info = slate_kv_core::recover::recover(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
             slate.engine.epoch,
-            data_base,
+            replay_from,
             &mut workspace,
             |flash, sealer, _seq, off, op, key| {
                 // Replay in seq order, deduplicating by the full key so repeated
@@ -356,7 +424,11 @@ impl Db {
         )
         .map_err(|e| DbError::Config(format!("{:?}", e)))?;
 
-        slate.log_hot.head.write_offset = rec_info.head_pos;
+        // Never let the head land below where the checkpoint said the log
+        // already reached: an empty tail returns `head_pos == replay_from`, and
+        // anything lower would overwrite durable records.
+        slate.log_hot.head.write_offset = rec_info.head_pos.max(replay_from);
+        slate.log_cold.head.write_offset = slate.log_hot.head.write_offset;
         // `mount` seeded next_seq from the checkpoint (= ckpt.seq). Never let the
         // tail replay regress the sequence counter below it — a crash immediately
         // after a checkpoint leaves committed_upto == 0 with a non-trivial
@@ -388,16 +460,7 @@ impl Db {
             .unwrap()
             .as_millis() as u64;
 
-        let seq = slate.engine.next_seq;
-        let (_seq, offset) = slate.log_hot.append(
-            seq,
-            OP_PUT,
-            key,
-            val,
-            &mut slate.sealer,
-            &mut slate.engine.chain,
-        )?;
-        slate.engine.next_seq += 1;
+        let offset = slate.append_hot(OP_PUT, key, val)?;
         slate.index_update_offset(key, offset)?;
         slate
             .metrics
@@ -544,16 +607,7 @@ impl Db {
             .unwrap()
             .as_millis() as u64;
 
-        let seq = slate.engine.next_seq;
-        let _ = slate.log_hot.append(
-            seq,
-            OP_DEL,
-            key,
-            &[],
-            &mut slate.sealer,
-            &mut slate.engine.chain,
-        )?;
-        slate.engine.next_seq += 1;
+        let _ = slate.append_hot(OP_DEL, key, &[])?;
 
         slate.index_remove_key(key);
         slate
@@ -576,16 +630,7 @@ impl Db {
             .unwrap()
             .as_millis() as u64;
 
-        let seq = slate.engine.next_seq;
-        let _ = slate.log_hot.append(
-            seq,
-            OP_DEL,
-            key,
-            &[],
-            &mut slate.sealer,
-            &mut slate.engine.chain,
-        )?;
-        slate.engine.next_seq += 1;
+        let _ = slate.append_hot(OP_DEL, key, &[])?;
 
         slate.index_remove_key(key);
         slate
