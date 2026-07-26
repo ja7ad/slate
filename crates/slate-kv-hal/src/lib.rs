@@ -60,6 +60,121 @@ pub trait Clock {
     fn now_ms(&self) -> u64;
 }
 
+#[cfg(feature = "embedded-storage-async")]
+pub mod storage_async;
+
+/// Async twin of [`Flash`]. Method-for-method identical, including the
+/// program-once-per-erase contract (§2.1) and the `Error` associated type.
+///
+/// `erase` is a SINGLE indivisible operation: an implementation may await
+/// internally (DMA completion, status-poll interrupt), but a caller can never
+/// observe a half-erased block, and cancellation of the returned future does
+/// NOT abort an erase already latched into the die (§7).
+#[cfg(feature = "async")]
+pub trait AsyncFlash {
+    /// Flash error type.
+    type Error: core::fmt::Debug;
+    /// Program granularity. Never suspends — pure metadata.
+    fn page_size(&self) -> usize;
+    /// Erase granularity, multiple of page_size. Never suspends.
+    fn block_size(&self) -> usize;
+    /// Capacity in bytes, C_flash. Never suspends.
+    fn capacity(&self) -> u32;
+
+    /// Reads `buf.len()` bytes at `addr`.
+    fn read(
+        &mut self,
+        addr: u32,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
+    /// Programs one page. MUST fail if the target page was already programmed
+    /// since its last erase (identical contract to `Flash::program`).
+    fn program(
+        &mut self,
+        addr: u32,
+        buf: &[u8],
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
+    /// Erases one block. Indivisible; see type-level note.
+    fn erase(
+        &mut self,
+        block_addr: u32,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
+}
+
+/// Async twin of [`MonotonicCounter`]. `increment` is a DURABLE write on every
+/// backend that matters (RTC-backed NVS, I2C EEPROM, secure element), so it is
+/// exactly as deserving of a yield point as `Flash::program`.
+#[cfg(feature = "async")]
+pub trait AsyncMonotonicCounter {
+    /// Counter error type.
+    type Error: core::fmt::Debug;
+    /// Counter class. Never suspends.
+    fn kind(&self) -> CounterKind;
+    /// Reads the current value.
+    fn read(&mut self) -> impl core::future::Future<Output = Result<u64, Self::Error>>;
+    /// Increments and returns the NEW value. Durable on return.
+    fn increment(&mut self) -> impl core::future::Future<Output = Result<u64, Self::Error>>;
+}
+
+/// Lifts any blocking [`Flash`] into [`AsyncFlash`] by returning already-ready
+/// futures. This is the zero-cost bridge that keeps `targets/esp32`,
+/// `slate-kv`, `slate-kv-ffi` and every existing board crate compiling
+/// unchanged.
+#[cfg(feature = "async")]
+pub struct BlockingFlash<F: Flash>(pub F);
+
+#[cfg(feature = "async")]
+impl<F: Flash> AsyncFlash for BlockingFlash<F> {
+    type Error = F::Error;
+    fn page_size(&self) -> usize {
+        self.0.page_size()
+    }
+    fn block_size(&self) -> usize {
+        self.0.block_size()
+    }
+    fn capacity(&self) -> u32 {
+        self.0.capacity()
+    }
+    fn read(
+        &mut self,
+        addr: u32,
+        buf: &mut [u8],
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(self.0.read(addr, buf))
+    }
+    fn program(
+        &mut self,
+        addr: u32,
+        buf: &[u8],
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(self.0.program(addr, buf))
+    }
+    fn erase(
+        &mut self,
+        block_addr: u32,
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>> {
+        core::future::ready(self.0.erase(block_addr))
+    }
+}
+
+/// Same bridge for the counter.
+#[cfg(feature = "async")]
+pub struct BlockingCounter<C: MonotonicCounter>(pub C);
+
+#[cfg(feature = "async")]
+impl<C: MonotonicCounter> AsyncMonotonicCounter for BlockingCounter<C> {
+    type Error = C::Error;
+    fn kind(&self) -> CounterKind {
+        self.0.kind()
+    }
+    fn read(&mut self) -> impl core::future::Future<Output = Result<u64, Self::Error>> {
+        core::future::ready(self.0.read())
+    }
+    fn increment(&mut self) -> impl core::future::Future<Output = Result<u64, Self::Error>> {
+        core::future::ready(self.0.increment())
+    }
+}
+
 #[cfg(test)]
 extern crate std;
 
@@ -201,5 +316,14 @@ mod tests {
         flash.erase(0).unwrap();
         flash.read(0, &mut buf).unwrap();
         assert_eq!(buf, [0xFF; 256]);
+    }
+
+    #[cfg(feature = "async")]
+    #[test]
+    fn test_blocking_adapters() {
+        let flash = BlockingFlash(StubFlash::new(4096, 256, 4096));
+        assert_eq!(flash.capacity(), 4096);
+        let counter = BlockingCounter(StubCounter::new(10, CounterKind::BestEffort));
+        assert_eq!(counter.kind(), CounterKind::BestEffort);
     }
 }

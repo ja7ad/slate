@@ -12,3 +12,9 @@ keywords = ["no-std", "embedded", "flash", "hal", "kv"]
 categories = ["embedded", "no-std::no-alloc", "hardware-support"]
 
 [dependencies]
+embedded-storage-async = { version = "0.4.1", default-features = false, optional = true }
+
+[features]
+default = []
+async = []
+embedded-storage-async = ["async", "dep:embedded-storage-async"]
