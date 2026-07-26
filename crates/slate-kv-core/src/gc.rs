@@ -130,14 +130,14 @@ async fn reindex_update_offset<F: slate_kv_hal::AsyncFlash, S: crate::log::Seale
             cand_scratch,
             cand_off,
             key,
-        ).await {
+        )
+        .await
+        {
             matching_off = Some(cand_off);
             break;
         }
     }
-    index.upsert(key, new_off, rng, |cand_off| {
-        Some(cand_off) == matching_off
-    })
+    index.upsert(key, new_off, rng, |cand_off| Some(cand_off) == matching_off)
 }
 
 pub async fn compact_one_async<
@@ -211,7 +211,9 @@ pub async fn compact_one_async<
                     if total_len <= st.scratch_buf.gc_rec_bytes.len()
                         && st
                             .flash
-                            .read(off, &mut st.scratch_buf.gc_rec_bytes[..total_len]).await.is_ok()
+                            .read(off, &mut st.scratch_buf.gc_rec_bytes[..total_len])
+                            .await
+                            .is_ok()
                     {
                         if st
                             .sealer
@@ -259,7 +261,8 @@ pub async fn compact_one_async<
                                         &mut st.scratch_buf.cand_scratch,
                                         key,
                                         new_off,
-                                    ).await?;
+                                    )
+                                    .await?;
                                 }
                             } else if hdr.op == crate::config::OP_DEL && hdr.seq > watermark {
                                 let (_, need_commit) = reappend_cold(

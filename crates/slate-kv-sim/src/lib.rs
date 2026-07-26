@@ -30,6 +30,13 @@ pub struct PowerModel {
     pub crash: Crash,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Read { addr: u32, len: u32 },
+    Program { addr: u32, len: u32 },
+    Erase { block_addr: u32 },
+}
+
 #[derive(Debug)]
 pub enum SimFlashError {
     PowerLoss,
@@ -45,9 +52,13 @@ pub struct SimFlash {
     pub bad_blocks: BTreeSet<u32>,
     pub power: PowerModel,
     pub stats: Stats,
+    pub op_log: Vec<Op>,
     pub is_gc_write: bool,
     page_size: usize,
     block_size: usize,
+    pub read_lat_ms: u64,
+    pub prog_lat_ms: u64,
+    pub erase_lat_ms: u64,
 }
 
 impl SimFlash {
@@ -62,9 +73,13 @@ impl SimFlash {
                 crash: Crash::None,
             },
             stats: Stats::default(),
+            op_log: Vec::new(),
             is_gc_write: false,
             page_size,
             block_size,
+            read_lat_ms: 0,
+            prog_lat_ms: 0,
+            erase_lat_ms: 0,
         }
     }
 }
@@ -92,6 +107,10 @@ impl Flash for SimFlash {
             return Err(SimFlashError::BadBlock);
         }
         buf.copy_from_slice(&self.mem[addr..addr + buf.len()]);
+        self.op_log.push(Op::Read {
+            addr: addr as u32,
+            len: buf.len() as u32,
+        });
         Ok(())
     }
 
@@ -145,6 +164,11 @@ impl Flash for SimFlash {
             self.programmed[start_page + i] = true;
         }
 
+        self.op_log.push(Op::Program {
+            addr: addr as u32,
+            len: bytes_to_write as u32,
+        });
+
         Ok(())
     }
 
@@ -184,6 +208,10 @@ impl Flash for SimFlash {
         for i in 0..num_pages {
             self.programmed[start_page + i] = false;
         }
+
+        self.op_log.push(Op::Erase {
+            block_addr: block_addr as u32,
+        });
 
         Ok(())
     }

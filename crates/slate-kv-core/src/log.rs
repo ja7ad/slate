@@ -5,7 +5,6 @@ use crate::config::*;
 use crate::error::Error;
 use crate::record::RecordHeader;
 
-
 /// Commit marker fields.
 pub struct CmFields {
     /// Magic byte.
@@ -181,13 +180,11 @@ impl<'a, F> Log<'a, F> {
 
         Ok((seq, offset))
     }
-
-
 }
 
 impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
     /// Commits the current batch.
-        async fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
+    async fn program_batch_pages(&mut self, flash: &mut F) -> Result<(), Error> {
         let data = self.batch.data();
         let page_size = flash.page_size();
 
@@ -205,7 +202,8 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
 
             flash
                 .program(addr, &page_buf[..page_size])
-                .await.map_err(|_| Error::Io)?;
+                .await
+                .map_err(|_| Error::Io)?;
             addr += page_size as u32;
         }
 
@@ -240,7 +238,8 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
         xor_page[0] = crate::config::MAGIC_XOR;
         flash
             .program(self.head.write_offset, &xor_page[..page_size])
-            .await.map_err(|_| Error::Io)?;
+            .await
+            .map_err(|_| Error::Io)?;
         self.head.write_offset += page_size as u32;
         Ok(num_pages as u16)
     }
@@ -252,7 +251,8 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
         page_buf[..len].copy_from_slice(&data[..len]);
         flash
             .program(self.head.write_offset, &page_buf[..page_size])
-            .await.map_err(|_| Error::Io)?;
+            .await
+            .map_err(|_| Error::Io)?;
         self.head.write_offset += page_size as u32;
         Ok(())
     }

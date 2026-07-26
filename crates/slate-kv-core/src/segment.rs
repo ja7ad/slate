@@ -84,7 +84,10 @@ pub async fn encode_parity<F: AsyncFlash>(flash: &mut F, seg: &Segment) -> Resul
 
     // 1. Erase parity blocks
     for j in 0..RS_M {
-        flash.erase(seg.parity_block(j)).await.map_err(|_| Error::Io)?;
+        flash
+            .erase(seg.parity_block(j))
+            .await
+            .map_err(|_| Error::Io)?;
         crate::task::yield_now().await;
     }
 
@@ -114,4 +117,3 @@ pub async fn encode_parity<F: AsyncFlash>(flash: &mut F, seg: &Segment) -> Resul
     }
     Ok(())
 }
-

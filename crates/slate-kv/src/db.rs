@@ -133,7 +133,12 @@ impl Drop for Buffers {
 }
 
 struct OwnedEngine {
-    slate: slate_kv_core::slate::Slate<'static, slate_kv_hal::BlockingFlash<FileFlash>, slate_kv_hal::BlockingCounter<FileCounter>, CryptoSealer>,
+    slate: slate_kv_core::slate::Slate<
+        'static,
+        slate_kv_hal::BlockingFlash<FileFlash>,
+        slate_kv_hal::BlockingCounter<FileCounter>,
+        CryptoSealer,
+    >,
     #[allow(dead_code)]
     bufs: Buffers, // Dropped after slate because of declaration order
 }

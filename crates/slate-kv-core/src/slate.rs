@@ -64,7 +64,9 @@ pub struct Slate<'a, F, C, S> {
     pub scratch_buf: ScratchWorkspace,
 }
 
-impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
+impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S: Sealer>
+    Slate<'a, F, C, S>
+{
     pub fn index_points_to(&self, key_candidates: &[&[u8]], offset: u32) -> bool {
         // Stub: check if index maps any candidate key to this offset
         for &k in key_candidates {
@@ -83,7 +85,11 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     /// cold batch, or on flash, then AEAD-opened to compare the exact key
     /// (fingerprints collide freely, §3.1/Thm 4.2). Returns `Err(IndexFull)` if
     /// the cuckoo table and stash cannot absorb a new key.
-    pub async fn index_update_offset_async(&mut self, key: &[u8], new_off: u32) -> Result<(), Error> {
+    pub async fn index_update_offset_async(
+        &mut self,
+        key: &[u8],
+        new_off: u32,
+    ) -> Result<(), Error> {
         let mut cbuf = crate::index::CandidateBuf::new();
         self.index.candidates(key, &mut cbuf);
         let mut matching_off = None;
@@ -99,7 +105,9 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
                 &mut self.scratch_buf.cand_scratch,
                 cand_off,
                 key,
-            ).await {
+            )
+            .await
+            {
                 matching_off = Some(cand_off);
                 break;
             }
@@ -128,14 +136,15 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
                 &mut self.scratch_buf.cand_scratch,
                 cand_off,
                 key,
-            ).await {
+            )
+            .await
+            {
                 matching_off = Some(cand_off);
                 break;
             }
         }
-        self.index.remove(key, |cand_off| {
-            Some(cand_off) == matching_off
-        })
+        self.index
+            .remove(key, |cand_off| Some(cand_off) == matching_off)
     }
 
     /// Appends one record to the hot log, advancing `next_seq` and the epoch
@@ -161,7 +170,12 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         Ok(offset)
     }
 
-    pub async fn append_cold_async(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
+    pub async fn append_cold_async(
+        &mut self,
+        key: &[u8],
+        val: &[u8],
+        now_ms: u64,
+    ) -> Result<u32, Error> {
         let seq = self.engine.next_seq;
         let (_seq_ret, offset) = self.log_cold.append(
             seq,
@@ -180,7 +194,11 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         Ok(offset)
     }
 
-    pub async fn append_cold_tombstone_async(&mut self, key: &[u8], now_ms: u64) -> Result<(), Error> {
+    pub async fn append_cold_tombstone_async(
+        &mut self,
+        key: &[u8],
+        now_ms: u64,
+    ) -> Result<(), Error> {
         let seq = self.engine.next_seq;
         let _ = self.log_cold.append(
             seq,
@@ -206,20 +224,24 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
 
     pub async fn commit_async(&mut self) -> Result<(), Error> {
         let seq_max = self.engine.next_seq.saturating_sub(1);
-        self.log_hot.commit_async(
-            &mut self.flash,
-            &mut self.sealer,
-            &self.engine.chain,
-            self.engine.epoch,
-            seq_max,
-        ).await?;
-        self.log_cold.commit_async(
-            &mut self.flash,
-            &mut self.sealer,
-            &self.engine.chain,
-            self.engine.epoch,
-            seq_max,
-        ).await?;
+        self.log_hot
+            .commit_async(
+                &mut self.flash,
+                &mut self.sealer,
+                &self.engine.chain,
+                self.engine.epoch,
+                seq_max,
+            )
+            .await?;
+        self.log_cold
+            .commit_async(
+                &mut self.flash,
+                &mut self.sealer,
+                &self.engine.chain,
+                self.engine.epoch,
+                seq_max,
+            )
+            .await?;
         self.engine.acked_seq = seq_max;
         self.sched.on_commit();
         self.metrics.add_commit();
@@ -257,7 +279,8 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
             self.ckpt_buf,
             index_len,
             &mut self.scratch_buf.page_buf,
-        ).await?;
+        )
+        .await?;
 
         // The checkpoint just written durably records the index as of `seg_seq`,
         // so every segment allocated strictly before it is now reclaimable:
@@ -306,6 +329,19 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     #[cfg(feature = "blocking")]
     pub fn compact(&mut self) -> Result<(), Error> {
         crate::task::block_on(self.compact_async())
+    }
+    /// Milliseconds until the scheduler wants the next commit, or `None` when
+    /// the batch is empty and nothing is pending. Lets an Embassy task sleep
+    /// with `Timer::after` for exactly this long instead of polling — the
+    /// scheduler keeps ownership of the energy policy (doc 008), the executor
+    /// merely honours it.
+    pub fn next_commit_deadline_ms(&self, now_ms: u64) -> Option<u64> {
+        if self.sched.ops_since_commit == 0 {
+            None
+        } else {
+            let deadline = self.sched.oldest_pending_ms + self.sched.cfg.deadline_ms as u64;
+            Some(deadline.saturating_sub(now_ms))
+        }
     }
 }
 
@@ -379,7 +415,9 @@ pub(crate) async fn cand_matches_key_async<F: slate_kv_hal::AsyncFlash, S: Seale
         cand_off,
         &mut hdr_bytes,
         cand_rec_bytes,
-    ).await {
+    )
+    .await
+    {
         Some(t) => t,
         None => return false,
     };
@@ -401,5 +439,4 @@ pub(crate) async fn cand_matches_key_async<F: slate_kv_hal::AsyncFlash, S: Seale
         return false;
     }
     &cand_scratch[..hdr.klen as usize] == key
-
 }

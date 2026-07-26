@@ -115,6 +115,17 @@ cargo test -p slate-kv-sim
 
 The unit tests in this crate include a `StubFlash` that demonstrates each rule (all-ones erase, program-once rejection, alignment checks) in ~40 lines — a useful reference while writing your own.
 
+## Portability matrix: honest per-platform answer
+
+The engine layer is portable without qualification — `core::future` only, no allocator, no executor dependency, `#![forbid(unsafe_code)]` intact. What varies is **how much of the idle flash bus time each platform can actually reclaim**, which depends entirely on the board's flash driver.
+
+| Platform | Flash driver reality | What async delivers |
+|---|---|---|
+| **ESP32 / ESP32-C3 / -S3** (`targets/esp32`) | `esp-storage::FlashStorage` implements the **blocking** `embedded-storage` traits; internal-flash access additionally requires cache/interrupt care | **Concurrency only.** Wrap in `BlockingFlash`. Erase span drops 540 ms → 45 ms; other Embassy tasks run between erases. No DMA offload, no CPU sleep during an erase. This is still the single largest responsiveness win available on this board. |
+| **STM32 / nRF52 + external QSPI NOR** | QSPI peripheral with DMA and completion interrupt; async `embedded-storage-async` drivers exist | **Full benefit.** Genuine DMA offload, CPU can `WFI` during the erase. |
+| **RP2040 / RP2350 internal flash** | Programming requires exiting XIP; code executes from flash, so the second core must be parked and interrupts handled with care | **Restricted.** Async cannot make the XIP-disabled window interruptible. Slate is usable, but the erase span is a hard floor. |
+| **Any board, `block_on`** | n/a | Bit-identical behaviour to today. This is the fallback that guarantees the change is non-breaking |
+
 ## Report references
 
 `Flash` semantics §2.1 · counter and adversary model §2.4 · counter protocol and honest degradation §3.4. See [`docs/SLATE_FORMAL_SPECIFICATION.md`](https://github.com/ja7ad/slate/blob/main/docs/SLATE_FORMAL_SPECIFICATION.md).
