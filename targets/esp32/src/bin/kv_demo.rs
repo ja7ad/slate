@@ -46,13 +46,13 @@ fn main() -> ! {
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
         match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
-            Ok((st, len)) => {
-                if let Ok(hdr) = slate_kv_core::checkpoint::CheckpointHeader::decode(&ckpt_buf[..slate_kv_core::checkpoint::CKPT_HDR_LEN]) {
-                    head_state.seg_seq = hdr.seg_seq;
-                    head_state.write_offset = hdr.write_offset;
-                    head_state.block_idx = hdr.write_offset / 4096;
-                }
-                (st, len)
+            Ok(mi) => {
+                // Resume the head where the checkpoint left it, so new records
+                // append after the durable ones instead of over them.
+                head_state.seg_seq = mi.ckpt_seg_seq;
+                head_state.write_offset = mi.ckpt_write_offset;
+                head_state.block_idx = mi.ckpt_write_offset / 4096;
+                (mi.state, mi.plain_len)
             }
             Err(slate_kv_core::epoch::MountError::Tampered) => {
                 mount_status = "Tampered";
@@ -190,6 +190,7 @@ where
             let seq = slate.engine.next_seq;
             match slate.log_hot.append(
                 seq,
+                slate.engine.epoch,
                 slate_kv_core::config::OP_PUT,
                 k,
                 v,
@@ -272,6 +273,7 @@ where
                 .log_hot
                 .append(
                     seq,
+                    slate.engine.epoch,
                     slate_kv_core::config::OP_DEL,
                     k,
                     &[],

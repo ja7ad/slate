@@ -38,7 +38,7 @@ fn main() -> ! {
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
         match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, &mut *ckpt_buf) {
-            Ok((st, len)) => (st, len),
+            Ok(mi) => (mi.state, mi.plain_len),
             Err(_) => {
                 let st = slate_kv_core::epoch::EngineState {
                     epoch: 1,
@@ -146,6 +146,7 @@ where
             let seq = slate.engine.next_seq;
             if let Ok((_seq, offset)) = slate.log_hot.append(
                 seq,
+                slate.engine.epoch,
                 OP_PUT,
                 key,
                 val,
@@ -189,6 +190,7 @@ where
             let seq = slate.engine.next_seq;
             if let Ok(_) = slate.log_hot.append(
                 seq,
+                slate.engine.epoch,
                 OP_DEL,
                 key,
                 &[],
