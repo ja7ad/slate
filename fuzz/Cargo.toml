@@ -1,6 +1,6 @@
 [package]
 name = "slate-fuzz"
-version = "0.3.5"
+version.workspace = true
 edition = "2021"
 description = "cargo-fuzz targets for the SLATE on-flash decoders and the recovery path"
 license.workspace = true
@@ -13,7 +13,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-slate-kv-core = { path = "../crates/slate-kv-core" }
+slate-kv-core.workspace = true
 
 [[bin]]
 name = "fuzz_record_decode"
