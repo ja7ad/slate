@@ -18,7 +18,7 @@ cargo add slate-kv-core
 
 ```toml
 [dependencies]
-slate-kv-core = "0.3"
+slate-kv-core = "0.4"
 ```
 
 ### Features
@@ -98,7 +98,7 @@ Steady-state operations then go through the log and index directly:
 ```rust
 // Write: append to the batch, fold into the chain, update the RAM index.
 let (seq, offset) = slate.log_hot.append(
-    seq, config::OP_PUT, key, value, &mut slate.sealer, &mut slate.engine.chain,
+    seq, slate.engine.epoch, config::OP_PUT, key, value, &mut slate.sealer, &mut slate.engine.chain,
 )?;
 slate.engine.next_seq += 1;
 slate.index_update_offset(key, offset)?;

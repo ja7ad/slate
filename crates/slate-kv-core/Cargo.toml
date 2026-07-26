@@ -17,8 +17,8 @@ categories = [
 ]
 
 [dependencies]
-slate-kv-hal = { version = "0.3.5", path = "../slate-kv-hal" }
-slate-kv-erasure = { version = "0.3.5", path = "../slate-kv-erasure" }
+slate-kv-hal.workspace = true
+slate-kv-erasure.workspace = true
 sha2 = { version = "0.11.0", default-features = false }
 heapless = "0.8.0"
 
