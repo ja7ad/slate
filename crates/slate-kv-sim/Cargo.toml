@@ -12,10 +12,10 @@ homepage.workspace = true
 publish = false
 
 [dependencies]
-slate-kv-hal = { version = "0.3.5", path = "../slate-kv-hal" }
+slate-kv-hal.workspace = true
 rand = { version = "0.8", features = ["small_rng"] }
 proptest = "1.5"
-slate-kv-core = { version = "0.3.5", path = "../slate-kv-core" }
-slate-kv-crypto = { version = "0.3.5", path = "../slate-kv-crypto" }
-slate-kv-erasure = { version = "0.3.5", path = "../slate-kv-erasure" }
+slate-kv-core.workspace = true
+slate-kv-crypto.workspace = true
+slate-kv-erasure.workspace = true
 serde = { version = "1.0", features = ["derive"] }
