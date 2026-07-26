@@ -59,11 +59,9 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 }
 
 fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result<(), Error> {
-    // Checkpoint area is after superblock.
-    // Each slot requires MAX_CKPT_LEN / block_size blocks.
-    let blocks_per_slot = crate::config::MAX_CKPT_LEN / flash.block_size() as u32;
-    let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot)
-        * flash.block_size() as u32;
+    // Checkpoint area sits above the superblock; slot addressing is shared with
+    // the reader and with `data_base_offset` so the three can never disagree.
+    let block_addr = crate::config::ckpt_slot_addr(slot, flash.block_size());
 
     // Erase enough blocks for the serialized checkpoint
     let num_blocks = bytes.len().div_ceil(flash.block_size());
@@ -74,8 +72,13 @@ fn program_checkpoint<F: Flash>(flash: &mut F, slot: u8, bytes: &[u8]) -> Result
     }
     // Pad bytes to page size
     let page_size = flash.page_size();
+    // A device page must fit the fixed-size staging buffer; a larger page would
+    // otherwise silently write past it.
+    if page_size > crate::config::MAX_PAGE_SIZE {
+        return Err(Error::FormatError);
+    }
     let num_pages = bytes.len().div_ceil(page_size);
-    let mut page_buf = [0xFF; 256]; // Assuming 256 is the max page size for now, or pass from caller
+    let mut page_buf = [0xFF; crate::config::MAX_PAGE_SIZE];
 
     for i in 0..num_pages {
         let start = i * page_size;
@@ -105,6 +108,15 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     index_len: usize,
 ) -> Result<(), Error> {
     let e = st.epoch;
+
+    // The next epoch must remain representable in the record nonce's 32-bit
+    // epoch discriminator; past that, two epochs would share a record key
+    // namespace and AEAD nonce uniqueness would no longer be guaranteed. At Θ
+    // records per epoch this ceiling is ~7e13 writes away, so reaching it means
+    // something is wrong, but the engine must refuse rather than wrap.
+    if e >= crate::record::MAX_REC_EPOCH {
+        return Err(Error::CounterExhausted);
+    }
 
     // 1. write + flush checkpoint carrying counter field e
     let slot = st.next_ckpt_slot();
@@ -168,9 +180,7 @@ fn load_best_checkpoint<F: Flash>(
     let mut any_non_empty = false;
 
     for slot in 0..(CKPT_SLOTS as u8) {
-        let blocks_per_slot = crate::config::MAX_CKPT_LEN / flash.block_size() as u32;
-        let block_addr = (crate::config::CKPT_BASE_BLOCK + slot as u32 * blocks_per_slot)
-            * flash.block_size() as u32;
+        let block_addr = crate::config::ckpt_slot_addr(slot, flash.block_size());
         let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
 
         if flash.read(block_addr, &mut hdr_bytes).is_err() {
@@ -201,6 +211,18 @@ fn load_best_checkpoint<F: Flash>(
             tag.copy_from_slice(&out_buf[total_len - 16..total_len]);
             let plain_len = ct_len - 16;
 
+            // D_ckpt must be taken over the *sealed* bytes exactly as they sit
+            // on flash, because that is what `seal_epoch` hashed when it set
+            // `st.d_ckpt`. Hashing after `open_checkpoint` decrypts in place
+            // would digest the plaintext instead, yielding a different anchor
+            // for `Chain::anchor` — and then every commit marker written by the
+            // engine that sealed this checkpoint fails its χ comparison during
+            // replay. The tail is silently discarded: the database comes back
+            // up, reports no error, and is missing every record written since
+            // the last checkpoint.
+            out_buf[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
+            let d_ckpt = sha256(&out_buf[..total_len]);
+
             if s.open_checkpoint(
                 hdr.epoch,
                 slot,
@@ -215,8 +237,6 @@ fn load_best_checkpoint<F: Flash>(
                     None => true,
                 };
                 if is_better {
-                    out_buf[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
-                    let d_ckpt = sha256(&out_buf[..total_len]);
                     best = Some((hdr, d_ckpt, slot, plain_len));
                 }
             }
@@ -231,12 +251,31 @@ fn load_best_checkpoint<F: Flash>(
 }
 
 /// Full mount (§3.4.1: the tip check is O(1); the replay is O(Θ) — Thm 4.3).
+/// What [`mount`] recovered from the newest valid checkpoint.
+pub struct MountInfo {
+    /// Engine state re-anchored to the checkpoint.
+    pub state: EngineState,
+    /// Length of the serialized index in `out_buf`, after the header.
+    pub plain_len: usize,
+    /// Log head at the instant the checkpoint was sealed.
+    ///
+    /// Every record below this offset is already reflected in the checkpointed
+    /// index, so tail replay must start *here*, not at the base of the log.
+    /// Replaying from the base is not merely slow — it makes mount cost O(log
+    /// length) instead of the O(Θ) the design promises — it is also wrong: those
+    /// older records carry commit markers from earlier epochs, which no longer
+    /// validate against the chain re-anchored to the current epoch.
+    pub ckpt_write_offset: u32,
+    /// Segment sequence at checkpoint time; the GC reclaim watermark.
+    pub ckpt_seg_seq: u64,
+}
+
 pub fn mount<F: Flash, C: MonotonicCounter>(
     flash: &mut F,
     ctr: &mut C,
     s: &mut impl Sealer,
     out_buf: &mut [u8],
-) -> Result<(EngineState, usize), MountError> {
+) -> Result<MountInfo, MountError> {
     if flash.capacity() > (1 << crate::config::OFF_BITS) {
         return Err(MountError::FormatError);
     }
@@ -290,5 +329,10 @@ pub fn mount<F: Flash, C: MonotonicCounter>(
         active_ckpt_slot: slot,
     };
 
-    Ok((st, plain_len))
+    Ok(MountInfo {
+        state: st,
+        plain_len,
+        ckpt_write_offset: ckpt.write_offset,
+        ckpt_seg_seq: ckpt.seg_seq,
+    })
 }

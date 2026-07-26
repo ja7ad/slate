@@ -127,9 +127,17 @@ impl<'a, F: Flash> Log<'a, F> {
     }
 
     /// Appends operation to batch.
+    ///
+    /// `epoch` is stamped into the record nonce so the record self-describes
+    /// which `k_rec_e` opens it (§3.3). Records outlive the epoch they were
+    /// written in — the log is not rewritten on an epoch roll — so without this
+    /// a reader after a rotation has no way to pick the right key.
+    // Justification: 8 arguments required by log append protocol including epoch and chain tracking.
+    #[allow(clippy::too_many_arguments)]
     pub fn append(
         &mut self,
         seq: u64,
+        epoch: u64,
         op: u8,
         key: &[u8],
         val: &[u8],
@@ -139,17 +147,19 @@ impl<'a, F: Flash> Log<'a, F> {
         if key.len() > MAX_KEY_LEN || val.len() > MAX_VAL_LEN {
             return Err(Error::FormatError);
         }
+        if epoch > crate::record::MAX_REC_EPOCH {
+            return Err(Error::FormatError);
+        }
 
-        let mut hdr = RecordHeader {
+        let hdr = RecordHeader {
             magic: MAGIC_REC,
             seq,
             op,
             fp: crate::index::fingerprint(key) as u16,
             klen: key.len() as u16,
             vlen: val.len() as u16,
-            nonce: [0; 12],
+            nonce: crate::record::record_nonce(seq, epoch as u32),
         };
-        hdr.nonce[0..8].copy_from_slice(&seq.to_le_bytes());
 
         let total_len = crate::config::REC_OVERHEAD + key.len() + val.len();
         let offset = self.head.write_offset + self.batch.offset as u32;

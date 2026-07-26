@@ -24,7 +24,23 @@ pub const MAX_VAL_LEN: usize = 1024;
 pub const B_COMMIT: usize = 27;
 pub const B_MAX: usize = 128;
 pub const MAX_PAGE_SIZE: usize = 512;
-pub const MAX_CKPT_LEN: u32 = 40960;
+/// Largest index the checkpoint format can hold, in slots.
+///
+/// The entire index is serialized into a single checkpoint, which is what makes
+/// mount cost O(Θ) instead of O(log length): the index is loaded, not rebuilt.
+/// That ties index capacity to checkpoint capacity. 65 536 slots is the table
+/// the default `n_keys = 8192` configuration allocates (8192/α rounded to a
+/// power of two, times `BUCKET_SLOTS`).
+pub const MAX_INDEX_SLOTS: usize = 65_536;
+
+/// Maximum size of one serialized checkpoint slot, header and AEAD tag
+/// included.
+///
+/// A *format* constant: it fixes how much flash each of the `CKPT_SLOTS`
+/// checkpoint slots reserves (see [`data_base_offset`]), so changing it
+/// invalidates existing volumes. Derived from [`MAX_INDEX_SLOTS`] rather than
+/// chosen independently, so the two can never drift apart.
+pub const MAX_CKPT_LEN: u32 = ckpt_len_for_slots(MAX_INDEX_SLOTS) as u32;
 pub const MAX_SEGS: usize = 256;
 
 // Index constants (ESP32 default 8 k-key config)
@@ -42,6 +58,37 @@ pub const MAGIC_CKPT: u8 = 0xCF;
 pub const CKPT_SLOTS: usize = 2;
 pub const CKPT_BASE_BLOCK: u32 = 2;
 pub const EPOCH_ANCHOR_TAG: &[u8] = b"slate/epoch";
+/// Size of the checkpoint header (the AEAD associated data).
+/// Re-exported as `checkpoint::CKPT_HDR_LEN`; it lives here so the capacity
+/// helpers below can be `const` without a module cycle.
+pub const CKPT_HDR_LEN: usize = 76;
+
+/// Serialized size of an index with `n_slots` slots, as written by
+/// `Index::serialize` (4 bytes per slot plus a 5-byte stash entry each).
+pub const fn index_serialized_len(n_slots: usize) -> usize {
+    n_slots * 4 + STASH_SIZE * 5
+}
+
+/// Total checkpoint bytes needed for an index with `n_slots` slots: header,
+/// serialized index, and the 16-byte AEAD tag.
+pub const fn ckpt_len_for_slots(n_slots: usize) -> usize {
+    CKPT_HDR_LEN + index_serialized_len(n_slots) + 16
+}
+
+/// Largest index (in slots) whose checkpoint still fits in [`MAX_CKPT_LEN`].
+///
+/// Callers that size an index from a user-supplied key count must check against
+/// this rather than discovering the overflow as a failed `commit` — by then the
+/// epoch seal is already unable to make progress, which silently disables
+/// checkpointing for the life of the database.
+pub const fn max_index_slots() -> usize {
+    MAX_INDEX_SLOTS
+}
+
+const _CKPT_HOLDS_MAX_INDEX: () = assert!(
+    ckpt_len_for_slots(MAX_INDEX_SLOTS) <= MAX_CKPT_LEN as usize,
+    "MAX_CKPT_LEN cannot hold MAX_INDEX_SLOTS"
+);
 
 /// First flash byte the append log may use. The log grows upward from here and
 /// must never reach the checkpoint region (blocks `CKPT_BASE_BLOCK ..
@@ -49,10 +96,70 @@ pub const EPOCH_ANCHOR_TAG: &[u8] = b"slate/epoch";
 /// would try to program the still-live checkpoint pages and fail
 /// `ProgramWithoutErase`. Computed from the runtime block size so it is correct
 /// for both the 4 KiB file/ESP32 blocks and any other geometry.
+/// Erase blocks reserved for one checkpoint slot.
+///
+/// Must round *up*: a slot that needs 64.03 blocks needs 65, and truncating to
+/// 64 would place slot 1 one block inside slot 0. That is not a slow path, it
+/// is silent destruction of the very redundancy the two-slot scheme exists for
+/// — programming the new checkpoint erases the block holding the tail of the
+/// old one, so a crash mid-seal leaves neither slot readable and the volume
+/// unmountable. Every site that addresses a slot must use this function rather
+/// than recomputing the division.
+#[inline]
+pub fn ckpt_blocks_per_slot(block_size: usize) -> u32 {
+    MAX_CKPT_LEN.div_ceil(block_size as u32)
+}
+
+/// Byte address of checkpoint slot `slot`.
+#[inline]
+pub fn ckpt_slot_addr(slot: u8, block_size: usize) -> u32 {
+    let bs = block_size as u32;
+    (CKPT_BASE_BLOCK + slot as u32 * ckpt_blocks_per_slot(block_size)) * bs
+}
+
+/// First byte of the append log: immediately above all checkpoint slots.
 pub fn data_base_offset(block_size: usize) -> u32 {
     let bs = block_size as u32;
-    let blocks_per_slot = MAX_CKPT_LEN.div_ceil(bs);
-    (CKPT_BASE_BLOCK + CKPT_SLOTS as u32 * blocks_per_slot) * bs
+    (CKPT_BASE_BLOCK + CKPT_SLOTS as u32 * ckpt_blocks_per_slot(block_size)) * bs
+}
+
+#[cfg(test)]
+mod ckpt_layout_tests {
+    use super::*;
+
+    /// Checkpoint slots must not overlap each other or the log.
+    ///
+    /// The two-slot scheme is the only thing standing between a crash during
+    /// `program_checkpoint` and an unmountable volume: the previous checkpoint
+    /// has to stay intact while the new one is written. Computing
+    /// `blocks_per_slot` with truncating division instead of `div_ceil` puts
+    /// slot 1 inside slot 0 whenever `MAX_CKPT_LEN` is not a block multiple,
+    /// which erases the old checkpoint at exactly the moment it is needed.
+    #[test]
+    fn ckpt_slots_do_not_overlap() {
+        for &bs in &[256usize, 4096, 65_536] {
+            let span = ckpt_blocks_per_slot(bs) as usize * bs;
+            assert!(
+                span >= MAX_CKPT_LEN as usize,
+                "block_size {bs}: slot span {span} < MAX_CKPT_LEN {MAX_CKPT_LEN}"
+            );
+            for slot in 1..CKPT_SLOTS as u8 {
+                let prev_end = ckpt_slot_addr(slot - 1, bs) as usize + MAX_CKPT_LEN as usize;
+                assert!(
+                    ckpt_slot_addr(slot, bs) as usize >= prev_end,
+                    "block_size {bs}: slot {slot} overlaps slot {}",
+                    slot - 1
+                );
+            }
+            let last_end =
+                ckpt_slot_addr(CKPT_SLOTS as u8 - 1, bs) as usize + MAX_CKPT_LEN as usize;
+            assert!(
+                data_base_offset(bs) as usize >= last_end,
+                "block_size {bs}: log base {} overlaps the last checkpoint slot",
+                data_base_offset(bs)
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

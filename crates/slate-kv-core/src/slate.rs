@@ -75,10 +75,34 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         })
     }
 
+    /// Appends one record to the hot log, advancing `next_seq` and the epoch
+    /// record counter. Every production write MUST go through this (or
+    /// [`Self::append_cold`]) rather than calling `Log::append` directly:
+    /// `records_in_epoch` is what drives the Θ-triggered epoch seal in
+    /// [`Self::commit`], and a write that bypasses the counter silently
+    /// disables checkpointing, unbounded-mount protection and GC for the whole
+    /// database.
+    pub fn append_hot(&mut self, op: u8, key: &[u8], val: &[u8]) -> Result<u32, Error> {
+        let seq = self.engine.next_seq;
+        let (_seq_ret, offset) = self.log_hot.append(
+            seq,
+            self.engine.epoch,
+            op,
+            key,
+            val,
+            &mut self.sealer,
+            &mut self.engine.chain,
+        )?;
+        self.engine.next_seq += 1;
+        self.engine.records_in_epoch += 1;
+        Ok(offset)
+    }
+
     pub fn append_cold(&mut self, key: &[u8], val: &[u8], now_ms: u64) -> Result<u32, Error> {
         let seq = self.engine.next_seq;
         let (_seq_ret, offset) = self.log_cold.append(
             seq,
+            self.engine.epoch,
             OP_PUT,
             key,
             val,
@@ -86,6 +110,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
             &mut self.engine.chain,
         )?;
         self.engine.next_seq += 1;
+        self.engine.records_in_epoch += 1;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -96,6 +121,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         let seq = self.engine.next_seq;
         let _ = self.log_cold.append(
             seq,
+            self.engine.epoch,
             OP_DEL,
             key,
             &[],
@@ -103,6 +129,7 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
             &mut self.engine.chain,
         )?;
         self.engine.next_seq += 1;
+        self.engine.records_in_epoch += 1;
         if self.sched.on_append(now_ms) {
             self.commit()?;
         }
@@ -139,25 +166,42 @@ impl<'a, F: Flash, C: MonotonicCounter, S: Sealer> Slate<'a, F, C, S> {
         self.metrics.add_wake();
 
         if self.engine.records_in_epoch >= crate::config::THETA {
-            let index_len = self
-                .index
-                .serialize(&mut self.ckpt_buf[crate::checkpoint::CKPT_HDR_LEN..]);
-            let seg_seq = self.log_hot.head.seg_seq;
-            let write_offset = self.log_hot.head.write_offset;
-            let n_keys = self.index.len() as u16;
-
-            crate::epoch::seal_epoch(
-                &mut self.engine,
-                &mut self.flash,
-                &mut self.counter,
-                &mut self.sealer,
-                seg_seq,
-                write_offset,
-                n_keys,
-                self.ckpt_buf,
-                index_len,
-            )?;
+            self.seal_epoch_now()?;
         }
+        Ok(())
+    }
+
+    /// Writes a checkpoint and opens the next epoch, regardless of how many
+    /// records the current epoch holds. `commit` calls this on the Θ trigger;
+    /// it is also public so an application can force a checkpoint before a
+    /// planned shutdown (bounding the work a later mount has to replay).
+    pub fn seal_epoch_now(&mut self) -> Result<(), Error> {
+        let index_len = self
+            .index
+            .serialize(&mut self.ckpt_buf[crate::config::CKPT_HDR_LEN..]);
+        let seg_seq = self.log_hot.head.seg_seq;
+        let write_offset = self.log_hot.head.write_offset;
+        let n_keys = self.index.len() as u16;
+
+        crate::epoch::seal_epoch(
+            &mut self.engine,
+            &mut self.flash,
+            &mut self.counter,
+            &mut self.sealer,
+            seg_seq,
+            write_offset,
+            n_keys,
+            self.ckpt_buf,
+            index_len,
+        )?;
+
+        // The checkpoint just written durably records the index as of `seg_seq`,
+        // so every segment allocated strictly before it is now reclaimable:
+        // its live records are reachable from the checkpointed index, and its
+        // dead ones can never be needed again. `pick_victim` gates on exactly
+        // this watermark, so failing to advance it here leaves GC permanently
+        // unable to select a victim.
+        self.ckpt_seg_seq = seg_seq;
         Ok(())
     }
 

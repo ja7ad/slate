@@ -5,7 +5,7 @@ use crate::config::{MAGIC_CKPT, MAX_CKPT_LEN};
 use crate::error::Error;
 
 /// Size of the checkpoint header (AD for the AEAD).
-pub const CKPT_HDR_LEN: usize = 76;
+pub use crate::config::CKPT_HDR_LEN;
 
 pub struct CheckpointHeader {
     pub magic: u8,
