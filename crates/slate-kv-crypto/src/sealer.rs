@@ -23,9 +23,33 @@ impl CryptoSealer {
     }
 }
 
+impl CryptoSealer {
+    /// Returns the record key for the epoch named in `hdr`'s nonce.
+    ///
+    /// The header is the single source of truth for which epoch a record
+    /// belongs to, on both the seal and the open path. Deriving from it rather
+    /// than from the sealer's current epoch keeps the two symmetric: a record
+    /// is always opened with exactly the key it was sealed with, even when the
+    /// engine has since rolled to a later epoch. Nonce uniqueness does not
+    /// depend on the epoch field — `seq` alone is globally unique and never
+    /// reset — so this cannot induce nonce reuse.
+    fn key_for_header(&self, hdr: &[u8; REC_HDR_LEN]) -> [u8; 32] {
+        let rec_epoch = slate_kv_core::record::hdr_epoch(hdr) as u64;
+        let mut key = [0u8; 32];
+        if rec_epoch == self.keys.epoch {
+            key.copy_from_slice(&self.keys.k_rec_e);
+        } else {
+            self.keys.derive_rec_key(rec_epoch, &mut key);
+        }
+        key
+    }
+}
+
 impl Sealer for CryptoSealer {
     fn seal_record(&mut self, hdr: &[u8; REC_HDR_LEN], kv: &[u8], out: &mut [u8]) {
-        let cipher = ChaCha20Poly1305::new((&self.keys.k_rec_e).into());
+        let mut key = self.key_for_header(hdr);
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        key.zeroize();
         let nonce: &[u8; 12] = (&hdr[16..28]).try_into().unwrap();
         out[..kv.len()].copy_from_slice(kv);
         let tag = cipher
@@ -40,7 +64,16 @@ impl Sealer for CryptoSealer {
         ct_tag: &[u8],
         out: &mut [u8],
     ) -> Result<(), Error> {
-        let cipher = ChaCha20Poly1305::new((&self.keys.k_rec_e).into());
+        // Open with the key for the epoch THIS record was sealed under, which
+        // is not necessarily the currently open one: after an epoch roll the
+        // log still holds records from every prior epoch, and reading them with
+        // the current k_rec_e would fail AEAD verification and be
+        // indistinguishable from tampering. The epoch travels in the
+        // authenticated nonce, so a forged discriminator cannot select a key of
+        // the adversary's choosing without also breaking the tag.
+        let mut key = self.key_for_header(hdr);
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        key.zeroize();
         let (ct, tag) = ct_tag.split_at(ct_tag.len() - 16);
         out[..ct.len()].copy_from_slice(ct);
         let nonce: &[u8; 12] = (&hdr[16..28]).try_into().unwrap();
@@ -201,6 +234,55 @@ mod tests {
         let mut out = vec![0u8; kv.len()];
         sealer.open_record(&hdr, &ct_tag, &mut out).unwrap();
         assert_eq!(&out, kv);
+    }
+
+    /// A record sealed in one epoch must still open after the engine has rolled
+    /// to a later one. This is the property that makes epoch rotation usable at
+    /// all: the log is not rewritten on a roll, so old records outlive their
+    /// epoch and must remain readable.
+    #[test]
+    fn record_from_old_epoch_opens_after_roll() {
+        let mut sealer = setup_sealer();
+        let mut hdr = [0u8; REC_HDR_LEN];
+        hdr[0] = MAGIC_REC;
+        hdr[1..9].copy_from_slice(&100u64.to_le_bytes());
+        hdr[16..28].copy_from_slice(&slate_kv_core::record::record_nonce(100, 1));
+
+        let kv = b"written_in_epoch_1";
+        let mut ct_tag = vec![0u8; kv.len() + 16];
+        sealer.seal_record(&hdr, kv, &mut ct_tag);
+
+        sealer.keys.roll_epoch(2);
+        sealer.keys.roll_epoch(3);
+
+        let mut out = vec![0u8; kv.len()];
+        sealer.open_record(&hdr, &ct_tag, &mut out).unwrap();
+        assert_eq!(&out, kv);
+    }
+
+    /// Forging the epoch discriminator must not yield plaintext: the nonce is
+    /// authenticated as part of the header, so changing it breaks the tag.
+    #[test]
+    fn forged_epoch_discriminator_is_tampered() {
+        let mut sealer = setup_sealer();
+        let mut hdr = [0u8; REC_HDR_LEN];
+        hdr[0] = MAGIC_REC;
+        hdr[1..9].copy_from_slice(&100u64.to_le_bytes());
+        hdr[16..28].copy_from_slice(&slate_kv_core::record::record_nonce(100, 1));
+
+        let kv = b"hello_world";
+        let mut ct_tag = vec![0u8; kv.len() + 16];
+        sealer.seal_record(&hdr, kv, &mut ct_tag);
+
+        let mut forged = hdr;
+        forged[16..28].copy_from_slice(&slate_kv_core::record::record_nonce(100, 2));
+
+        let mut out = vec![0u8; kv.len()];
+        assert!(matches!(
+            sealer.open_record(&forged, &ct_tag, &mut out),
+            Err(Error::Tampered)
+        ));
+        assert_eq!(out, vec![0u8; kv.len()]);
     }
 
     #[test]

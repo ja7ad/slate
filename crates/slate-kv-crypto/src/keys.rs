@@ -58,21 +58,31 @@ impl KeySet {
 
     /// One KDF call per epoch: fresh record subkey, nonce space reset.
     pub fn roll_epoch(&mut self, e: u64) {
+        let mut k = [0u8; 32];
+        self.derive_rec_key(e, &mut k);
+        self.k_rec_e = k;
+        self.epoch = e;
+    }
+
+    /// Derives the record subkey for an arbitrary epoch into `out`.
+    ///
+    /// Reading a record sealed in an older epoch needs that epoch's key, not the
+    /// currently open one, so this is exposed separately from [`Self::roll_epoch`].
+    /// The KDF is deterministic, so an old key can always be re-derived from the
+    /// device key without ever storing it.
+    pub fn derive_rec_key(&self, e: u64, out: &mut [u8; 32]) {
         let mut info = [0u8; 3 + 8];
         info[..3].copy_from_slice(b"rec");
         info[3..].copy_from_slice(&e.to_le_bytes());
-        expand(&self.prk, &info, &mut self.k_rec_e);
-        self.epoch = e;
+        expand(&self.prk, &info, out);
     }
 }
 
-/// Nonce (§3.3): seq expanded to 96 bits.
-#[inline]
-pub fn record_nonce(seq: u64) -> [u8; 12] {
-    let mut n = [0u8; 12];
-    n[..8].copy_from_slice(&seq.to_le_bytes());
-    n
-}
+/// Nonce (§3.3): `seq` in the low 64 bits, epoch discriminator in the high 32.
+///
+/// Re-exported from `slate_kv_core::record` so the layout has exactly one
+/// definition shared by the core codec and the crypto seam.
+pub use slate_kv_core::record::record_nonce;
 
 #[cfg(test)]
 mod tests {
@@ -80,11 +90,27 @@ mod tests {
 
     #[test]
     fn test_record_nonce() {
-        let n1 = record_nonce(1);
-        let n2 = record_nonce(2);
+        let n1 = record_nonce(1, 7);
+        let n2 = record_nonce(2, 7);
         assert_ne!(n1, n2);
         assert_eq!(n1[0..8], 1u64.to_le_bytes());
-        assert_eq!(n1[8..12], [0; 4]);
+        assert_eq!(n1[8..12], 7u32.to_le_bytes());
+        // Same seq in a different epoch is still a distinct nonce.
+        assert_ne!(record_nonce(1, 7), record_nonce(1, 8));
+    }
+
+    #[test]
+    fn old_epoch_key_is_rederivable() {
+        let dk = DeviceKey([9; 32]);
+        let mut ks = KeySet::derive(&dk, 3);
+        let k_at_3 = ks.k_rec_e;
+        ks.roll_epoch(4);
+        assert_ne!(ks.k_rec_e, k_at_3);
+        // Re-deriving epoch 3 from the same device key reproduces it exactly:
+        // this is what lets open_record read pre-rotation records.
+        let mut back = [0u8; 32];
+        ks.derive_rec_key(3, &mut back);
+        assert_eq!(back, k_at_3);
     }
 
     #[test]
