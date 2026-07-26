@@ -16,5 +16,5 @@ chacha20poly1305 = { version = "0.11.0", default-features = false }
 hkdf = { version = "0.13.0", default-features = false }
 hmac = { version = "0.13.0", default-features = false }
 sha2 = { version = "0.11.0", default-features = false }
-slate-kv-core = { version = "0.3.5", path = "../slate-kv-core" }
+slate-kv-core.workspace = true
 zeroize = { version = "1.9.0", default-features = false, features = ["zeroize_derive"] }

@@ -16,7 +16,7 @@ cargo add slate-kv-crypto
 
 ```toml
 [dependencies]
-slate-kv-crypto = "0.3"
+slate-kv-crypto = "0.4"
 ```
 
 Most users never depend on this crate directly — [`slate-kv`](https://github.com/ja7ad/slate/tree/main/crates/slate-kv) wires it up for you. Depend on it when you are building your own engine host (bare-metal firmware, a custom backend) and need to construct the `Sealer` yourself.
