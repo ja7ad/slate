@@ -16,7 +16,7 @@ cargo add slate-kv
 
 ```toml
 [dependencies]
-slate-kv = "0.3"
+slate-kv = "0.4"
 ```
 
 ## Quickstart
