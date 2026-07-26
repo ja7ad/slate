@@ -16,7 +16,7 @@ cargo add slate-kv-erasure
 
 ```toml
 [dependencies]
-slate-kv-erasure = "0.3"
+slate-kv-erasure = "0.4"
 ```
 
 ## Why erasure coding and not ECC
