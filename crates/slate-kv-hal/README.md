@@ -26,7 +26,7 @@ cargo add slate-kv-hal
 
 ```toml
 [dependencies]
-slate-kv-hal = "0.3"
+slate-kv-hal = "0.4"
 ```
 
 The crate is `#![no_std]` and `#![forbid(unsafe_code)]` with **zero dependencies**, so adding it to a firmware build costs nothing.
