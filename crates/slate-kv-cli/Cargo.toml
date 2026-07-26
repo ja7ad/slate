@@ -12,4 +12,4 @@ keywords = ["cli", "key-value", "database", "storage", "embedded"]
 categories = ["command-line-utilities", "database"]
 
 [dependencies]
-slate-kv = { version = "0.3.5", path = "../slate-kv" }
+slate-kv.workspace = true
