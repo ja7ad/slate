@@ -172,8 +172,8 @@ fn main() -> ! {
 
 fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str, mount_status: &str)
 where
-    F: slate_kv_hal::Flash,
-    C: slate_kv_hal::MonotonicCounter,
+    F: slate_kv_hal::AsyncFlash,
+    C: slate_kv_hal::AsyncMonotonicCounter,
     S: slate_kv_core::log::Sealer,
 {
     let mut parts = cmd.split_whitespace();
@@ -220,14 +220,14 @@ where
             let mut found = false;
             for &off in cbuf.as_slice() {
                 let mut hdr_bytes = [0u8; slate_kv_core::config::REC_HDR_LEN];
-                if slate.flash.read(off, &mut hdr_bytes).is_err() {
+                if slate_kv_core::task::block_on(slate.flash.read(off, &mut hdr_bytes)).is_err() {
                     continue;
                 }
                 if let Ok(hdr) = slate_kv_core::record::RecordHeader::decode(&hdr_bytes) {
                     if hdr.klen as usize == k.len() {
                         let total_len = 44 + hdr.klen as usize + hdr.vlen as usize;
                         let mut rec_bytes = [0u8; 44 + 256 + 1024];
-                        if slate.flash.read(off, &mut rec_bytes[..total_len]).is_ok() {
+                        if slate_kv_core::task::block_on(slate.flash.read(off, &mut rec_bytes[..total_len])).is_ok() {
                             let mut scratch = [0u8; 256 + 1024];
                             if slate
                                 .sealer

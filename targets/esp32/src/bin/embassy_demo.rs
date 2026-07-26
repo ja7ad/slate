@@ -5,8 +5,8 @@
 // use embassy_time::{Duration, Instant, Timer};
 use esp_backtrace as _;
 use esp_hal::uart::Uart;
-use esp_println::{print, println};
-use core::sync::atomic::{AtomicU32, Ordering};
+use esp_println::println;
+use core::sync::atomic::AtomicU32;
 
 use slate_kv_core::config::SchedCfg;
 use slate_kv_core::gc::SegTable;
@@ -14,7 +14,7 @@ use slate_kv_core::index::Index;
 use slate_kv_core::log::HeadState;
 use slate_kv_core::metrics::Metrics;
 use slate_kv_core::sched::Scheduler;
-use slate_kv_core::slate::{ScratchWorkspace, Slate};
+use slate_kv_core::slate::Slate;
 
 use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
@@ -27,6 +27,7 @@ static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("COLD_BUF", [0; 4096])
 static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new("INDEX_SLOTS", [0; 2048 * 4]);
 static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new("CKPT_BUF", [0; 35000]);
 
+#[allow(dead_code)]
 static MAX_JITTER_US: AtomicU32 = AtomicU32::new(0);
 
 /*
@@ -125,8 +126,6 @@ fn main() -> ! {
     let hot_buf = HOT_BUF.take();
     let cold_buf = COLD_BUF.take();
     let index_slots = INDEX_SLOTS.take();
-
-    let mut scratch = ScratchWorkspace::default();
     
     let sched_cfg = SchedCfg {
         auto_b: false,
@@ -194,7 +193,7 @@ fn main() -> ! {
             }
         }
         
-        if let Some(deadline) = slate.next_commit_deadline_ms(i as u64) {
+        if let Some(_deadline) = slate.next_commit_deadline_ms(i as u64) {
             slate_kv_core::task::block_on(slate.commit_async()).unwrap();
         } else {
             // Wait

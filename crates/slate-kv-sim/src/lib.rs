@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_if)]
 
 pub mod power;
+pub mod sim_db;
 
 use slate_kv_hal::{CounterKind, Flash, MonotonicCounter};
 use std::collections::BTreeSet;
@@ -46,6 +47,7 @@ pub enum SimFlashError {
     BadBlock,
 }
 
+#[derive(Clone, Debug)]
 pub struct SimFlash {
     pub mem: Vec<u8>,
     pub programmed: Vec<bool>,
@@ -223,6 +225,7 @@ pub enum SimCounterError {
     Exhausted,
 }
 
+#[derive(Clone, Debug)]
 pub struct SimCounter {
     pub val: u64,
     pub budget: u64,

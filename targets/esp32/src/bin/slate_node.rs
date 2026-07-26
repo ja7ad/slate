@@ -127,8 +127,8 @@ fn main() -> ! {
 
 fn process_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
 where
-    F: slate_kv_hal::Flash,
-    C: slate_kv_hal::MonotonicCounter,
+    F: slate_kv_hal::AsyncFlash,
+    C: slate_kv_hal::AsyncMonotonicCounter,
     S: slate_kv_core::log::Sealer,
 {
     let parts: Vec<&str, 4> = parse_words(cmd);

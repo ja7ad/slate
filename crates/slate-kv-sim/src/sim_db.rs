@@ -90,17 +90,8 @@ pub struct ScrubReport {
     pub errors_fixed: u32,
 }
 
-// Opaque stats struct for passing metrics
-#[derive(Default, Clone)]
-pub struct Stats {
-    pub commits: u64,
-    pub wakes: u64,
-    pub user_bytes: u64,
-    pub gc_bytes: u64,
-    pub parity_bytes: u64,
-    pub ckpt_bytes: u64,
-    pub erases: u64,
-}
+// Re-export Stats from power module
+pub use crate::power::Stats;
 
 // Box pointers to free on drop
 struct Buffers {
@@ -190,15 +181,19 @@ impl Db {
         let index_slots_count = n_buckets.next_power_of_two() * slate_kv_core::config::BUCKET_SLOTS;
         let max_slots = slate_kv_core::config::max_index_slots();
         if index_slots_count > max_slots {
-            return Err(Box::new((DbError::Config(format!(
-                "n_keys={} needs {} index slots but the checkpoint format allows at most {} \
+            return Err(Box::new((
+                DbError::Config(format!(
+                    "n_keys={} needs {} index slots but the checkpoint format allows at most {} \
                  (MAX_CKPT_LEN={}); reduce n_keys to at most {}",
-                opts.n_keys,
-                index_slots_count,
-                max_slots,
-                slate_kv_core::config::MAX_CKPT_LEN,
-                max_slots / slate_kv_core::config::BUCKET_SLOTS * 95 / 100,
-            )), flash, counter)));
+                    opts.n_keys,
+                    index_slots_count,
+                    max_slots,
+                    slate_kv_core::config::MAX_CKPT_LEN,
+                    max_slots / slate_kv_core::config::BUCKET_SLOTS * 95 / 100,
+                )),
+                flash,
+                counter,
+            )));
         }
         let index_box = vec![0u32; index_slots_count].into_boxed_slice();
         let index_len = index_box.len();
@@ -381,7 +376,13 @@ impl Db {
         );
         let rec_info = match rec_info {
             Ok(info) => info,
-            Err(e) => return Err(Box::new((DbError::Config(format!("{:?}", e)), slate.flash.0, slate.counter.0))),
+            Err(e) => {
+                return Err(Box::new((
+                    DbError::Config(format!("{:?}", e)),
+                    slate.flash.0,
+                    slate.counter.0,
+                )))
+            }
         };
 
         // Never let the head land below where the checkpoint said the log
@@ -399,7 +400,11 @@ impl Db {
         slate.engine.acked_seq = rec_info.committed_upto.max(mount_next.saturating_sub(1));
 
         if index_upsert_error {
-            return Err(Box::new(("Index capacity exceeded during recovery".into(), slate.flash.0, slate.counter.0)));
+            return Err(Box::new((
+                "Index capacity exceeded during recovery".into(),
+                slate.flash.0,
+                slate.counter.0,
+            )));
         }
 
         Ok(Db {
