@@ -183,6 +183,7 @@ fn test_wa_accounting() {
     st.log_hot
         .append(
             1,
+            st.engine.epoch,
             OP_PUT,
             b"key",
             b"val",

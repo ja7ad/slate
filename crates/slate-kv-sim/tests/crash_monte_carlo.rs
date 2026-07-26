@@ -37,7 +37,7 @@ fn test_crash_monte_carlo() {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
             last_ticket = log
-                .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .append(i, 1, OP_PUT, &key, &val, &mut sealer, &mut chain)
                 .unwrap()
                 .0;
         }
@@ -49,7 +49,7 @@ fn test_crash_monte_carlo() {
             let key = format!("key{}", i).into_bytes();
             let val = format!("val{}", i).into_bytes();
             let _ = log
-                .append(i, OP_PUT, &key, &val, &mut sealer, &mut chain)
+                .append(i, 1, OP_PUT, &key, &val, &mut sealer, &mut chain)
                 .unwrap();
         }
 

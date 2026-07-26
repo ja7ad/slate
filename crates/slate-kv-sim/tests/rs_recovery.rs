@@ -37,6 +37,7 @@ fn test_reed_solomon_database_recovery() {
     for (seq, (key, val)) in records.iter().enumerate() {
         log.append(
             (seq + 1) as u64,
+            1,
             OP_PUT,
             key.as_bytes(),
             val.as_bytes(),
