@@ -60,23 +60,28 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Programs a checkpoint into `slot`, returning `(bytes_programmed, erases)` so
+/// the caller can attribute the traffic to the checkpoint bucket of the
+/// write-amplification accounting.
 async fn program_checkpoint<F: AsyncFlash>(
     flash: &mut F,
     slot: u8,
     bytes: &[u8],
     page_buf: &mut [u8],
-) -> Result<(), Error> {
+) -> Result<(u64, u64), Error> {
     // Checkpoint area sits above the superblock; slot addressing is shared with
     // the reader and with `data_base_offset` so the three can never disagree.
     let block_addr = crate::config::ckpt_slot_addr(slot, flash.block_size());
 
     // Erase enough blocks for the serialized checkpoint
     let num_blocks = bytes.len().div_ceil(flash.block_size());
+    let mut erases = 0u64;
     for i in 0..num_blocks {
         flash
             .erase(block_addr + (i * flash.block_size()) as u32)
             .await
             .map_err(|_| Error::Io)?;
+        erases += 1;
         crate::task::yield_now().await;
     }
     // Pad bytes to page size
@@ -101,7 +106,18 @@ async fn program_checkpoint<F: AsyncFlash>(
             .map_err(|_| Error::Io)?;
         crate::task::yield_now().await;
     }
-    Ok(())
+    Ok(((num_pages * page_size) as u64, erases))
+}
+
+/// Flash traffic produced by one epoch seal, for write-amplification
+/// accounting. Checkpoint pages are engine overhead: the application never
+/// asked for them, but they consume endurance and must appear in the numerator.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CkptCost {
+    /// Checkpoint pages programmed.
+    pub bytes: u64,
+    /// Blocks erased to make room for them.
+    pub erases: u64,
 }
 
 /// EPOCH SEAL — the write-ahead protocol.
@@ -117,7 +133,7 @@ pub async fn seal_epoch_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
     ckpt_buf: &mut [u8],
     index_len: usize,
     page_buf: &mut [u8],
-) -> Result<(), Error> {
+) -> Result<CkptCost, Error> {
     let e = st.epoch;
 
     // The next epoch must remain representable in the record nonce's 32-bit
@@ -162,7 +178,8 @@ pub async fn seal_epoch_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
     );
     ckpt_buf[CKPT_HDR_LEN + index_len..total_len].copy_from_slice(&tag);
 
-    program_checkpoint(flash, slot, &ckpt_buf[..total_len], page_buf).await?;
+    let (ckpt_bytes, ckpt_erases) =
+        program_checkpoint(flash, slot, &ckpt_buf[..total_len], page_buf).await?;
     st.d_ckpt = sha256(&ckpt_buf[..total_len]);
     st.active_ckpt_slot = slot;
 
@@ -177,7 +194,10 @@ pub async fn seal_epoch_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
     s.roll_epoch(st.epoch);
     st.chain = Chain::anchor(st.epoch, &st.d_ckpt);
     st.records_in_epoch = 0;
-    Ok(())
+    Ok(CkptCost {
+        bytes: ckpt_bytes,
+        erases: ckpt_erases,
+    })
 }
 
 #[cfg(feature = "blocking")]
@@ -193,7 +213,7 @@ pub fn seal_epoch<F: Flash, C: MonotonicCounter>(
     ckpt_buf: &mut [u8],
     index_len: usize,
     page_buf: &mut [u8],
-) -> Result<(), Error> {
+) -> Result<CkptCost, Error> {
     crate::task::block_on(seal_epoch_async(
         st,
         &mut slate_kv_hal::BlockingFlash(flash),

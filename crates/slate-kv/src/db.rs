@@ -97,15 +97,66 @@ pub struct ScrubReport {
 }
 
 // Opaque stats struct for passing metrics
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Stats {
     pub commits: u64,
     pub wakes: u64,
+    /// Record bytes the application asked to store (framing + key + value).
     pub user_bytes: u64,
+    /// Record bytes rewritten by GC relocation.
     pub gc_bytes: u64,
+    /// Parity pages programmed.
     pub parity_bytes: u64,
+    /// Commit-marker pages programmed.
+    pub marker_bytes: u64,
+    /// Checkpoint pages programmed by epoch seals.
     pub ckpt_bytes: u64,
     pub erases: u64,
+    /// Segments in the table (`0` when unmanaged).
+    pub segments: u32,
+    /// Segments currently reclaimable-by-GC (`Sealed`).
+    pub segments_sealed: u32,
+    /// Segments currently free.
+    pub segments_free: u32,
+    /// Reclaim watermark: a sealed segment is eligible when its allocation
+    /// number is below this.
+    pub ckpt_seg_seq: u64,
+    /// Newest segment allocation number handed out.
+    pub cur_seg_seq: u64,
+    /// Records visited by compaction scans.
+    pub gc_scanned: u64,
+    /// Records compaction found live and relocated.
+    pub gc_relocated: u64,
+    /// Records compaction could not decrypt (data loss if nonzero).
+    pub gc_open_failed: u64,
+    /// Segments reclaimed.
+    pub gc_segments_freed: u64,
+    /// Hot log head offset.
+    pub hot_head: u32,
+    /// Cold log head offset.
+    pub cold_head: u32,
+    /// First offset past the last segment.
+    pub seg_end: u32,
+}
+
+impl Stats {
+    /// Total bytes programmed to flash across every bucket.
+    pub fn flash_bytes(&self) -> u64 {
+        self.user_bytes + self.gc_bytes + self.parity_bytes + self.marker_bytes + self.ckpt_bytes
+    }
+
+    /// Write amplification: flash bytes programmed per byte of user data.
+    ///
+    /// `None` when nothing has been written yet. A workload that has not been
+    /// measured and one with no overhead are different claims, so this must not
+    /// silently report 1.0 for the former.
+    pub fn write_amplification(&self) -> Option<f64> {
+        if self.user_bytes == 0 {
+            None
+        } else {
+            Some(self.flash_bytes() as f64 / self.user_bytes as f64)
+        }
+    }
 }
 
 // Box pointers to free on drop
@@ -378,7 +429,10 @@ impl Db {
             log_hot,
             log_cold,
             index: Index::new(index_slice, index_len / 4),
-            segs: SegTable::new(128),
+            segs: SegTable::with_base(
+                data_base,
+                slate_kv_core::gc::segments_in(data_base, opts.capacity),
+            ),
             // Seeded from the checkpoint so GC's reclaim watermark survives a
             // remount; starting at 0 would block victim selection until the
             // next epoch seal.
@@ -703,8 +757,24 @@ impl Db {
             user_bytes: m.user_bytes,
             gc_bytes: m.gc_bytes,
             parity_bytes: m.parity_bytes,
+            marker_bytes: m.marker_bytes,
             ckpt_bytes: m.ckpt_bytes,
             erases: m.erases,
+            segments: inner.slate.segs.num_segments,
+            segments_sealed: inner
+                .slate
+                .segs
+                .count_in_state(slate_kv_core::gc::SegState::Sealed),
+            segments_free: inner.slate.segs.free_count(),
+            ckpt_seg_seq: inner.slate.ckpt_seg_seq,
+            cur_seg_seq: inner.slate.segs.current_seg_seq(),
+            gc_scanned: m.gc_scanned,
+            gc_relocated: m.gc_relocated,
+            gc_open_failed: m.gc_open_failed,
+            gc_segments_freed: m.gc_segments_freed,
+            hot_head: inner.slate.log_hot.head.write_offset,
+            cold_head: inner.slate.log_cold.head.write_offset,
+            seg_end: inner.slate.segs.end_addr(),
         }
     }
 }

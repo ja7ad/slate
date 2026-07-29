@@ -4,7 +4,7 @@
 use crate::config::*;
 use crate::epoch::EngineState;
 use crate::error::Error;
-use crate::gc::SegTable;
+use crate::gc::{SegState, SegTable};
 use crate::index::Index;
 use crate::log::{Log, Sealer};
 
@@ -117,6 +117,76 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         })
     }
 
+    /// Reads the current value of `key` into `out`, returning its length.
+    ///
+    /// Resolves the record wherever it currently lives — the uncommitted hot
+    /// batch, the uncommitted cold batch, or flash — via the same
+    /// [`read_candidate_async`] path the index dedup uses. A reader that goes
+    /// straight to `flash.read(off, ..)` instead is wrong for any record whose
+    /// batch has not been committed yet: the offset is a *future* flash address
+    /// that still reads as erased `0xFF`, so a `put` immediately followed by a
+    /// `get` reports "not found" while the record is sitting intact in RAM.
+    ///
+    /// Returns `None` when the key is absent or the newest record for it is a
+    /// tombstone. Candidates are AEAD-opened and compared on the *full* key, so
+    /// a fingerprint collision cannot return another key's value.
+    pub async fn get_into_async(&mut self, key: &[u8], out: &mut [u8]) -> Option<usize> {
+        let mut cbuf = crate::index::CandidateBuf::new();
+        self.index.candidates(key, &mut cbuf);
+
+        for &cand_off in cbuf.as_slice() {
+            let mut hdr_bytes = [0u8; REC_HDR_LEN];
+            let total = match read_candidate_async(
+                &mut self.flash,
+                self.log_hot.head.write_offset,
+                self.log_hot.batch.data(),
+                self.log_cold.head.write_offset,
+                self.log_cold.batch.data(),
+                cand_off,
+                &mut hdr_bytes,
+                &mut self.scratch_buf.cand_rec_bytes,
+            )
+            .await
+            {
+                Some(t) => t,
+                None => continue,
+            };
+            let hdr = match crate::record::RecordHeader::decode(&hdr_bytes) {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if hdr.klen as usize != key.len() {
+                continue;
+            }
+            if self
+                .sealer
+                .open_record(
+                    &hdr_bytes,
+                    &self.scratch_buf.cand_rec_bytes[REC_HDR_LEN..total],
+                    &mut self.scratch_buf.cand_scratch,
+                )
+                .is_err()
+            {
+                continue;
+            }
+            let klen = hdr.klen as usize;
+            if &self.scratch_buf.cand_scratch[..klen] != key {
+                continue;
+            }
+            // A tombstone is a match, but the key has no value.
+            if hdr.op == OP_DEL {
+                return None;
+            }
+            let vlen = hdr.vlen as usize;
+            if vlen > out.len() {
+                return None;
+            }
+            out[..vlen].copy_from_slice(&self.scratch_buf.cand_scratch[klen..klen + vlen]);
+            return Some(vlen);
+        }
+        None
+    }
+
     /// Removes `key` from the index, matching the *full* key so a fingerprint
     /// collision cannot evict a different live key's slot. Returns whether an
     /// entry was removed.
@@ -167,6 +237,11 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         )?;
         self.engine.next_seq += 1;
         self.engine.records_in_epoch += 1;
+        // Counted in the core append path so the no_std targets get write
+        // amplification too; previously only slate-kv and slate-kv-sim counted
+        // user bytes, leaving every on-device WA figure at zero-over-zero.
+        self.metrics
+            .add_user_bytes((REC_OVERHEAD + key.len() + val.len()) as u64);
         Ok(offset)
     }
 
@@ -222,9 +297,51 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         self.log_cold.batch.data().len() >= 1024
     }
 
+    /// Commits the pending batches, first making room for them.
+    ///
+    /// This is the entry point application code should use. It reserves space
+    /// for the hot batch — relocating the head and reclaiming a segment when
+    /// needed — and then programs. Skipping the reservation is what turns a full
+    /// log into a permanent hard failure: the head advances past the last
+    /// segment into unmanaged flash, `program` returns `OutOfBounds`, and every
+    /// later commit reports a bare `Io`.
     pub async fn commit_async(&mut self) -> Result<(), Error> {
+        self.commit_inner_async().await?;
+        // Reserve *after* programming, never before. `Log::append` hands the
+        // index an offset computed from the head at append time, so relocating
+        // the head with records pending would leave every offset in the batch
+        // pointing at the wrong address — a put would appear to succeed and then
+        // read back as "not found". With the batch now empty, no offset is
+        // outstanding and the head can move freely.
+        self.reserve_space_async().await
+    }
+
+    /// Commits without reserving space.
+    ///
+    /// GC calls this rather than [`Self::commit_async`]: reclaiming space is
+    /// what GC is doing, so re-entering the reservation path from inside it
+    /// would make the future type infinitely sized (`commit → reserve →
+    /// compact → commit`), which rustc rejects outright.
+    pub(crate) async fn commit_inner_async(&mut self) -> Result<(), Error> {
         let seq_max = self.engine.next_seq.saturating_sub(1);
-        self.log_hot
+
+        // Bound both heads explicitly against the physical end of the region.
+        // Without this the HAL reports the overrun as a bare `Io` (on the board:
+        // `EspFlash program error: not erased at addr 2096640`, repeating
+        // forever), which names neither the cause nor the fact that the volume
+        // is simply full.
+        let limit = self.flash.capacity();
+        let hot_need = self.pending_hot_bytes();
+        if hot_need > 0 && self.log_hot.head.write_offset.saturating_add(hot_need) > limit {
+            return Err(Error::FlashFull);
+        }
+        let cold_need = self.pending_cold_bytes();
+        if cold_need > 0 && self.log_cold.head.write_offset.saturating_add(cold_need) > limit {
+            return Err(Error::FlashFull);
+        }
+
+        let hot_bytes = self
+            .log_hot
             .commit_async(
                 &mut self.flash,
                 &mut self.sealer,
@@ -233,7 +350,8 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
                 seq_max,
             )
             .await?;
-        self.log_cold
+        let cold_bytes = self
+            .log_cold
             .commit_async(
                 &mut self.flash,
                 &mut self.sealer,
@@ -242,7 +360,33 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
                 seq_max,
             )
             .await?;
+
+        // Parity pages and commit markers are flash traffic the application
+        // never requested; counting them here is what makes the reported write
+        // amplification differ from a hardcoded 1.0.
+        self.metrics
+            .add_parity_bytes(hot_bytes.parity_bytes + cold_bytes.parity_bytes);
+        self.metrics
+            .add_marker_bytes(hot_bytes.marker_bytes + cold_bytes.marker_bytes);
+
         self.engine.acked_seq = seq_max;
+
+        // Advance the segment lifecycle to wherever the head now sits: seal the
+        // segments the head has left behind and open the one it entered. GC
+        // only ever picks a `Sealed` victim, so if this never runs the table
+        // stays all-`Free`, `pick_victim` returns `None`, `compact_one` is a
+        // no-op, and the head runs off the end of the region — every program
+        // after that fails with a bare `Io`.
+        let acked = self.engine.acked_seq;
+        let hot_head = self.log_hot.head.write_offset;
+        let hot_seq = self.log_hot.head.seg_seq;
+        self.segs
+            .open_at(hot_head, hot_seq, acked, SegState::OpenHot);
+        let cold_head = self.log_cold.head.write_offset;
+        let cold_seq = self.log_cold.head.seg_seq;
+        self.segs
+            .open_at(cold_head, cold_seq, acked, SegState::OpenCold);
+
         self.sched.on_commit();
         self.metrics.add_commit();
         // Each durable commit wakes the flash subsystem from low-power sleep;
@@ -253,6 +397,201 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         if self.engine.records_in_epoch >= crate::config::THETA {
             self.seal_epoch_now_async().await?;
         }
+        Ok(())
+    }
+
+    /// Segments currently occupied by a log head. These must never be chosen as
+    /// a GC victim: reclaim erases the whole segment.
+    pub(crate) fn live_segments(&self) -> [u32; 2] {
+        let hot = self
+            .segs
+            .seg_of(self.log_hot.head.write_offset)
+            .unwrap_or(u32::MAX);
+        let cold = self
+            .segs
+            .seg_of(self.log_cold.head.write_offset)
+            .unwrap_or(u32::MAX);
+        [hot, cold]
+    }
+
+    /// Bytes the pending hot batch will occupy on flash once committed: the
+    /// batch pages, one XOR parity page, and two commit-marker pages.
+    fn pending_hot_bytes(&self) -> u32 {
+        Self::pending_bytes(self.flash.page_size() as u32, &self.log_hot)
+    }
+
+    /// Same accounting for the cold log, which is committed alongside the hot
+    /// one on every commit and therefore needs the same bounds check.
+    fn pending_cold_bytes(&self) -> u32 {
+        Self::pending_bytes(self.flash.page_size() as u32, &self.log_cold)
+    }
+
+    /// Flash bytes to keep available ahead of a head after each commit.
+    ///
+    /// Sized from the scheduler's commit granularity (`b_commit` records at the
+    /// maximum record size) plus the parity and marker pages, capped to a
+    /// quarter segment. It deliberately does NOT use `batch.capacity()`: the
+    /// host build allocates 64 KiB batch buffers, which exceed a single
+    /// `SEG_BYTES` (49 152 B) segment, so a capacity-based reservation could
+    /// never be satisfied and every commit would report `FlashFull`.
+    fn reserve_headroom(&self) -> u32 {
+        let page = self.flash.page_size() as u32;
+        let seg = crate::config::SEG_BYTES as u32;
+        let rec = (REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN) as u32;
+        let batch = rec.saturating_mul(self.sched.cfg.b_commit.max(1) as u32);
+        let need = (batch.div_ceil(page) + 3) * page;
+        core::cmp::min(need, seg / 4)
+    }
+
+    fn pending_bytes(page: u32, log: &Log<'a, F>) -> u32 {
+        let data = log.batch.data().len() as u32;
+        if data == 0 {
+            return 0;
+        }
+        (data.div_ceil(page) + 3) * page
+    }
+
+    /// True if `len` bytes at `off` are all erased (`0xFF`) and therefore
+    /// programmable.
+    async fn is_erased_at(&mut self, off: u32, len: u32) -> bool {
+        if off.saturating_add(len) > self.flash.capacity() {
+            return false;
+        }
+        let page = self.flash.page_size() as u32;
+        let mut buf = [0u8; crate::config::MAX_PAGE_SIZE];
+        let mut a = off;
+        let stop = off + len;
+        while a < stop {
+            let n = core::cmp::min(page, stop - a) as usize;
+            if self.flash.read(a, &mut buf[..n]).await.is_err() {
+                return false;
+            }
+            if buf[..n].iter().any(|&b| b != crate::config::ERASED_BYTE) {
+                return false;
+            }
+            a += n as u32;
+        }
+        true
+    }
+
+    /// Post-commit housekeeping: keep both log heads pointing at erased flash,
+    /// and reclaim a segment when space is running low.
+    ///
+    /// **The head-is-erased invariant is the fix for the reported board
+    /// failure.** The cold log head is initialized to `data_base` and only moves
+    /// when the cold log is written, but the hot log starts at the same address
+    /// and advances immediately. The first cold write — a GC relocation or a
+    /// `del` tombstone — therefore programmed pages the hot log had already
+    /// filled, which NOR flash rejects: on the C3 that surfaced as
+    /// `EspFlash program error: not erased at addr 2096640` repeating forever,
+    /// and on the host as `ProgramWithoutErase` at `data_base`.
+    ///
+    /// Runs with both batches empty (straight after a commit), so no index
+    /// offset is outstanding and a head may be moved safely — moving a head
+    /// affects only future appends; records already written stay where they are
+    /// and the index keeps pointing at them.
+    async fn reserve_space_async(&mut self) -> Result<(), Error> {
+        let headroom = self.reserve_headroom();
+
+        // 1. Hot and cold must never share a segment: reclaim erases a whole
+        //    segment, so a shared one cannot be freed without destroying the
+        //    other log's records.
+        if self.segs.num_segments > 0 {
+            let hot_seg = self.segs.seg_of(self.log_hot.head.write_offset);
+            let cold_seg = self.segs.seg_of(self.log_cold.head.write_offset);
+            if hot_seg.is_some() && hot_seg == cold_seg {
+                self.relocate_cold_head_async(headroom).await?;
+            }
+        }
+
+        // 2. Each head must point at erased flash.
+        let cold_off = self.log_cold.head.write_offset;
+        if !self.is_erased_at(cold_off, headroom).await {
+            self.relocate_cold_head_async(headroom).await?;
+        }
+
+        // 3. Reclaim when the frontier approaches the end of the managed area.
+        if self.segs.num_segments == 0 {
+            return Ok(());
+        }
+        let end = self.segs.end_addr();
+        let frontier = self
+            .log_hot
+            .head
+            .write_offset
+            .max(self.log_cold.head.write_offset);
+        if frontier + headroom.saturating_mul(2) < end {
+            return Ok(());
+        }
+
+        let in_use = self.live_segments();
+        if self
+            .segs
+            .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
+            .is_none()
+        {
+            // Only seal if a sealed segment is actually waiting to be qualified.
+            // Sealing costs a full checkpoint (33 KiB and 9 erases at default
+            // geometry), and when `Sealed == 0` it cannot produce a victim, so an
+            // unguarded seal here fires on EVERY commit once space runs low: the
+            // observed run burned 13 checkpoints in 112 records and pushed WA
+            // from 2.74 to 3.62 while reclaiming nothing.
+            if self.segs.count_in_state(SegState::Sealed) == 0 {
+                return Ok(());
+            }
+            self.seal_epoch_now_async().await?;
+        }
+        let in_use = self.live_segments();
+        if self
+            .segs
+            .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
+            .is_some()
+        {
+            crate::gc::compact_one_async(self).await?;
+        }
+        Ok(())
+    }
+
+    /// Moves the cold head to a segment where it can actually program: a free
+    /// segment if one exists, otherwise the erased flash just past the hot head.
+    async fn relocate_cold_head_async(&mut self, need: u32) -> Result<(), Error> {
+        let hot_seg = self.segs.seg_of(self.log_hot.head.write_offset);
+
+        // Prefer a free segment that the hot head does not occupy.
+        let mut candidate = None;
+        for i in 0..self.segs.num_segments {
+            let e = &self.segs.entries[i as usize];
+            if e.state == SegState::Free && Some(e.id) != hot_seg {
+                candidate = Some(self.segs.seg_base(e.id));
+                break;
+            }
+        }
+
+        // Otherwise fall back to the next segment boundary above the hot head,
+        // which is erased if the hot log has not reached it yet.
+        if candidate.is_none() {
+            if let Some(id) = hot_seg {
+                let next = self.segs.seg_base(id + 1);
+                if next + need <= self.flash.capacity() {
+                    candidate = Some(next);
+                }
+            }
+        }
+
+        let dst = match candidate {
+            Some(d) => d,
+            None => return Err(Error::FlashFull),
+        };
+        if !self.is_erased_at(dst, need).await {
+            return Err(Error::FlashFull);
+        }
+
+        self.log_cold.head.write_offset = dst;
+        self.log_cold.head.block_idx = dst / self.flash.block_size() as u32;
+        self.log_cold.head.seg_seq += 1;
+        let seq = self.log_cold.head.seg_seq;
+        let acked = self.engine.acked_seq;
+        self.segs.open_at(dst, seq, acked, SegState::OpenCold);
         Ok(())
     }
 
@@ -268,7 +607,7 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         let write_offset = self.log_hot.head.write_offset;
         let n_keys = self.index.len() as u16;
 
-        crate::epoch::seal_epoch_async(
+        let cost = crate::epoch::seal_epoch_async(
             &mut self.engine,
             &mut self.flash,
             &mut self.counter,
@@ -281,6 +620,10 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
             &mut self.scratch_buf.page_buf,
         )
         .await?;
+        self.metrics.add_ckpt_bytes(cost.bytes);
+        for _ in 0..cost.erases {
+            self.metrics.add_erase();
+        }
 
         // The checkpoint just written durably records the index as of `seg_seq`,
         // so every segment allocated strictly before it is now reclaimable:
@@ -288,11 +631,32 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         // dead ones can never be needed again. `pick_victim` gates on exactly
         // this watermark, so failing to advance it here leaves GC permanently
         // unable to select a victim.
-        self.ckpt_seg_seq = seg_seq;
+        // Advance the reclaim watermark past every segment allocated so far.
+        // `seg_seq` here is the log head's field, which nothing increments, so
+        // using it left the watermark pinned at 0 and `pick_victim`'s
+        // `seg_seq < ckpt_seg_seq` test permanently false. The segment table's
+        // allocation counter is the real ordering.
+        self.ckpt_seg_seq = self.segs.current_seg_seq() + 1;
         Ok(())
     }
 
+    /// Reclaims one segment, sealing an epoch first if nothing is yet eligible.
+    ///
+    /// A victim must predate the newest checkpoint (`seg_seq < ckpt_seg_seq`), so
+    /// on a volume that has sealed segments but has not yet written a checkpoint
+    /// this would otherwise return `Ok(())` having done nothing at all — the
+    /// caller sees success while no space is freed. Sealing here makes an
+    /// explicit `compact()` mean "reclaim if there is anything reclaimable".
     pub async fn compact_async(&mut self) -> Result<(), Error> {
+        let in_use = self.live_segments();
+        if self
+            .segs
+            .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
+            .is_none()
+            && self.segs.count_in_state(SegState::Sealed) > 0
+        {
+            self.seal_epoch_now_async().await?;
+        }
         crate::gc::compact_one_async(self).await
     }
 
@@ -304,6 +668,12 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     #[cfg(feature = "blocking")]
     pub fn index_remove_key(&mut self, key: &[u8]) -> bool {
         crate::task::block_on(self.index_remove_key_async(key))
+    }
+
+    /// Blocking form of [`Self::get_into_async`].
+    #[cfg(feature = "blocking")]
+    pub fn get_into(&mut self, key: &[u8], out: &mut [u8]) -> Option<usize> {
+        crate::task::block_on(self.get_into_async(key, out))
     }
 
     #[cfg(feature = "blocking")]

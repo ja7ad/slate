@@ -322,7 +322,10 @@ impl Db {
             log_hot,
             log_cold,
             index: Index::new(index_slice, index_len / 4),
-            segs: SegTable::new(128),
+            segs: SegTable::with_base(
+                data_base,
+                slate_kv_core::gc::segments_in(data_base, opts.capacity),
+            ),
             // Seeded from the checkpoint so GC's reclaim watermark survives a
             // remount; starting at 0 would block victim selection until the
             // next epoch seal.

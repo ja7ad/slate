@@ -13,7 +13,22 @@ steps:
   - write-serial: "stats\n"
   - wait-serial: "stats:"
   - wait-serial: "slate> "
+  # Layout invariants, asserted before anything is written. A FAIL here names
+  # the misconfiguration directly instead of letting it surface as an opaque
+  # `Io` on some later commit.
+  - write-serial: "health\n"
+  - wait-serial: "ALL PASS"
+  - wait-serial: "slate> "
   - write-serial: "put a 1\n"
+  - wait-serial: "slate> "
+  # THE READ-PATH REGRESSION. `put` leaves the record in the uncommitted RAM
+  # batch, whose index offset is a *future* flash address that still reads as
+  # erased 0xFF. The old `get` read flash directly at that offset and so always
+  # printed "(not found)" here — the exact symptom reported from the board
+  # ("put sensor_0 25" then "get sensor_0" returned nothing). Reaching `1`
+  # before any commit proves the batch-aware read path is in use.
+  - write-serial: "get a\n"
+  - wait-serial: "1"
   - wait-serial: "slate> "
   # `ack <seq>` is printed only after the commit marker is durable, so this line
   # is the assertion that a record actually reached flash. Before the flash
@@ -62,5 +77,19 @@ steps:
   - write-serial: "get c\n"
   - wait-serial: "3"
   - wait-serial: "slate> "
+  # Write amplification must be a real measurement. Before the metrics call
+  # sites existed, add_gc_bytes/add_parity_bytes/add_ckpt_bytes/add_erase had
+  # zero callers anywhere in the workspace, so WA was identically 1.0000 for
+  # every workload and the number was unfalsifiable. By this point the run has
+  # programmed parity pages, commit markers and a checkpoint, so WA must be
+  # strictly above 1 — asserting the "1." prefix would also match 1.0000, so
+  # assert on the parity bucket being non-empty and on the WA line existing.
   - write-serial: "stats\n"
-  - wait-serial: "stats:"
+  - wait-serial: "flash bytes written"
+  - wait-serial: "WA     ="
+  - wait-serial: "slate> "
+  # The invariants must still hold after a seal, a checkpoint and a compaction.
+  - write-serial: "compact\n"
+  - wait-serial: "slate> "
+  - write-serial: "health\n"
+  - wait-serial: "ALL PASS"

@@ -43,29 +43,188 @@ impl SegEntry {
 
 pub const MAX_SEGMENTS: usize = 128;
 
+/// Number of whole segments that fit in `[base, capacity)`, capped at
+/// [`MAX_SEGMENTS`].
+///
+/// Use this rather than passing a hardcoded segment count: a table claiming more
+/// segments than the region holds lets GC pick a victim whose base address lies
+/// past the end of flash, and a table claiming fewer leaves an unreclaimable
+/// tail that the log head will eventually run into.
+pub fn segments_in(base: u32, capacity: u32) -> u32 {
+    if capacity <= base {
+        return 0;
+    }
+    let n = (capacity - base) / crate::config::SEG_BYTES as u32;
+    core::cmp::min(n, MAX_SEGMENTS as u32)
+}
+
 pub struct SegTable {
     pub entries: [SegEntry; MAX_SEGMENTS],
     pub num_segments: u32,
+    /// Next segment allocation number to hand out.
+    ///
+    /// `seg_seq` is an *allocation* number, not a segment index: victim
+    /// selection compares it against the newest checkpoint's `seg_seq` to decide
+    /// whether a sealed segment predates that checkpoint. Nothing used to
+    /// advance it (the log head's `seg_seq` stayed 0 forever), so the
+    /// `seg_seq < ckpt_seg_seq` test in [`Self::pick_victim`] was never true and
+    /// GC could not pick a victim even once segments were being sealed.
+    pub next_seg_seq: u64,
+    /// Flash offset of segment 0.
+    ///
+    /// Segments tile the log area *above* the reserved superblock and
+    /// checkpoint slots, so this is normally `config::data_base_offset()`. It
+    /// is not implicitly zero: with `base_addr == 0`, `seg_base(0)` lands on
+    /// the superblock and GC's reclaim erase would wipe the live checkpoint
+    /// slots instead of a data segment.
+    pub base_addr: u32,
 }
 
 impl SegTable {
+    /// Creates a table of `num_segments` segments starting at offset 0.
+    ///
+    /// Prefer [`Self::with_base`]: a log that starts above a reserved region
+    /// (every real volume does) needs a matching segment base, or segment
+    /// addresses and log addresses describe different parts of the chip.
     pub fn new(num_segments: u32) -> Self {
+        Self::with_base(0, num_segments)
+    }
+
+    /// Creates a table whose segment 0 begins at `base_addr`.
+    pub fn with_base(base_addr: u32, num_segments: u32) -> Self {
         let mut entries = [SegEntry::new(0); MAX_SEGMENTS];
-        for i in 0..core::cmp::min(num_segments as usize, MAX_SEGMENTS) {
-            entries[i] = SegEntry::new(i as u32);
+        let n = core::cmp::min(num_segments as usize, MAX_SEGMENTS);
+        for (i, e) in entries.iter_mut().enumerate().take(n) {
+            *e = SegEntry::new(i as u32);
         }
         Self {
             entries,
-            num_segments,
+            num_segments: n as u32,
+            next_seg_seq: 1,
+            base_addr,
         }
     }
 
+    /// Flash offset of segment `id`.
+    #[inline]
+    pub fn seg_base(&self, id: u32) -> u32 {
+        self.base_addr + id * crate::config::SEG_BYTES as u32
+    }
+
+    /// First offset past the last segment. The log head must never reach this:
+    /// bytes above it belong to no segment, so GC can never reclaim them.
+    #[inline]
+    pub fn end_addr(&self) -> u32 {
+        self.seg_base(self.num_segments)
+    }
+
+    /// The segment containing `off`, or `None` if `off` lies outside the
+    /// segment-managed area (below `base_addr` or in the unmanaged tail).
+    #[inline]
+    pub fn seg_of(&self, off: u32) -> Option<u32> {
+        if off < self.base_addr || off >= self.end_addr() {
+            return None;
+        }
+        Some((off - self.base_addr) / crate::config::SEG_BYTES as u32)
+    }
+
     pub fn pick_victim(&self, ckpt_seg_seq: u64) -> Option<u32> {
+        self.pick_victim_excluding(ckpt_seg_seq, &[])
+    }
+
+    /// Like [`Self::pick_victim`] but never returns a segment in `in_use`.
+    ///
+    /// Reclaim erases all twelve blocks of the victim, so a segment that a log
+    /// head currently occupies must never be selected: the cold head in
+    /// particular starts at `data_base` and stays there until the cold log is
+    /// written, which is exactly where the oldest records live. Selecting it
+    /// erases live data that the scan never even visits — the scan starts at the
+    /// segment base and stops at the first erased byte, so a segment whose first
+    /// page belongs to the *hot* log looks empty (`gc_scanned == 0`) while
+    /// holding thousands of live records.
+    pub fn pick_victim_excluding(&self, ckpt_seg_seq: u64, in_use: &[u32]) -> Option<u32> {
         self.entries[..self.num_segments as usize]
             .iter()
-            .filter(|s| s.state == SegState::Sealed && s.seg_seq < ckpt_seg_seq)
+            .filter(|s| {
+                s.state == SegState::Sealed && s.seg_seq < ckpt_seg_seq && !in_use.contains(&s.id)
+            })
             .min_by_key(|s| s.live_bytes)
             .map(|s| s.id)
+    }
+
+    /// Lowest-id segment currently free, if any.
+    pub fn pick_free(&self) -> Option<u32> {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .find(|s| s.state == SegState::Free)
+            .map(|s| s.id)
+    }
+
+    pub fn free_count(&self) -> u32 {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .filter(|s| s.state == SegState::Free)
+            .count() as u32
+    }
+
+    pub fn count_in_state(&self, want: SegState) -> u32 {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .filter(|s| s.state == want)
+            .count() as u32
+    }
+
+    /// Marks the segment containing `off` as open in `state`, sealing whichever
+    /// segment was previously open in that state.
+    ///
+    /// This is the transition no production path used to perform. Because
+    /// [`Self::pick_victim`] only considers `Sealed` segments, a table whose
+    /// entries never leave `SegState::Free` makes compaction a permanent no-op:
+    /// the log head runs to the end of the region and every subsequent program
+    /// fails. `seg_seq`/`minseq` are stamped on open so victim selection can
+    /// tell a segment that predates the newest checkpoint from one that does
+    /// not.
+    ///
+    /// Returns the segment id now open, or `None` if `off` is outside the
+    /// managed area.
+    pub fn open_at(&mut self, off: u32, seg_seq: u64, minseq: u64, state: SegState) -> Option<u32> {
+        let cur = self.seg_of(off)?;
+        for i in 0..self.num_segments {
+            if i == cur {
+                continue;
+            }
+            let e = &mut self.entries[i as usize];
+            if e.state == state {
+                e.state = SegState::Sealed;
+            }
+        }
+        let next = self.next_seg_seq;
+        let e = &mut self.entries[cur as usize];
+        if e.state == SegState::Free {
+            e.seg_seq = next;
+            e.minseq = minseq;
+            self.next_seg_seq = next + 1;
+        }
+        let _ = seg_seq;
+        e.state = state;
+        Some(cur)
+    }
+
+    /// Allocation number of the newest segment handed out. A checkpoint taken
+    /// now supersedes every segment sealed at or below this number.
+    pub fn current_seg_seq(&self) -> u64 {
+        self.next_seg_seq.saturating_sub(1)
+    }
+
+    /// True if `need` bytes written at `off` stay inside `off`'s own segment.
+    ///
+    /// A commit must not straddle a segment boundary: GC reclaims whole
+    /// segments, so a record spanning two could be left half-erased.
+    pub fn fits_in_segment(&self, off: u32, need: u32) -> bool {
+        match self.seg_of(off) {
+            Some(id) => off + need <= self.seg_base(id + 1),
+            None => false,
+        }
     }
 
     pub fn update_live_bytes(&mut self, id: u32, delta: i32) {
@@ -149,7 +308,9 @@ pub async fn compact_one_async<
     st: &mut crate::slate::Slate<'a, F, C, S>,
 ) -> Result<(), Error> {
     let ckpt_seg_seq = st.ckpt_seg_seq;
-    let victim = match st.segs.pick_victim(ckpt_seg_seq) {
+    // Never reclaim a segment a log head currently occupies.
+    let in_use = st.live_segments();
+    let victim = match st.segs.pick_victim_excluding(ckpt_seg_seq, &in_use) {
         Some(v) => v,
         None => return Ok(()),
     };
@@ -167,13 +328,20 @@ pub async fn compact_one_async<
         .min()
         .unwrap_or(u64::MAX);
 
-    // Real record scan
-    let seg_base = victim * crate::config::SEG_BYTES as u32;
+    // Real record scan. `seg_base` must go through the table: segments tile the
+    // log area above the reserved region, so `victim * SEG_BYTES` alone points
+    // at the superblock/checkpoint slots for low ids.
+    let seg_base = st.segs.seg_base(victim);
     let page_size = st.flash.page_size() as u32;
-    let mut off = seg_base + page_size; // Skip segment header
+    // Scan from the first byte of the segment. The segment model is not
+    // materialized on flash — nothing ever programs a `MAGIC_SEG` header (see
+    // recover.rs) — so skipping a header page here would skip a live record and
+    // silently drop it during reclaim.
+    let mut off = seg_base;
 
     let mut buf = [0u8; 1];
     let mut since_yield = 0u16;
+    let mut scanned = 0u32;
 
     while off < seg_base + crate::config::SEG_BYTES as u32 {
         if since_yield >= crate::config::GC_YIELD_EVERY_RECORDS {
@@ -206,6 +374,8 @@ pub async fn compact_one_async<
                     break;
                 }
                 if let Ok(hdr) = crate::record::RecordHeader::decode(&hdr_bytes) {
+                    scanned += 1;
+                    st.metrics.add_gc_scanned();
                     let total_len =
                         crate::config::REC_OVERHEAD + hdr.klen as usize + hdr.vlen as usize;
                     if total_len <= st.scratch_buf.gc_rec_bytes.len()
@@ -215,17 +385,21 @@ pub async fn compact_one_async<
                             .await
                             .is_ok()
                     {
-                        if st
+                        let opened = st
                             .sealer
                             .open_record(
                                 &hdr_bytes,
                                 &st.scratch_buf.gc_rec_bytes[crate::config::REC_HDR_LEN..total_len],
                                 &mut st.scratch_buf.gc_scratch,
                             )
-                            .is_ok()
-                        {
+                            .is_ok();
+                        if !opened {
+                            st.metrics.add_gc_open_failed();
+                        }
+                        if opened {
                             let key_len = hdr.klen as usize;
                             let val_len = hdr.vlen as usize;
+                            let _ = val_len;
                             let key = &st.scratch_buf.gc_scratch[..key_len];
                             let val = &st.scratch_buf.gc_scratch[key_len..key_len + val_len];
 
@@ -246,8 +420,14 @@ pub async fn compact_one_async<
                                         key,
                                         val,
                                     )?;
+                                    // Relocation traffic: bytes written by GC
+                                    // rather than by the application. This is
+                                    // the numerator term that makes write
+                                    // amplification differ from 1.0.
+                                    st.metrics.add_gc_bytes(total_len as u64);
+                                    st.metrics.add_gc_relocated();
                                     if need_commit {
-                                        st.commit_async().await?;
+                                        st.commit_inner_async().await?;
                                     }
                                     let key = &st.scratch_buf.gc_scratch[..key_len];
                                     reindex_update_offset(
@@ -274,8 +454,10 @@ pub async fn compact_one_async<
                                     key,
                                     &[],
                                 )?;
+                                st.metrics
+                                    .add_gc_bytes((crate::config::REC_OVERHEAD + key_len) as u64);
                                 if need_commit {
-                                    st.commit_async().await?;
+                                    st.commit_inner_async().await?;
                                 }
                             }
                         }
@@ -291,19 +473,31 @@ pub async fn compact_one_async<
         }
     }
 
-    if false {
-        st.commit_async().await?;
-    }
+    st.commit_inner_async().await?;
 
-    st.commit_async().await?;
+    // Guard: the scan starts at `seg_base` and stops at the first erased byte,
+    // so a segment that is genuinely empty and one whose first page was written
+    // by the *other* log both yield `scanned == 0`. Erasing on that basis
+    // destroyed live records. Only reclaim when the first byte of the segment is
+    // erased (nothing was ever written here) or the scan actually walked
+    // records.
+    let mut first = [0u8; 1];
+    let first_is_erased =
+        st.flash.read(seg_base, &mut first).await.is_ok() && first[0] == crate::config::ERASED_BYTE;
+    if scanned == 0 && !first_is_erased {
+        // Not provably reclaimable: leave it sealed rather than risk data loss.
+        return Ok(());
+    }
 
     for b in 0..(crate::config::SEG_BLOCKS_DATA + crate::config::SEG_BLOCKS_PARITY) {
         st.flash
             .erase(seg_base + (b as u32) * st.flash.block_size() as u32)
             .await
             .map_err(|_| Error::Io)?;
+        st.metrics.add_erase();
         crate::task::yield_now().await;
     }
     st.segs.entries[victim as usize].reset_to_free();
+    st.metrics.add_gc_segment_freed();
     Ok(())
 }

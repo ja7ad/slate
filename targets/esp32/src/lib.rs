@@ -37,6 +37,17 @@ impl<T> SyncBuffer<T> {
 /// Erase-block size of the SPI NOR part on every supported ESP32 variant.
 pub const FLASH_BLOCK_SIZE: usize = 4096;
 
+/// Chunk size for the alignment-fixing read path in [`EspFlash::read`].
+const ALIGNED_CHUNK: usize = 256;
+
+/// 4-byte aligned staging buffer.
+///
+/// `esp-storage` reads fastest into a word-aligned destination and, for
+/// unaligned callers, copies via its own internal buffer. Declaring the
+/// alignment here lets the direct path be taken.
+#[repr(C, align(4))]
+struct AlignedBuf([u8; ALIGNED_CHUNK]);
+
 /// First byte of the SLATE data region inside the flash chip.
 ///
 /// Must clear the bootloader, partition table and application image. On the
@@ -144,13 +155,71 @@ impl<'a> Flash for EspFlash<'a> {
         self.len
     }
 
+    /// Reads `buf.len()` bytes at `addr`, widening the request to a 4-byte
+    /// aligned window internally.
+    ///
+    /// `esp-storage` rejects any read whose **offset or length** is not a
+    /// multiple of `READ_SIZE` (4 bytes unless its `bytewise-read` feature is
+    /// on) with `FlashStorageError::NotAligned`. SLATE reads 28-byte record
+    /// headers at arbitrary record offsets — a record is `44 + klen + vlen`
+    /// bytes, so successive records land on unaligned addresses almost
+    /// immediately — so passing engine offsets through unmodified made every
+    /// read of an already-committed record fail. The failure was silent at the
+    /// application level: `get` treats a read error as "candidate did not
+    /// match" and moves on, so a `put` + `commit` + `get` printed
+    /// `(not found)` while the record sat intact on flash.
+    ///
+    /// Aligning here (in addition to enabling `bytewise-read`) keeps the port
+    /// correct even if that feature is dropped, and costs at most one extra
+    /// word read at each end.
     fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
         if addr + buf.len() as u32 > self.len {
             return Err(EspFlashError::OutOfBounds);
         }
-        self.inner
-            .read(self.base + addr, buf)
-            .map_err(|_| EspFlashError::StorageError)
+        if buf.is_empty() {
+            return Ok(());
+        }
+
+        const W: u32 = 4;
+        let start = self.base + addr;
+        let skew = (start % W) as usize;
+        let aligned_start = start - skew as u32;
+        let want = skew + buf.len();
+        let aligned_len = want.next_multiple_of(W as usize);
+
+        // Fast path: already aligned both ways.
+        if skew == 0 && buf.len() % W as usize == 0 {
+            return self
+                .inner
+                .read(aligned_start, buf)
+                .map_err(|_| EspFlashError::StorageError);
+        }
+
+        // Slow path: read through a word-aligned staging buffer, one chunk at a
+        // time so the buffer stays small enough for a no_std stack.
+        let mut staging = AlignedBuf([0u8; ALIGNED_CHUNK]);
+        let mut done = 0usize;
+        let mut cursor = aligned_start;
+        let mut lead = skew;
+
+        while done < buf.len() {
+            let remaining = aligned_len - (cursor - aligned_start) as usize;
+            let chunk = core::cmp::min(remaining, ALIGNED_CHUNK);
+            if cursor + chunk as u32 > self.base + self.len + W {
+                return Err(EspFlashError::OutOfBounds);
+            }
+            self.inner
+                .read(cursor, &mut staging.0[..chunk])
+                .map_err(|_| EspFlashError::StorageError)?;
+
+            let avail = chunk - lead;
+            let take = core::cmp::min(avail, buf.len() - done);
+            buf[done..done + take].copy_from_slice(&staging.0[lead..lead + take]);
+            done += take;
+            cursor += chunk as u32;
+            lead = 0;
+        }
+        Ok(())
     }
 
     fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {

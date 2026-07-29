@@ -99,9 +99,14 @@ fn main() -> ! {
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),
-        segs: SegTable::new(slate_esp32::slate_segment_capacity(
-            slate_esp32::SLATE_FLASH_LEN,
-        )),
+        // `with_base`, not `new`: segments tile the log area ABOVE the reserved
+        // superblock/checkpoint region. With base 0, segment 0's address range
+        // covers the live checkpoint slots and a reclaim erase would destroy
+        // them.
+        segs: SegTable::with_base(
+            data_base,
+            slate_esp32::slate_segment_capacity(slate_esp32::SLATE_FLASH_LEN),
+        ),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),

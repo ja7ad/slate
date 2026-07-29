@@ -183,7 +183,11 @@ fn main() -> ! {
             },
         ),
         index: Index::new(index_slots, 2048),
-        segs: SegTable::new(num_segments),
+        // `with_base`, not `new`: segments tile the log area ABOVE the reserved
+        // superblock/checkpoint region. With base 0, segment 0's address range
+        // covers the live checkpoint slots and a reclaim erase would destroy
+        // them.
+        segs: SegTable::with_base(data_base, num_segments),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
@@ -210,7 +214,15 @@ fn main() -> ! {
                 }
             }
             Err(e) => {
-                println!("Append error: {:?}", e);
+                // Previously this printed forever at ~8100 records. Report the
+                // state once and stop rather than filling the serial log with
+                // thousands of identical lines.
+                println!("Append error at record {}: {:?}", i, e);
+                report(&slate, i);
+                println!("halting");
+                loop {
+                    core::hint::spin_loop();
+                }
             }
         }
 
@@ -225,7 +237,12 @@ fn main() -> ! {
         let now_ms = i as u64;
         if slate.sched.on_append(now_ms) {
             if let Err(e) = slate_kv_core::task::block_on(slate.commit_async()) {
-                println!("Commit error: {:?}", e);
+                println!("Commit error at record {}: {:?}", i, e);
+                report(&slate, i);
+                println!("halting");
+                loop {
+                    core::hint::spin_loop();
+                }
             }
         }
 
@@ -242,6 +259,53 @@ fn main() -> ! {
             if let Err(e) = slate_kv_core::task::block_on(slate.compact_async()) {
                 println!("Compact error: {:?}", e);
             }
+            report(&slate, i);
+        }
+    }
+}
+
+/// Prints the write-amplification buckets and segment census.
+///
+/// The previous loop printed only "Appended N records", so when it wedged the
+/// serial log carried no state at all — just `Commit error: Io` forever. These
+/// counters are what make the failure diagnosable from a log alone.
+fn report<F, C, S>(slate: &Slate<F, C, S>, i: u32)
+where
+    F: slate_kv_hal::AsyncFlash,
+    C: slate_kv_hal::AsyncMonotonicCounter,
+    S: slate_kv_core::log::Sealer,
+{
+    let hot = slate.log_hot.head.write_offset;
+    let cold = slate.log_cold.head.write_offset;
+    let cap = slate_kv_hal::AsyncFlash::capacity(&slate.flash);
+    println!(
+        "[{}] epoch={} hot={} cold={} free_to_end={} segs(free={}/{} sealed={})",
+        i,
+        slate.engine.epoch,
+        hot,
+        cold,
+        cap.saturating_sub(hot.max(cold)),
+        slate.segs.free_count(),
+        slate.segs.num_segments,
+        slate.segs.count_in_state(slate_kv_core::gc::SegState::Sealed),
+    );
+    #[cfg(feature = "metrics")]
+    {
+        let m = &slate.metrics;
+        let wa_bp = (m.flash_bytes() * 10_000) / m.user_bytes.max(1);
+        println!(
+            "     user={} gc={} parity={} marker={} ckpt={} erases={} WA={}.{:04}",
+            m.user_bytes,
+            m.gc_bytes,
+            m.parity_bytes,
+            m.marker_bytes,
+            m.ckpt_bytes,
+            m.erases,
+            wa_bp / 10_000,
+            wa_bp % 10_000
+        );
+        if m.gc_open_failed > 0 {
+            println!("     WARNING: gc could not decrypt {} records", m.gc_open_failed);
         }
     }
 }

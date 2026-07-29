@@ -104,9 +104,35 @@ impl<'a> BatchBuf<'a> {
     pub fn data(&self) -> &[u8] {
         &self.buf[0..self.offset]
     }
+
+    /// Total bytes this batch can hold. Used to size the space reservation:
+    /// after a commit the head must sit somewhere that can absorb a worst-case
+    /// full batch, or the next commit has nowhere to go.
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
 }
 
 /// The log instance.
+/// Bytes programmed by one [`Log::commit_async`], split by write-amplification
+/// bucket. All three are whole pages, because NOR programming is page-granular.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CommitBytes {
+    /// Pages holding record data (framing + sealed payload).
+    pub data_bytes: u64,
+    /// The XOR parity page written after the data pages.
+    pub parity_bytes: u64,
+    /// The two redundant commit-marker pages.
+    pub marker_bytes: u64,
+}
+
+impl CommitBytes {
+    /// Total bytes programmed.
+    pub fn total(&self) -> u64 {
+        self.data_bytes + self.parity_bytes + self.marker_bytes
+    }
+}
+
 pub struct Log<'a, F> {
     /// Head state.
     pub head: HeadState,
@@ -258,6 +284,12 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
     }
 
     /// Commits the current batch to flash.
+    ///
+    /// Returns the byte accounting for what was programmed, so the caller can
+    /// attribute it to the right write-amplification bucket: `data_bytes` is
+    /// user payload plus record framing, while `parity_bytes` (the XOR page)
+    /// and `marker_bytes` (two commit-marker copies) are engine overhead that
+    /// the application never asked for.
     pub async fn commit_async(
         &mut self,
         flash: &mut F,
@@ -265,17 +297,24 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
         chain: &Chain,
         epoch: u64,
         seq_max: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<CommitBytes, Error> {
         if self.batch.is_empty() {
-            return Ok(());
+            return Ok(CommitBytes::default());
         }
+        let page_size = flash.page_size() as u64;
+        let data_pages = self.batch.data().len().div_ceil(page_size as usize) as u64;
+
         self.program_batch_pages(flash).await?;
         let xor_pages = self.program_xor_parity(flash).await?;
         let cm = s.commit_marker(seq_max, epoch, xor_pages, &chain.chi);
         self.program_page(flash, &cm).await?;
         self.program_page(flash, &cm).await?;
         self.batch.clear();
-        Ok(())
+        Ok(CommitBytes {
+            data_bytes: data_pages * page_size,
+            parity_bytes: page_size,
+            marker_bytes: 2 * page_size,
+        })
     }
     /// Commits the current batch synchronously.
     #[cfg(feature = "blocking")]
@@ -286,7 +325,7 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
         chain: &crate::chain::Chain,
         epoch: u64,
         seq_max: u64,
-    ) -> Result<(), Error> {
+    ) -> Result<CommitBytes, Error> {
         crate::task::block_on(self.commit_async(flash, s, chain, epoch, seq_max))
     }
 }
