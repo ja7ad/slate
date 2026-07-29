@@ -114,7 +114,7 @@ jobs:
       - name: Run Wokwi scenario
         run: |
           cd targets/esp32
-          cargo build --release --no-default-features --features chip-esp32c3,counter-flash --bin kv_demo --target riscv32imc-unknown-none-elf
+          cargo build --release --no-default-features --features chip-esp32c3,counter-flash,metrics --bin kv_demo --target riscv32imc-unknown-none-elf
           if [ -z "$WOKWI_CLI_TOKEN" ]; then
             echo "WOKWI_CLI_TOKEN is empty. Skipping Wokwi simulation."
             exit 0

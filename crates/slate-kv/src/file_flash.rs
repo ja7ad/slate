@@ -46,12 +46,31 @@ impl From<std::io::Error> for FileFlashError {
     }
 }
 
+/// Device-level I/O tallies for one [`FileFlash`].
+///
+/// Counted at the HAL boundary rather than derived from the engine's own
+/// `Metrics`: `Metrics` records only bytes the engine *programs*, so it cannot
+/// say anything about read cost, which is what mount is made of. `read_pages` is
+/// the number of distinct `page_size` pages a read touched, so a 28-byte header
+/// read that straddles a page boundary counts as two — that is what the device
+/// actually fetches.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FlashCounters {
+    pub read_ops: u64,
+    pub read_bytes: u64,
+    pub read_pages: u64,
+    pub program_ops: u64,
+    pub program_bytes: u64,
+    pub erase_ops: u64,
+}
+
 pub struct FileFlash {
     file: File,
     capacity: u32,
     page_size: usize,
     block_size: usize,
     durability: Durability,
+    counters: FlashCounters,
 }
 
 impl FileFlash {
@@ -76,7 +95,23 @@ impl FileFlash {
             page_size,
             block_size,
             durability,
+            counters: FlashCounters::default(),
         })
+    }
+
+    /// Device I/O tallies accumulated since this handle was created.
+    pub fn counters(&self) -> FlashCounters {
+        self.counters
+    }
+
+    /// Pages spanned by a `len`-byte access starting at `addr`.
+    fn pages_spanned(&self, addr: usize, len: usize) -> u64 {
+        if len == 0 {
+            return 0;
+        }
+        let first = addr / self.page_size;
+        let last = (addr + len - 1) / self.page_size;
+        (last - first + 1) as u64
     }
 }
 
@@ -101,6 +136,9 @@ impl Flash for FileFlash {
             return Err(FileFlashError::OutOfBounds);
         }
         read_exact_at(&self.file, buf, addr as u64)?;
+        self.counters.read_ops += 1;
+        self.counters.read_bytes += buf.len() as u64;
+        self.counters.read_pages += self.pages_spanned(addr, buf.len());
         Ok(())
     }
 
@@ -123,6 +161,8 @@ impl Flash for FileFlash {
         // Write and sync
         write_all_at(&self.file, buf, addr as u64)?;
         flush_durable(&self.file, self.durability)?;
+        self.counters.program_ops += 1;
+        self.counters.program_bytes += buf.len() as u64;
         Ok(())
     }
 
@@ -138,6 +178,7 @@ impl Flash for FileFlash {
         let ff = vec![0xFF; self.block_size];
         write_all_at(&self.file, &ff, block_addr as u64)?;
         flush_durable(&self.file, self.durability)?;
+        self.counters.erase_ops += 1;
         Ok(())
     }
 }

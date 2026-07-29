@@ -817,9 +817,11 @@ dependencies = [
 name = "slate-kv-sim"
 version = "0.4.0"
 dependencies = [
+ "libc",
  "proptest",
  "rand 0.8.7",
  "serde",
+ "slate-kv",
  "slate-kv-core",
  "slate-kv-crypto",
  "slate-kv-erasure",

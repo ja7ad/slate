@@ -152,24 +152,85 @@ impl<'a> Index<'a> {
 
     /// Lookup key and push candidates to buffer.
     pub fn candidates(&self, key: &[u8], out: &mut CandidateBuf) {
+        let _ = self.candidates_probed(key, out);
+    }
+
+    /// [`Self::candidates`], additionally returning how many index slots the
+    /// lookup examined.
+    ///
+    /// Exists so the slot-probe cost can be *measured* on the same code path
+    /// application lookups take, rather than re-derived by a copy of the loop
+    /// that could drift from it. Note that both bucket scans and the stash scan
+    /// are unconditional: the count is `2 * BUCKET_SLOTS + STASH_SIZE` for every
+    /// key, so this is the exact cost, not a worst case.
+    pub fn candidates_probed(&self, key: &[u8], out: &mut CandidateBuf) -> usize {
         let h = h64(key);
         let fp = fingerprint(key);
         let n = self.n_buckets;
         let i1 = bucket1(h, n);
         let i2 = alt_bucket(i1, fp, n);
 
+        let mut probes = 0usize;
         for &i in &[i1, i2] {
             for &s in self.bucket(i) {
+                probes += 1;
                 if (s >> 24) as u8 == fp {
                     out.push(s & 0x00FF_FFFF);
                 }
             }
         }
         for &(sfp, soff) in &self.stash {
+            probes += 1;
             if sfp == fp {
                 out.push(soff & 0x00FF_FFFF);
             }
         }
+        probes
+    }
+
+    /// Slots probed and slots found occupied for a lookup of `key`.
+    ///
+    /// The `2b · 2^-f` false-positive bound assumes each probed slot holds an
+    /// independent uniform fingerprint. Neither half of that holds exactly here:
+    /// slots may be empty (so the real chance count is the *occupied* count, not
+    /// `2b`), and [`alt_bucket`] derives the alternate bucket *from the
+    /// fingerprint*, which correlates the contents of a probed bucket pair with
+    /// the fingerprint being looked up. Reporting the occupied count separately
+    /// is what lets a reader tell those two effects apart instead of attributing
+    /// the whole deviation to one of them.
+    pub fn probe_occupancy(&self, key: &[u8]) -> (usize, usize) {
+        let h = h64(key);
+        let fp = fingerprint(key);
+        let n = self.n_buckets;
+        let i1 = bucket1(h, n);
+        let i2 = alt_bucket(i1, fp, n);
+
+        let mut probed = 0usize;
+        let mut occupied = 0usize;
+        for &i in &[i1, i2] {
+            for &s in self.bucket(i) {
+                probed += 1;
+                if (s >> 24) != 0 {
+                    occupied += 1;
+                }
+            }
+        }
+        for &(sfp, _) in &self.stash {
+            probed += 1;
+            if sfp != 0 {
+                occupied += 1;
+            }
+        }
+        (probed, occupied)
+    }
+
+    /// Number of stash entries currently occupied.
+    ///
+    /// The stash is the last resort after `MAX_KICKS` relocations fail, so its
+    /// occupancy is the observable signal of how close the table is to the load
+    /// at which insertion stops succeeding.
+    pub fn stash_occupancy(&self) -> usize {
+        self.stash.iter().filter(|e| e.0 != 0).count()
     }
 
     /// Insert or update an entry.

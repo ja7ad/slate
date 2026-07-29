@@ -431,9 +431,8 @@ impl Db {
 
         let offset = slate.append_hot(OP_PUT, key, val)?;
         slate.index_update_offset(key, offset)?;
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len() + val.len()) as u64);
+        // Counted inside `Slate::append_hot` (see the note in `put`); counting it
+        // again here double-counted every record on this path.
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }
@@ -581,9 +580,8 @@ impl Db {
         let _ = slate.append_hot(OP_DEL, key, &[])?;
 
         slate.index_remove_key(key);
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len()) as u64);
+        // Counted inside `Slate::append_hot` (see the note in `put`); counting it
+        // again here double-counted every record on this path.
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }
@@ -605,9 +603,8 @@ impl Db {
         let _ = slate.append_hot(OP_DEL, key, &[])?;
 
         slate.index_remove_key(key);
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len()) as u64);
+        // Counted inside `Slate::append_hot` (see the note in `put`); counting it
+        // again here double-counted every record on this path.
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }

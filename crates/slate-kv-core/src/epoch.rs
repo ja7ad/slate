@@ -237,9 +237,11 @@ async fn load_best_checkpoint_async<F: AsyncFlash>(
     flash: &mut F,
     s: &mut impl Sealer,
     out_buf: &mut [u8],
+    slots_verified: &mut u8,
 ) -> Result<Option<(CheckpointHeader, [u8; 32], u8, usize)>, Error> {
     let mut best: Option<(CheckpointHeader, [u8; 32], u8, usize)> = None;
     let mut any_non_empty = false;
+    *slots_verified = 0;
 
     for slot in 0..(CKPT_SLOTS as u8) {
         let block_addr = crate::config::ckpt_slot_addr(slot, flash.block_size());
@@ -298,6 +300,7 @@ async fn load_best_checkpoint_async<F: AsyncFlash>(
             )
             .is_ok()
             {
+                *slots_verified += 1;
                 let is_better = match &best {
                     Some((best_hdr, _, _, _)) => hdr.epoch > best_hdr.epoch,
                     None => true,
@@ -335,6 +338,16 @@ pub struct MountInfo {
     pub ckpt_write_offset: u32,
     /// Segment sequence at checkpoint time; the GC reclaim watermark.
     pub ckpt_seg_seq: u64,
+    /// How many of the `CKPT_SLOTS` checkpoint slots held a checkpoint that read
+    /// back and passed its AEAD check.
+    ///
+    /// Mount reads and verifies *every* populated slot before picking the newest,
+    /// so this is what separates the fixed part of mount's read cost from the
+    /// part that scales with the replay tail. It is bounded by `CKPT_SLOTS`, so it
+    /// does not make mount grow with volume — but a reader comparing two mount
+    /// measurements needs to know which of them paid for one slot and which for
+    /// two.
+    pub ckpt_slots_verified: u8,
 }
 
 pub async fn mount_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
@@ -348,7 +361,12 @@ pub async fn mount_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
     }
 
     // (a) load newest valid checkpoint: try both slots, verify AEAD, take max epoch.
-    let ckpt_opt = load_best_checkpoint_async(flash, s, out_buf).await?;
+    // Every populated slot is read in full and AEAD-verified, so the *number* of
+    // populated slots is a real (bounded) term in mount's read cost, not a
+    // detail: a volume that has sealed at least CKPT_SLOTS times pays for all of
+    // them on every mount.
+    let mut ckpt_slots_verified = 0u8;
+    let ckpt_opt = load_best_checkpoint_async(flash, s, out_buf, &mut ckpt_slots_verified).await?;
 
     let (ckpt, d_ckpt, slot, plain_len) = match ckpt_opt {
         Some(c) => c,
@@ -401,6 +419,7 @@ pub async fn mount_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
         plain_len,
         ckpt_write_offset: ckpt.write_offset,
         ckpt_seg_seq: ckpt.seg_seq,
+        ckpt_slots_verified,
     })
 }
 

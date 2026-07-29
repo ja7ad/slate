@@ -9,7 +9,7 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![no_std](https://img.shields.io/badge/rust-no__std-green.svg)](crates/slate-kv-core)
 
-SLATE is a single-device key-value engine for edge computing, from bare-metal microcontrollers like the ESP32 up to boards like the Raspberry Pi. It's built around four goals that usually fight each other: a tiny memory footprint, good performance, low energy use, and real at-rest security.
+SLATE is a key-value database engine for edge computing, from bare-metal microcontrollers like the ESP32 up to boards like the Raspberry Pi. It's built around four goals that usually fight each other: a tiny memory footprint, good performance, low energy use, and real at-rest security.
 
 We don't claim to beat every engine on every axis at once — that's not possible. Instead SLATE composes well-understood primitives (log-structured storage, AEAD, cuckoo hashing, Reed-Solomon parity) into a design whose guarantees are proven rather than assumed, and picks concrete operating points on the resulting trade-off curve.
 
