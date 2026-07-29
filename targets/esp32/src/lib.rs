@@ -34,6 +34,56 @@ impl<T> SyncBuffer<T> {
     }
 }
 
+/// Erase-block size of the SPI NOR part on every supported ESP32 variant.
+pub const FLASH_BLOCK_SIZE: usize = 4096;
+
+/// First byte of the SLATE data region inside the flash chip.
+///
+/// Must clear the bootloader, partition table and application image. On the
+/// 4 MiB parts these demos target, the app lives below 1 MiB.
+pub const SLATE_FLASH_BASE: u32 = 0x100000;
+
+/// Length of the SLATE data region: 2 MiB, ending exactly at
+/// [`COUNTER_FLASH_ADDR`] so the best-effort rollback counter never shares an
+/// erase sector with log data.
+///
+/// This is **not** a free parameter. `slate-kv-core` reserves the superblock
+/// plus all `CKPT_SLOTS` checkpoint slots below the first byte the append log
+/// may use — `config::data_base_offset(4096)`, which is 540 672 bytes for the
+/// current format (`MAX_CKPT_LEN` = 262 276, two slots of 65 blocks each). A
+/// region shorter than that leaves the write head permanently past
+/// `capacity()`, so every `program` after mount returns
+/// [`EspFlashError::OutOfBounds`] and the volume silently accepts nothing —
+/// which is exactly the "flash does not work" symptom. The old value here was
+/// `4096 * 128` (524 288 bytes), i.e. 16 384 bytes short of the minimum.
+///
+/// Use [`slate_region_ok`] to check the invariant at startup rather than
+/// trusting this constant to stay in sync with the format.
+pub const SLATE_FLASH_LEN: u32 = 0x200000;
+
+/// Returns `true` if a region of `len` bytes with 4 KiB blocks can hold the
+/// reserved checkpoint layout plus at least `min_segments` GC segments.
+///
+/// Call this at startup: a region that fails this check cannot store a single
+/// record, and the failure otherwise shows up only as an opaque `Io` error on
+/// the first commit.
+pub fn slate_region_ok(len: u32, min_segments: u32) -> bool {
+    let data_base = slate_kv_core::config::data_base_offset(FLASH_BLOCK_SIZE);
+    let need = data_base as u64
+        + min_segments as u64 * slate_kv_core::config::SEG_BYTES as u64;
+    (len as u64) >= need
+}
+
+/// Number of whole GC segments that fit above the reserved region in `len`
+/// bytes. This is the largest `SegTable` the region can actually address.
+pub fn slate_segment_capacity(len: u32) -> u32 {
+    let data_base = slate_kv_core::config::data_base_offset(FLASH_BLOCK_SIZE);
+    if len <= data_base {
+        return 0;
+    }
+    (len - data_base) / slate_kv_core::config::SEG_BYTES as u32
+}
+
 #[derive(Debug)]
 pub enum EspFlashError {
     StorageError,
@@ -49,7 +99,30 @@ pub struct EspFlash<'a> {
 }
 
 impl<'a> EspFlash<'a> {
+    /// Maps a SLATE data region at `[base, base + len)`.
+    ///
+    /// # Panics
+    ///
+    /// If `len` cannot hold the reserved checkpoint layout plus one GC segment.
+    /// This is a configuration error that is otherwise undiagnosable on-device:
+    /// mount succeeds, the write head sits above `capacity()`, and every commit
+    /// fails with a bare `Io`. Failing here names the actual problem.
     pub fn new(base: u32, len: u32, flash: esp_hal::peripherals::FLASH<'a>) -> Self {
+        if !slate_region_ok(len, 1) {
+            let data_base = slate_kv_core::config::data_base_offset(FLASH_BLOCK_SIZE);
+            esp_println::println!(
+                "EspFlash: region too small: len={} but format reserves {} before the \
+                 first log byte and needs {} more for one segment",
+                len,
+                data_base,
+                slate_kv_core::config::SEG_BYTES
+            );
+            panic!("EspFlash region too small for the SLATE on-flash format");
+        }
+        debug_assert!(
+            base + len <= COUNTER_FLASH_ADDR,
+            "SLATE data region overlaps the rollback-counter sector"
+        );
         Self {
             base,
             len,
@@ -139,11 +212,10 @@ pub enum EspCounterError {
 
 /// Flash byte offset where the best-effort rollback counter persists its value
 /// (its own 4 KiB erase sector). This MUST lie outside every `EspFlash` data
-/// region so the two never write the same sector; the demo binaries map the log
-/// at `[0x100000, 0x180000)`, well below this address. Only referenced by the
-/// `counter-efuse` persistence path.
-#[cfg(feature = "counter-efuse")]
-const COUNTER_FLASH_ADDR: u32 = 0x300000;
+/// region so the two never write the same sector. The demo binaries map the log
+/// at `[SLATE_FLASH_BASE, SLATE_FLASH_BASE + SLATE_FLASH_LEN)`, which ends
+/// exactly here — see the debug assertion in [`EspFlash::new`].
+pub const COUNTER_FLASH_ADDR: u32 = 0x300000;
 
 pub struct EspCounter {
     val: u64,

@@ -15,10 +15,52 @@ steps:
   - wait-serial: "slate> "
   - write-serial: "put a 1\n"
   - wait-serial: "slate> "
+  # `ack <seq>` is printed only after the commit marker is durable, so this line
+  # is the assertion that a record actually reached flash. Before the flash
+  # region fix this printed `err commit Io`: the append head sat above
+  # capacity() because the mapped region (512 KiB) was smaller than
+  # data_base_offset(4096) = 540 672 B.
   - write-serial: "commit\n"
   - wait-serial: "ack 1"
   - wait-serial: "slate> "
+  # Read back after the commit: proves the record is readable from flash and
+  # that the index offset survived, not just that the write returned Ok.
+  - write-serial: "get a\n"
+  - wait-serial: "1"
+  - wait-serial: "slate> "
+  # `del` appends a tombstone to the COLD log. That log used to start at
+  # write_offset 0 — inside the checkpoint region — so this commit failed
+  # ProgramWithoutErase. Reaching `ack 2` proves the cold head is placed above
+  # the reserved region too.
   - write-serial: "del a\n"
   - wait-serial: "slate> "
   - write-serial: "commit\n"
   - wait-serial: "ack 2"
+  - wait-serial: "slate> "
+  - write-serial: "get a\n"
+  - wait-serial: "(not found)"
+  - wait-serial: "slate> "
+  # Θ-trigger path: `seal` sets records_in_epoch = THETA and commits, and
+  # `commit_async` returns early when the batch is empty — so put a record
+  # first, otherwise `OK` would print without a checkpoint ever being written.
+  # This programs a checkpoint into the reserved slots and then advances the
+  # counter, exercising the write-ahead ordering on real flash.
+  - write-serial: "put b 2\n"
+  - wait-serial: "slate> "
+  - write-serial: "seal\n"
+  - wait-serial: "OK"
+  - wait-serial: "slate> "
+  # The seal opened epoch e+1 and re-anchored the chain. A record written and
+  # read back after it proves the new epoch's record key is in use and the
+  # index still resolves — the failure mode that motivated the epoch
+  # discriminator in the record header.
+  - write-serial: "put c 3\n"
+  - wait-serial: "slate> "
+  - write-serial: "commit\n"
+  - wait-serial: "ack"
+  - wait-serial: "slate> "
+  - write-serial: "get c\n"
+  - wait-serial: "3"
+  - wait-serial: "slate> "
+  - write-serial: "stats\n"
+  - wait-serial: "stats:"

@@ -13,8 +13,6 @@ SLATE is a single-device key-value engine for edge computing, from bare-metal mi
 
 We don't claim to beat every engine on every axis at once — that's not possible. Instead SLATE composes well-understood primitives (log-structured storage, AEAD, cuckoo hashing, Reed-Solomon parity) into a design whose guarantees are proven rather than assumed, and picks concrete operating points on the resulting trade-off curve.
 
----
-
 ## Key features
 
 - **Freshness-bound O(1) authenticated log** — whole-store tamper-evidence plus epoch-granular rollback protection via a hardware monotonic counter. Chain updates and boot-time freshness checks are both O(1) (G1–G3 in the formal spec).
@@ -23,8 +21,6 @@ We don't claim to beat every engine on every axis at once — that's not possibl
 - **Proven prefix-durability** — no acknowledged write is ever lost across arbitrary power failures, and recovery after a crash is bounded to a constant O(Θ) replay from the last checkpoint.
 - **Bad-block tolerance** — Reed–Solomon RS(n,k) erasure coding over GF(2⁸) plus per-batch XOR parity protect both sealed segments and the open head segment, without adding overhead to the write hot path.
 - **Runs everywhere** — a heapless `no_std` core, a `std` wrapper for POSIX systems, a C ABI, and a bare-metal `esp-hal` firmware target for the ESP32.
-
----
 
 ## Quickstart
 
@@ -92,40 +88,9 @@ cd targets/esp32
 cargo build --release --bin kv_demo --target riscv32imc-unknown-none-elf
 ```
 
----
-
-## Formal spec & benchmarks
-
-- [`docs/SLATE_FORMAL_SPECIFICATION.md`](docs/SLATE_FORMAL_SPECIFICATION.md) has the full formal model: proofs of prefix-durability, index reconstructibility, security reductions, and the cost models.
-- [`docs/slate_qemu_benchmarks.md`](docs/slate_qemu_benchmarks.md) has empirical results from the QEMU harness — crash Monte-Carlo runs, write-amplification under skewed workloads, and energy sweeps.
-
-If you're deploying to a high-throughput server where active tamper-resistance and a tight RAM budget aren't requirements, a general-purpose engine like RocksDB or SQLite will likely give you more raw I/O throughput. SLATE is built for edge environments where tamper-evidence, crash-safety, and tight RAM budgets actually matter.
-
----
-
-
-## Citation
-
-If you use SLATE or reference its formal specification, correctness proofs, or energy models, please cite:
-
-```bibtex
-@techreport{slate2026formal,
-  title       = {SLATE: A Provably Secure, Ultra-Light, Low-Power Key--Value Engine for Edge Devices},
-  subtitle    = {Formal model, correctness and security theorems, cost models, and a Pareto-optimal operating point},
-  author      = {Javad Rajabzadeh},
-  year        = {2026},
-  institution = {SLATE Project},
-  note        = {Available at docs/SLATE_FORMAL_SPECIFICATION.md}
-}
-```
-
----
-
 ## Contributing
 
 Contributions are welcome — see [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a PR or issue.
-
----
 
 ## License
 

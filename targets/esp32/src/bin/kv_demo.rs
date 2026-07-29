@@ -29,7 +29,11 @@ fn main() -> ! {
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
     println!("kv_demo main started");
 
-    let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
+    let mut flash = EspFlash::new(
+        slate_esp32::SLATE_FLASH_BASE,
+        slate_esp32::SLATE_FLASH_LEN,
+        peripherals.FLASH,
+    );
     let mut counter = EspCounter::new();
 
     let dev_key = slate_kv_crypto::keys::DeviceKey([0u8; 32]);
@@ -116,6 +120,11 @@ fn main() -> ! {
         b_commit: 8,
     };
 
+    // `HeadState` is not `Copy`, and it is moved into `log_hot` below, so read
+    // the cold log's starting position out before constructing the engine.
+    let cold_write_offset = head_state.write_offset;
+    let cold_block_idx = head_state.block_idx;
+
     let rng_seed = engine_state.epoch.max(1) ^ 42;
     let mut slate = Slate {
         flash: slate_kv_hal::BlockingFlash(flash),
@@ -129,13 +138,19 @@ fn main() -> ! {
         log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
+                seg_seq: 1,
+                // The cold log carries GC re-appends and tombstones and is
+                // committed unconditionally alongside the hot log, so it must
+                // start above the checkpoint region too. Leaving it at 0
+                // programmed the live checkpoint pages on the first `del`.
+                write_offset: cold_write_offset,
+                block_idx: cold_block_idx,
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),
-        segs: SegTable::new(128),
+        segs: SegTable::new(slate_esp32::slate_segment_capacity(
+            slate_esp32::SLATE_FLASH_LEN,
+        )),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),

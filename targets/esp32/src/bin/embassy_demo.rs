@@ -82,9 +82,13 @@ fn main() -> ! {
     // spawner.spawn(heartbeat_task()).unwrap();
     // spawner.spawn(jitter_logger_task()).unwrap();
 
-    let flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
+    let flash = EspFlash::new(
+        slate_esp32::SLATE_FLASH_BASE,
+        slate_esp32::SLATE_FLASH_LEN,
+        peripherals.FLASH,
+    );
     let counter = EspCounter::new();
-    
+
     let mut async_flash = BlockingFlash(flash);
     let mut async_counter = BlockingCounter(counter);
 
@@ -123,10 +127,26 @@ fn main() -> ! {
             }
         };
 
+    // The append log must never overlap the reserved superblock/checkpoint
+    // region. A fresh volume, or a checkpoint written before this rule existed,
+    // leaves `write_offset` at 0; appending there programs the live checkpoint
+    // pages and every commit fails `ProgramWithoutErase`.
+    let data_base = slate_kv_core::config::data_base_offset(4096);
+    if head_state.write_offset < data_base {
+        head_state.write_offset = data_base;
+        head_state.block_idx = data_base / 4096;
+    }
+
+    // Only address segments that actually fit above the reserved region;
+    // `SegTable::new(128)` would let the compactor pick a victim whose base
+    // address lies past `capacity()`.
+    let num_segments = slate_esp32::slate_segment_capacity(slate_esp32::SLATE_FLASH_LEN);
+
     let hot_buf = HOT_BUF.take();
     let cold_buf = COLD_BUF.take();
     let index_slots = INDEX_SLOTS.take();
-    
+
+
     let sched_cfg = SchedCfg {
         auto_b: false,
         fixed_cost_uj: 1000,
@@ -136,6 +156,11 @@ fn main() -> ! {
         b_max: 128,
         b_commit: 8,
     };
+
+    // `HeadState` is not `Copy`, and it is moved into `log_hot` below, so read
+    // the cold log's starting position out before constructing the engine.
+    let cold_write_offset = head_state.write_offset;
+    let cold_block_idx = head_state.block_idx;
 
     let rng_seed = engine_state.epoch.max(1) ^ 42;
     let mut slate = Slate {
@@ -150,13 +175,15 @@ fn main() -> ! {
         log_cold: slate_kv_core::log::Log::new(
             cold_buf,
             HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
+                seg_seq: 1,
+                // Committed unconditionally alongside the hot log, so it must
+                // also start above the reserved checkpoint region.
+                write_offset: cold_write_offset,
+                block_idx: cold_block_idx,
             },
         ),
         index: Index::new(index_slots, 2048),
-        segs: SegTable::new(128),
+        segs: SegTable::new(num_segments),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
@@ -166,25 +193,19 @@ fn main() -> ! {
     };
 
     println!("Slate mounted. Running test loop...");
-    let mut i = 0;
+    let mut i: u32 = 0;
     loop {
         let key = b"async_test_key";
         let val = b"async_test_value";
-        let seq = slate.engine.next_seq;
-        match slate.log_hot.append(
-            seq,
-            slate.engine.epoch,
-            slate_kv_core::config::OP_PUT,
-            key,
-            val,
-            &mut slate.sealer,
-            &mut slate.engine.chain,
-        ) {
-            Ok((_, offset)) => {
-                slate.engine.next_seq += 1;
+
+        // `append_hot` keeps `engine.records_in_epoch` and the sequence counter
+        // in step; the raw `log_hot.append` used here before did not, so the Θ
+        // epoch-seal trigger never fired.
+        match slate.append_hot(slate_kv_core::config::OP_PUT, key, val) {
+            Ok(offset) => {
                 let _ = slate.index_update_offset(key, offset);
                 i += 1;
-                if i % 100 == 0 {
+                if i.is_multiple_of(100) {
                     println!("Appended {} records", i);
                 }
             }
@@ -192,16 +213,35 @@ fn main() -> ! {
                 println!("Append error: {:?}", e);
             }
         }
-        
-        if let Some(_deadline) = slate.next_commit_deadline_ms(i as u64) {
-            slate_kv_core::task::block_on(slate.commit_async()).unwrap();
-        } else {
-            // Wait
+
+        // Tell the scheduler an op happened and commit when it says to. The
+        // previous code consulted `next_commit_deadline_ms` without ever calling
+        // `sched.on_append`, so `ops_since_commit` stayed 0, the deadline was
+        // always `None`, and nothing was ever committed: the 4 KiB batch buffer
+        // filled after ~55 records and every later append returned `BatchFull`.
+        // `now_ms` is a synthetic clock — one tick per record — which is enough
+        // to exercise both the b_commit and deadline triggers without a timer
+        // peripheral wired up.
+        let now_ms = i as u64;
+        if slate.sched.on_append(now_ms) {
+            if let Err(e) = slate_kv_core::task::block_on(slate.commit_async()) {
+                println!("Commit error: {:?}", e);
+            }
         }
-        
-        if i % 1000 == 0 {
-            slate_kv_core::task::block_on(slate.seal_epoch_now_async()).unwrap();
-            slate_kv_core::task::block_on(slate.compact_async()).unwrap();
+
+        if i.is_multiple_of(1000) {
+            // Flush the batch first: `seal_epoch_now_async` checkpoints the
+            // current `write_offset`, so an uncommitted batch would be replayed
+            // as free space by the next mount.
+            if let Err(e) = slate_kv_core::task::block_on(slate.commit_async()) {
+                println!("Commit-before-seal error: {:?}", e);
+            }
+            if let Err(e) = slate_kv_core::task::block_on(slate.seal_epoch_now_async()) {
+                println!("Seal error: {:?}", e);
+            }
+            if let Err(e) = slate_kv_core::task::block_on(slate.compact_async()) {
+                println!("Compact error: {:?}", e);
+            }
         }
     }
 }

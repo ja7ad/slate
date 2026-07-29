@@ -28,7 +28,11 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
 
-    let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
+    let mut flash = EspFlash::new(
+        slate_esp32::SLATE_FLASH_BASE,
+        slate_esp32::SLATE_FLASH_LEN,
+        peripherals.FLASH,
+    );
     let mut counter = EspCounter::new();
 
     let dev_key = slate_kv_crypto::keys::DeviceKey([0x53u8; 32]); // Node master key
@@ -64,6 +68,10 @@ fn main() -> ! {
         b_commit: 8,
     };
 
+    // First byte the append log may use; `block_idx` must track it (540 672 /
+    // 4096 = block 132), not stay at 0.
+    let data_base = slate_kv_core::config::data_base_offset(4096);
+
     let rng_seed = engine_state.epoch.max(1) ^ 42;
     let mut slate = Slate {
         flash: slate_kv_hal::BlockingFlash(flash),
@@ -76,20 +84,24 @@ fn main() -> ! {
                 seg_seq: 0,
                 // Start the append log above the checkpoint region so commits
                 // never program the live checkpoint pages.
-                write_offset: slate_kv_core::config::data_base_offset(4096),
-                block_idx: 0,
+                write_offset: data_base,
+                block_idx: data_base / 4096,
             },
         ),
         log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
+                seg_seq: 1,
+                // Committed unconditionally alongside the hot log, so it must
+                // also start above the reserved checkpoint region.
+                write_offset: data_base,
+                block_idx: data_base / 4096,
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),
-        segs: SegTable::new(128),
+        segs: SegTable::new(slate_esp32::slate_segment_capacity(
+            slate_esp32::SLATE_FLASH_LEN,
+        )),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
