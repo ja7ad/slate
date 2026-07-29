@@ -137,6 +137,51 @@ fn log_exhaustion_is_diagnosable_and_lossless() {
     );
 }
 
+/// Approaching exhaustion must not thrash epoch seals.
+///
+/// An epoch seal costs a full checkpoint (33 KiB and 9 erases at default
+/// geometry). `reserve_space_async` seals when victim selection comes up empty,
+/// but with zero `Sealed` segments a seal *cannot* produce a victim — so an
+/// unguarded seal there fires on every commit once space runs low. Observed on
+/// the C3 before the guard: 13 checkpoints in the last 112 records, epoch racing
+/// 8 -> 25, and write amplification climbing 2.7435 -> 3.6163 while reclaiming
+/// nothing.
+#[test]
+fn no_epoch_seal_thrash_near_exhaustion() {
+    let db = fresh("./test_db_esp_thrash", 2 * 1024 * 1024);
+    let val = [b'v'; 16];
+
+    let mut epochs = Vec::new();
+    for i in 0..20000u32 {
+        if db.put(b"async_test_key", &val).is_err() {
+            break;
+        }
+        if i % 1000 == 0 {
+            epochs.push(db.epoch());
+        }
+    }
+    let _ = db.commit();
+
+    let st = db.stats();
+    let epoch = db.epoch();
+
+    // Reclaim must actually have happened — otherwise this test would pass
+    // trivially on an engine where GC never runs.
+    assert!(
+        st.gc_segments_freed > 0,
+        "no segment was reclaimed, so this test is not exercising the guard: {st:?}"
+    );
+
+    // A seal per ~1000 records is the Θ/deadline-driven norm here; dozens would
+    // mean the reserve path is sealing on every commit.
+    assert!(
+        epoch < 15,
+        "epoch reached {epoch} — epoch seals are thrashing (checkpoints={} B, epochs seen {:?})",
+        st.ckpt_bytes,
+        epochs
+    );
+}
+
 /// The space freed by reclaim is not yet reusable by the append head.
 ///
 /// `SEG_BYTES` is 12 erase blocks (49 152 B) of which only the first 8 are data

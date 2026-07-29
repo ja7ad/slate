@@ -438,7 +438,7 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         let page = self.flash.page_size() as u32;
         let seg = crate::config::SEG_BYTES as u32;
         let rec = (REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN) as u32;
-        let batch = rec.saturating_mul(self.sched.cfg.b_commit.max(1) as u32);
+        let batch = rec.saturating_mul(self.sched.cfg.b_commit.max(1));
         let need = (batch.div_ceil(page) + 3) * page;
         core::cmp::min(need, seg / 4)
     }

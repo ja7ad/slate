@@ -133,6 +133,7 @@ impl CommitBytes {
     }
 }
 
+/// The append-only logical log.
 pub struct Log<'a, F> {
     /// Head state.
     pub head: HeadState,
