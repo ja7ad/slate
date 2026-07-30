@@ -2,10 +2,6 @@
 
 **Document:** implementation specification and conformance report for the SLATE
 embedded key–value engine.
-**Implementation:** <https://github.com/ja7ad/slate> (Rust workspace, version 0.4.0).
-**Revision described:** git `970324f` (`970324f20f3fc7d7df4249c4d51122f9a1a5e61c`, 2026-07-29),
-plus the working-tree measurement harnesses named in
-[Section 6](#6-conformance-and-measured-behaviour).
 
 This document is the implementation-side companion to the formal treatment of SLATE.
 The formal paper carries the threat model, the theorems and their proofs; this
