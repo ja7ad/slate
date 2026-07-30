@@ -103,7 +103,7 @@ int main(void) {
         .max_keys       = 8192,
         .b_commit       = 8,
         .theta          = 0,     /* 0 = use the built-in default */
-        .profile        = 1,     /* Pi */
+        .profile        = SLATE_PROFILE_PI,   /* 0; ESP32 is 1 */
     };
 
     struct slate_db *db = NULL;
@@ -156,19 +156,19 @@ cargo build --release --bin kv_demo \
 
 ## Repository layout
 
-| Path | Contents |
-|---|---|
-| `crates/slate-kv-core` | Heapless `no_std` engine: log, index, epochs, GC, recovery |
-| `crates/slate-kv` | `std` wrapper: `Db`, file-backed flash, POSIX durability |
-| `crates/slate-kv-crypto` | AEAD sealer and key derivation |
-| `crates/slate-kv-erasure` | Reed–Solomon over GF(2⁸) |
-| `crates/slate-kv-hal` | Flash / counter traits and blocking↔async adapters |
-| `crates/slate-kv-ffi` | Stable C ABI and generated `slate.h` |
-| `crates/slate-kv-sim` | Simulated flash, crash injection, study harnesses |
-| `crates/slate-kv-cli` | Command-line tool |
-| `targets/esp32` | Bare-metal `esp-hal` firmware, QEMU and Wokwi harnesses |
-| `bind/go` | Go / TinyGo binding over the C ABI |
-| `docs/specification.md` | Normative format, semantics and conformance data |
+| Path                      | Contents                                                   |
+|---------------------------|------------------------------------------------------------|
+| `crates/slate-kv-core`    | Heapless `no_std` engine: log, index, epochs, GC, recovery |
+| `crates/slate-kv`         | `std` wrapper: `Db`, file-backed flash, POSIX durability   |
+| `crates/slate-kv-crypto`  | AEAD sealer and key derivation                             |
+| `crates/slate-kv-erasure` | Reed–Solomon over GF(2⁸)                                   |
+| `crates/slate-kv-hal`     | Flash / counter traits and blocking↔async adapters         |
+| `crates/slate-kv-ffi`     | Stable C ABI and generated `slate.h`                       |
+| `crates/slate-kv-sim`     | Simulated flash, crash injection, study harnesses          |
+| `crates/slate-kv-cli`     | Command-line tool                                          |
+| `targets/esp32`           | Bare-metal `esp-hal` firmware, QEMU and Wokwi harnesses    |
+| `bind/go`                 | Go / TinyGo binding over the C ABI                         |
+| `docs/specification.md`   | Normative format, semantics and conformance data           |
 
 ## Development
 

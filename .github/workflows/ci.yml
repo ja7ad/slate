@@ -69,10 +69,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c llvm-tools
+      # Prebuilt binary: `cargo install cargo-llvm-cov` compiles from source and
+      # dominated this job's runtime.
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       - name: Generate coverage report
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        # --ignore-filename-regex keeps the measurement harnesses and study
+        # binaries out of the denominator. They are `fn main`s that run a sweep
+        # and print a CSV for docs/specification.md; `cargo test` never invokes
+        # them, so counting them made a PR that ADDED measurement tooling look
+        # like a double-digit coverage regression. codecov.yml carries the same
+        # exclusions for the report side; this flag applies them at collection
+        # so the summary printed in the job log agrees with Codecov.
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info \
+            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
+      - name: Coverage summary
+        run: |
+          cargo llvm-cov report --summary-only \
+            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -255,9 +272,23 @@ jobs:
           cd bind/go
           # Separating compile from run localises the fault: if this succeeds
           # and execution still segfaults, the problem is runtime coexistence
-          # (fallback 2/3), not the link line (fallback 1).
-          if tinygo test -c -o /tmp/slate_tinygo_test ./... ; then
-            echo "compile+link OK -> running"
+          # (fallback 2/3), not the link line (fallback 1). It compiled and
+          # linked cleanly and then died in TestC1 — which only opens and
+          # closes a database — so the link line was never the problem.
+          #
+          # ROOT CAUSE: stack depth. slate_open needs >= 52 KiB of stack
+          # (measured on macOS/arm64 by running it on pthreads with bounded
+          # stacks: SIGSEGV at 48 KiB, clean at 52 KiB; every other operation
+          # fits inside that same budget, so `open` is the whole cost). Go's
+          # testing framework runs each test function on its own goroutine, and
+          # TinyGo's default goroutine stack is far below that, so the very
+          # first cgo call into the engine walks off the end of the stack.
+          # Plain `go test` passes because its goroutines grow on demand.
+          #
+          # -stack-size raises the per-goroutine stack. 1 MB is generous
+          # against the measured 52 KiB and matches what a normal thread gets.
+          if tinygo test -c -stack-size=1MB -o /tmp/slate_tinygo_test ./... ; then
+            echo "compile+link OK -> running with 1MB goroutine stacks"
             /tmp/slate_tinygo_test -test.v
           else
             echo "compile/link FAILED — this is doc 017 §7 fallback 1 territory"

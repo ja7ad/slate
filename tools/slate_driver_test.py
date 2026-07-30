@@ -64,7 +64,8 @@ ERR_NAME = {
     SLATE_ERR_IO: "IO",
 }
 
-PROFILE_ESP32, PROFILE_PI = 0, 1
+# Per slate.h: SLATE_PROFILE_PI = 0, SLATE_PROFILE_ESP32 = 1.
+PROFILE_PI, PROFILE_ESP32 = 0, 1
 
 
 class SlateOptions(ctypes.Structure):
