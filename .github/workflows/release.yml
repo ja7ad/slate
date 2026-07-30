@@ -45,6 +45,30 @@ jobs:
       - name: Build ESP32-C3 Firmware
         run: |
           set -euo pipefail
+          # Portable SHA-256. No single tool is present on all three runner
+          # images: macOS has `shasum` but not `sha256sum`, Linux has both, and
+          # Windows (Git Bash) has NEITHER -- `shasum: command not found` is
+          # what failed the windows-latest leg after it had already packaged
+          # every file correctly. Python 3 ships on all three, so it is the
+          # backstop. All three paths emit the same "<hash>  <name>" format, so
+          # the .sha256 file verifies with `sha256sum -c` regardless of which
+          # ran.
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1"
+            else
+              python3 -c "
+          import hashlib, sys
+          h = hashlib.sha256()
+          with open(sys.argv[1], 'rb') as f:
+              for chunk in iter(lambda: f.read(1 << 20), b''):
+                  h.update(chunk)
+          print(h.hexdigest() + '  ' + sys.argv[1])
+          " "$1"
+            fi
+          }
           cd targets/esp32
           cargo build --release --bin kv_demo --no-default-features \
             --features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
@@ -75,7 +99,7 @@ jobs:
             slate-esp32c3-flash.img \
             target/riscv32imc-unknown-none-elf/release/kv_demo \
             LICENSE-MIT LICENSE-APACHE
-          shasum -a 256 "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
+          sha256_of "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
             > "slate-esp32c3-${{ github.ref_name }}.tar.gz.sha256"
       - name: Upload ESP32 Release Asset
         uses: softprops/action-gh-release@v2
@@ -129,6 +153,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Portable SHA-256. No single tool is present on all three runner
+          # images: macOS has `shasum` but not `sha256sum`, Linux has both, and
+          # Windows (Git Bash) has NEITHER -- `shasum: command not found` is
+          # what failed the windows-latest leg after it had already packaged
+          # every file correctly. Python 3 ships on all three, so it is the
+          # backstop. All three paths emit the same "<hash>  <name>" format, so
+          # the .sha256 file verifies with `sha256sum -c` regardless of which
+          # ran.
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1"
+            else
+              python3 -c "
+          import hashlib, sys
+          h = hashlib.sha256()
+          with open(sys.argv[1], 'rb') as f:
+              for chunk in iter(lambda: f.read(1 << 20), b''):
+                  h.update(chunk)
+          print(h.hexdigest() + '  ' + sys.argv[1])
+          " "$1"
+            fi
+          }
           OUT="target/${{ matrix.target }}/release"
           mkdir -p dist/include dist/lib
           cp crates/slate-kv-ffi/include/slate.h dist/include/
@@ -178,7 +226,7 @@ jobs:
           EOF
           echo "=== packaged ==="; find dist -type f | sort
           tar -czf "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz" -C dist .
-          shasum -a 256 "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz" \
+          sha256_of "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz" \
             > "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz.sha256"
       # Prove the artifact is usable rather than merely present: compile and run
       # the C smoke test against the packaged header and static library.
