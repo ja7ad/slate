@@ -93,9 +93,12 @@ fn main() -> ! {
             HeadState {
                 seg_seq: 1,
                 // Committed unconditionally alongside the hot log, so it must
-                // also start above the reserved checkpoint region.
-                write_offset: data_base,
-                block_idx: data_base / 4096,
+                // also start above the reserved checkpoint region — and in a
+                // DIFFERENT segment from the hot log, since reclaim erases a
+                // whole segment and would otherwise take the other log's
+                // records with it.
+                write_offset: data_base + slate_kv_core::config::SEG_BYTES as u32,
+                block_idx: (data_base + slate_kv_core::config::SEG_BYTES as u32) / 4096,
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),

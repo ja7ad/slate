@@ -15,23 +15,20 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Wait until the firmware has actually booted, instead of sleeping a fixed 1 s.
-# kv_demo prints its banner and prompt on startup, so polling the QEMU log for
-# it returns as soon as the guest is ready — typically well under the 1 s the
-# fixed sleeps assumed, and it also tolerates a CI runner that is slower.
-# BOOT_TIMEOUT bounds the wait so a genuinely dead guest still fails fast.
-BOOT_TIMEOUT="${BOOT_TIMEOUT:-15}"
+# Give the firmware time to boot before opening the serial port.
+#
+# This deliberately sleeps rather than polling for the banner: qemu_run.sh runs
+# QEMU with `-serial pty`, so ALL firmware output goes to the pseudo-terminal and
+# never reaches qemu.log. A grep on qemu.log can therefore never see the banner —
+# it would burn its whole timeout on every boot and then continue anyway. The
+# only reader of the banner is serial_drive.py, which already waits on the PTY.
+#
+# BOOT_WAIT is tunable so a slow CI runner can be given more headroom without
+# editing the script.
+BOOT_WAIT="${BOOT_WAIT:-1}"
 
 wait_for_boot() {
-    local log="$1" deadline=$((SECONDS + BOOT_TIMEOUT))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        if grep -q "kv_demo main started" "$log" 2>/dev/null; then
-            return 0
-        fi
-        sleep 0.05
-    done
-    echo "warning: boot banner not seen in ${BOOT_TIMEOUT}s; continuing" >&2
-    return 0
+    sleep "$BOOT_WAIT"
 }
 
 echo "Running crash campaign (iters: $ITERS, attack: $ATTACK)..."

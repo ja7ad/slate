@@ -5,7 +5,12 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DIR/.."
 
 BIN="kv_demo"
-FEATURES="${FEATURES:-chip-esp32c3,counter-efuse}"
+# `metrics` is load-bearing, not optional: qemu_crash.sh's verify step asserts on
+# "commits=" from the `stats` command, and that whole block is behind
+# #[cfg(feature = "metrics")] in kv_demo.rs. Building without it makes `stats`
+# print "metrics: DISABLED" instead, so every verify times out waiting for a
+# string the firmware can never emit.
+FEATURES="${FEATURES:-chip-esp32c3,counter-efuse,metrics}"
 
 cargo build --bin $BIN --release --no-default-features --features "$FEATURES" --target riscv32imc-unknown-none-elf
 

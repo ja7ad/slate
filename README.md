@@ -108,16 +108,23 @@ int main(void) {
 
     struct slate_db *db = NULL;
     if (slate_open("./slate_db.bin", key, &opts, &db) != SLATE_OK) {
-        printf("open failed: %s\n", slate_last_error_message());
+        /* The message is written into a caller-owned buffer. Pass NULL for the
+           handle when open itself failed — there is no database to ask. */
+        char err[256];
+        slate_last_error_message(NULL, err, sizeof err);
+        printf("open failed: %s\n", err);
         return 1;
     }
 
     slate_put(db, (const uint8_t *)"key1", 4, (const uint8_t *)"val1", 4);
     slate_commit(db);
 
+    /* `vlen_inout` is in/out: set it to the buffer capacity on the way in,
+       and it comes back as the value's true length. Passing NULL for the
+       buffer turns this into a size query. */
     uint8_t buf[64];
-    size_t out_len = 0;
-    if (slate_get(db, (const uint8_t *)"key1", 4, buf, sizeof buf, &out_len) == SLATE_OK) {
+    size_t out_len = sizeof buf;
+    if (slate_get(db, (const uint8_t *)"key1", 4, buf, &out_len) == SLATE_OK) {
         printf("value: %.*s\n", (int)out_len, buf);
     }
 

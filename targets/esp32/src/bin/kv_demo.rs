@@ -140,7 +140,14 @@ fn main() -> ! {
                 // committed unconditionally alongside the hot log, so it must
                 // start above the checkpoint region too. Leaving it at 0
                 // programmed the live checkpoint pages on the first `del`.
-                write_offset: cold_write_offset,
+                //
+                // It must also start in a DIFFERENT segment from the hot log:
+                // reclaim erases a whole segment, so two logs sharing one means
+                // reclaiming it destroys the other log's records. Starting both
+                // at `cold_write_offset` put both in segment 0 — which is what
+                // the `heads_in_distinct_segments` health check reported, and
+                // it matches this head's own `seg_seq: 1`.
+                write_offset: cold_write_offset + slate_kv_core::config::SEG_BYTES as u32,
                 block_idx: cold_block_idx,
             },
         ),

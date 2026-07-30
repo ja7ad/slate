@@ -178,8 +178,11 @@ fn main() -> ! {
             HeadState {
                 seg_seq: 1,
                 // Committed unconditionally alongside the hot log, so it must
-                // also start above the reserved checkpoint region.
-                write_offset: cold_write_offset,
+                // also start above the reserved checkpoint region — and in a
+                // DIFFERENT segment from the hot log, since reclaim erases a
+                // whole segment and would otherwise take the other log's
+                // records with it.
+                write_offset: cold_write_offset + slate_kv_core::config::SEG_BYTES as u32,
                 block_idx: cold_block_idx,
             },
         ),

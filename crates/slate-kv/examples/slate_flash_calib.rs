@@ -126,15 +126,26 @@ fn main() {
             libc_fsync.push(t0.elapsed().as_nanos() as u64);
             assert_eq!(rc, 0);
 
+            // `F_FULLFSYNC` is a Darwin-only fcntl: on macOS `fsync` only pushes
+            // to the drive cache, so this is the strongest available barrier and
+            // the one `Durability::Full` uses (see file_flash.rs, which gates it
+            // the same way). Linux has no equivalent — `fsync` there is already
+            // the full barrier — so the strongest-barrier row is `fdatasync`.
             file.write_all_at(&buf, off).unwrap();
             let t0 = Instant::now();
+            #[cfg(target_os = "macos")]
             let rc = unsafe { libc::fcntl(fd, libc::F_FULLFSYNC) };
+            #[cfg(not(target_os = "macos"))]
+            let rc = unsafe { libc::fdatasync(fd) };
             libc_fullfsync.push(t0.elapsed().as_nanos() as u64);
             assert_ne!(rc, -1);
         }
         summarize("barrier_only,rust_File::sync_data", rust_sync_data);
         summarize("barrier_only,libc_fsync", libc_fsync);
+        #[cfg(target_os = "macos")]
         summarize("barrier_only,libc_fcntl_F_FULLFSYNC", libc_fullfsync);
+        #[cfg(not(target_os = "macos"))]
+        summarize("barrier_only,libc_fdatasync", libc_fullfsync);
         drop(file);
         let _ = std::fs::remove_file(&path);
     }

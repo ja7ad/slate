@@ -767,26 +767,22 @@ impl Db {
         Ok(best_val)
     }
 
+    /// Append a tombstone and make it durable before returning.
+    ///
+    /// Mirrors [`Db::put_durable`]: the tombstone is acknowledged when its
+    /// commit marker is on flash, so a power failure after this call returns
+    /// cannot resurrect the key.
+    ///
+    /// This body was previously byte-for-byte identical to [`Db::delete`] —
+    /// it committed only when the scheduler happened to fire, so the
+    /// `_durable` suffix promised a guarantee the method did not provide and
+    /// a delete could be lost across a crash.
     pub fn delete_durable(&self, key: &[u8]) -> Result<(), DbError> {
         if key.len() > slate_kv_core::config::MAX_KEY_LEN {
             return Err(DbError::InvalidArg("key too large".into()));
         }
-        let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine { slate, .. } = &mut *inner;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        let _ = slate.append_hot(OP_DEL, key, &[])?;
-
-        slate.index_remove_key(key);
-        // Counted inside `Slate::append_hot` (see the note in `put`); counting it
-        // again here double-counted every record on this path.
-        if slate.sched.on_append(now_ms) {
-            slate.commit()?;
-        }
-        Ok(())
+        self.delete(key)?;
+        self.commit()
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<(), DbError> {

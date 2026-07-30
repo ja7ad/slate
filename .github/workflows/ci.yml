@@ -182,8 +182,14 @@ jobs:
       # Delegate to scripts/wokwi_run.sh rather than reimplementing the
       # invocation here. The inlined version passed a bare
       # `--scenario kv_demo.scenario.yaml` (the file lives in wokwi/) and
-      # omitted --diagram-file and --elf, so the run never matched the
-      # scenario and always ended in the 120 s timeout (exit 42).
+      # omitted --diagram-file and --elf, and it built different features than
+      # the script.
+      #
+      # Note this was not what made the job time out: the CI log shows the
+      # scenario loading and matching its early steps before hanging. That
+      # hang was a separate bug — the scenario waited on a "stats:" line the
+      # firmware never prints (fixed in wokwi/kv_demo.scenario.yaml). The
+      # duplication is fixed here so the two invocations cannot drift again.
       - name: Run Wokwi scenario
         run: |
           if [ -z "$WOKWI_CLI_TOKEN" ]; then
