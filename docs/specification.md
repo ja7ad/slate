@@ -15,7 +15,7 @@ conformance, and the complete log of known deviations between what the project
 documents claim and what the code at this revision does.
 
 Every quantitative statement below is traceable to a file under
-`docs/proposal/data/` and to a `cargo` command that regenerates it. Where a data
+`docs/data/` and to a `cargo` command that regenerates it. Where a data
 file and a prior prose description disagree, this document follows the data file and
 says so in [Section 7.6](#76-disagreements-between-data-files-and-earlier-prose).
 
@@ -118,32 +118,32 @@ Three distinctions are marked at every table in
 [Section 6](#6-conformance-and-measured-behaviour), because conflating them is
 the commonest way an embedded storage claim becomes untrue.
 
-| Label | Meaning |
-|---|---|
-| **Measured (host)** | The real engine ran against `FileFlash`, a file-backed NOR emulation on the development host's APFS filesystem. Byte counts and page counts are exact; wall-clock times characterise the host, not a device. |
+| Label                    | Meaning                                                                                                                                                                                                                                             |
+|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Measured (host)**      | The real engine ran against `FileFlash`, a file-backed NOR emulation on the development host's APFS filesystem. Byte counts and page counts are exact; wall-clock times characterise the host, not a device.                                        |
 | **Measured (simulated)** | The real engine ran against `SimFlash`, an in-RAM NOR simulator, or against a purpose-built latency adapter. Used where a physical experiment is impractical: exhaustive erasure enumeration, deterministic crash injection, yield-span accounting. |
-| **Measured (device)** | Real ESP32-C3 silicon, real NOR flash, counters reported by the firmware over the serial link. |
-| **Modelled** | Output of a closed form or of a model that is *not* the SLATE engine (the garbage-collection study, the energy model). Useful for trends; not evidence about hardware. |
+| **Measured (device)**    | Real ESP32-C3 silicon, real NOR flash, counters reported by the firmware over the serial link.                                                                                                                                                      |
+| **Modelled**             | Output of a closed form or of a model that is *not* the SLATE engine (the garbage-collection study, the energy model). Useful for trends; not evidence about hardware.                                                                              |
 
 No number crosses between platforms. Absolute latencies measured on the host
 are host properties: see [Section 6.9](#69-throughput-and-latency-host).
 
 ### 1.5 Crate layout
 
-| Crate | `no_std` | `forbid(unsafe_code)` | Source lines | Test lines | Role |
-|---|---|---|---|---|---|
-| `slate-kv-core` | yes | yes | 3,931 | 142 | Format codec, log, index, epoch/checkpoint, GC, recovery, async engine |
-| `slate-kv-crypto` | yes | yes | 467 | 0 | HKDF key schedule, ChaCha20-Poly1305 record/checkpoint sealing, HMAC-SHA256 markers |
-| `slate-kv-erasure` | yes | yes | 372 | 0 | $\mathrm{GF}(2^8)$ arithmetic, Cauchy matrices, RS(12,8) encode/reconstruct |
-| `slate-kv-hal` | yes | yes | 473 | 0 | `Flash`, `AsyncFlash`, `MonotonicCounter`, `AsyncMonotonicCounter`, blocking bridges |
-| `slate-kv` | no | no | 1,201 | 957 | std wrapper: `Db`, `Options`, `FileFlash`, `FileCounter`, metrics plumbing |
-| `slate-kv-sim` | no | no | 1,747 | 690 | `SimFlash` simulator, fault-injection and measurement harnesses |
-| `slate-kv-cli` | no | no | 146 | 0 | `get`/`put`/`del`/`stats` command-line tool |
-| `slate-kv-ffi` | no | no | 363 | 0 | C ABI |
+| Crate              | `no_std` | `forbid(unsafe_code)` | Source lines | Test lines | Role                                                                                 |
+|--------------------|----------|-----------------------|--------------|------------|--------------------------------------------------------------------------------------|
+| `slate-kv-core`    | yes      | yes                   | 3,931        | 142        | Format codec, log, index, epoch/checkpoint, GC, recovery, async engine               |
+| `slate-kv-crypto`  | yes      | yes                   | 467          | 0          | HKDF key schedule, ChaCha20-Poly1305 record/checkpoint sealing, HMAC-SHA256 markers  |
+| `slate-kv-erasure` | yes      | yes                   | 372          | 0          | $\mathrm{GF}(2^8)$ arithmetic, Cauchy matrices, RS(12,8) encode/reconstruct          |
+| `slate-kv-hal`     | yes      | yes                   | 473          | 0          | `Flash`, `AsyncFlash`, `MonotonicCounter`, `AsyncMonotonicCounter`, blocking bridges |
+| `slate-kv`         | no       | no                    | 1,201        | 957        | std wrapper: `Db`, `Options`, `FileFlash`, `FileCounter`, metrics plumbing           |
+| `slate-kv-sim`     | no       | no                    | 1,747        | 690        | `SimFlash` simulator, fault-injection and measurement harnesses                      |
+| `slate-kv-cli`     | no       | no                    | 146          | 0          | `get`/`put`/`del`/`stats` command-line tool                                          |
+| `slate-kv-ffi`     | no       | no                    | 363          | 0          | C ABI                                                                                |
 
 Engine source total 6,444 lines; workspace source total 8,700 lines; test
 source total 1,789 lines. The ESP32 target crate is a further 1,477 lines and
-the Go binding 719 lines. Source: `docs/proposal/data/provenance.json`.
+the Go binding 719 lines. Source: `docs/data/provenance.json`.
 
 The four lower crates are the engine proper. An integrator targeting bare metal
 depends on `slate-kv-core` plus `slate-kv-hal` and supplies the two driver
@@ -187,12 +187,12 @@ the returned future MUST NOT abort an erase already latched into the die.
 
 The flash region is partitioned as follows, from offset 0 upward.
 
-| Region | Extent | Contents |
-|---|---|---|
-| Reserved | blocks $0 \dots$ `CKPT_BASE_BLOCK` $-1$ | Not used by the engine (`CKPT_BASE_BLOCK = 2`) |
-| Checkpoint slot 0 | `ckpt_slot_addr(0)`, length `MAX_CKPT_LEN` | Serialized index snapshot, AEAD-sealed |
-| Checkpoint slot 1 | `ckpt_slot_addr(1)`, length `MAX_CKPT_LEN` | Previous snapshot (`CKPT_SLOTS = 2`) |
-| Append log | `data_base_offset()` $\dots$ `capacity()` | Records, XOR parity pages, commit markers; divided into segments |
+| Region            | Extent                                     | Contents                                                         |
+|-------------------|--------------------------------------------|------------------------------------------------------------------|
+| Reserved          | blocks $0 \dots$ `CKPT_BASE_BLOCK` $-1$    | Not used by the engine (`CKPT_BASE_BLOCK = 2`)                   |
+| Checkpoint slot 0 | `ckpt_slot_addr(0)`, length `MAX_CKPT_LEN` | Serialized index snapshot, AEAD-sealed                           |
+| Checkpoint slot 1 | `ckpt_slot_addr(1)`, length `MAX_CKPT_LEN` | Previous snapshot (`CKPT_SLOTS = 2`)                             |
+| Append log        | `data_base_offset()` $\dots$ `capacity()`  | Records, XOR parity pages, commit markers; divided into segments |
 
 The slot addresses and the log base are computed from the runtime block size,
 so one binary is correct for 256 B, 4 KiB and 64 KiB block geometries:
@@ -214,7 +214,7 @@ At the shipped ESP32-C3 geometry ($B_{blk} = 4096$, `MAX_CKPT_LEN` $= 262{,}276$
 $$\text{ckpt\_blocks\_per\_slot} = \left\lceil \frac{262276}{4096} \right\rceil = 65, \qquad \text{data\_base\_offset} = (2 + 2 \cdot 65) \cdot 4096 = 540{,}672$$
 
 which matches the `data_base = 540672` reported by the device run
-(`docs/proposal/data/device_c3_analysis.json`).
+(`docs/data/device_c3_analysis.json`).
 
 ### 2.3 Segment geometry
 
@@ -255,15 +255,15 @@ header field is authenticated even though it is not encrypted.
 
 Header (`REC_HDR_LEN = 28`), little-endian throughout:
 
-| Offset | Length | Field | Type | Notes |
-|---|---|---|---|---|
-| 0 | 1 | `magic` | `u8` | `MAGIC_REC = 0x5A`; a decode with any other value is `FormatError` |
-| 1 | 8 | `seq` | `u64` | Strictly increasing, never reset |
-| 9 | 1 | `op` | `u8` | `OP_PUT = 0x00`, `OP_DEL = 0x01`; any other value is `FormatError` |
-| 10 | 2 | `fp` | `u16` | Key fingerprint, for replay-time collision resolution |
-| 12 | 2 | `klen` | `u16` | Key length; `FormatError` if `> MAX_KEY_LEN` |
-| 14 | 2 | `vlen` | `u16` | Value length; `FormatError` if `> MAX_VAL_LEN` |
-| 16 | 12 | `nonce` | `[u8; 12]` | AEAD nonce, see [Section 2.5](#25-nonce-and-key-schedule) |
+| Offset | Length | Field   | Type       | Notes                                                              |
+|--------|--------|---------|------------|--------------------------------------------------------------------|
+| 0      | 1      | `magic` | `u8`       | `MAGIC_REC = 0x5A`; a decode with any other value is `FormatError` |
+| 1      | 8      | `seq`   | `u64`      | Strictly increasing, never reset                                   |
+| 9      | 1      | `op`    | `u8`       | `OP_PUT = 0x00`, `OP_DEL = 0x01`; any other value is `FormatError` |
+| 10     | 2      | `fp`    | `u16`      | Key fingerprint, for replay-time collision resolution              |
+| 12     | 2      | `klen`  | `u16`      | Key length; `FormatError` if `> MAX_KEY_LEN`                       |
+| 14     | 2      | `vlen`  | `u16`      | Value length; `FormatError` if `> MAX_VAL_LEN`                     |
+| 16     | 12     | `nonce` | `[u8; 12]` | AEAD nonce, see [Section 2.5](#25-nonce-and-key-schedule)          |
 
 Total framed length of one record:
 
@@ -298,9 +298,9 @@ collection read records sealed under an epoch that is no longer open.
 
 The 96-bit record nonce is:
 
-| Bytes | Field |
-|---|---|
-| 0..8 | `seq` as `u64` little-endian |
+| Bytes | Field                                      |
+|-------|--------------------------------------------|
+| 0..8  | `seq` as `u64` little-endian               |
 | 8..12 | epoch discriminator as `u32` little-endian |
 
 The sequence number alone guarantees uniqueness, since it is a strictly
@@ -315,14 +315,14 @@ silently wrong plaintext. `seal_epoch` **MUST** refuse to roll past
 A commit marker is 83 bytes (`CM_LEN = 83`), authenticated with HMAC-SHA256
 under $k_{cm}$ over its own first 51 bytes.
 
-| Offset | Length | Field | Type | Notes |
-|---|---|---|---|---|
-| 0 | 1 | `magic` | `u8` | `MAGIC_CM = 0x5C` |
-| 1 | 8 | `seq_max` | `u64` | Highest sequence number this marker acknowledges |
-| 9 | 8 | `epoch` | `u64` | Epoch the batch was sealed under |
-| 17 | 2 | `xor_pages` | `u16` | Data pages covered by the preceding XOR page |
-| 19 | 32 | `chi` | `[u8; 32]` | Chain value $\chi$ after folding every record in the batch |
-| 51 | 32 | `tau_cm` | `[u8; 32]` | HMAC-SHA256 over bytes 0..51 |
+| Offset | Length | Field       | Type       | Notes                                                      |
+|--------|--------|-------------|------------|------------------------------------------------------------|
+| 0      | 1      | `magic`     | `u8`       | `MAGIC_CM = 0x5C`                                          |
+| 1      | 8      | `seq_max`   | `u64`      | Highest sequence number this marker acknowledges           |
+| 9      | 8      | `epoch`     | `u64`      | Epoch the batch was sealed under                           |
+| 17     | 2      | `xor_pages` | `u16`      | Data pages covered by the preceding XOR page               |
+| 19     | 32     | `chi`       | `[u8; 32]` | Chain value $\chi$ after folding every record in the batch |
+| 51     | 32     | `tau_cm`    | `[u8; 32]` | HMAC-SHA256 over bytes 0..51                               |
 
 Two copies of the marker are programmed on consecutive pages. Verification
 tries copy 1 and falls back to copy 2. Note the limit of that redundancy,
@@ -359,18 +359,18 @@ A checkpoint is a 76-byte plaintext header (`CKPT_HDR_LEN = 76`) acting as AEAD
 associated data, followed by the ChaCha20-Poly1305 ciphertext of the serialized
 index, followed by the 16-byte tag.
 
-| Offset | Length | Field | Type | Notes |
-|---|---|---|---|---|
-| 0 | 1 | `magic` | `u8` | `MAGIC_CKPT = 0xCF` |
-| 1 | 1 | `format_version` | `u8` | |
-| 2 | 8 | `epoch` | `u64` | Epoch this checkpoint closes |
-| 10 | 8 | `seq` | `u64` | Next sequence number at seal time |
-| 18 | 8 | `seg_seq` | `u64` | Segment allocation number at seal time |
-| 26 | 4 | `write_offset` | `u32` | Log head at seal time; tail replay starts here |
-| 30 | 2 | `n_keys` | `u16` | Live keys in the snapshot |
-| 32 | 4 | `ct_len` | `u32` | Ciphertext length; `FormatError` if `> MAX_CKPT_LEN` |
-| 36 | 32 | `chi` | `[u8; 32]` | Chain value at seal time, the anchor $D_{ckpt}$ |
-| 68 | 8 | `mc` | `u64` | Monotonic counter value observed at seal time |
+| Offset | Length | Field            | Type       | Notes                                                |
+|--------|--------|------------------|------------|------------------------------------------------------|
+| 0      | 1      | `magic`          | `u8`       | `MAGIC_CKPT = 0xCF`                                  |
+| 1      | 1      | `format_version` | `u8`       |                                                      |
+| 2      | 8      | `epoch`          | `u64`      | Epoch this checkpoint closes                         |
+| 10     | 8      | `seq`            | `u64`      | Next sequence number at seal time                    |
+| 18     | 8      | `seg_seq`        | `u64`      | Segment allocation number at seal time               |
+| 26     | 4      | `write_offset`   | `u32`      | Log head at seal time; tail replay starts here       |
+| 30     | 2      | `n_keys`         | `u16`      | Live keys in the snapshot                            |
+| 32     | 4      | `ct_len`         | `u32`      | Ciphertext length; `FormatError` if `> MAX_CKPT_LEN` |
+| 36     | 32     | `chi`            | `[u8; 32]` | Chain value at seal time, the anchor $D_{ckpt}$      |
+| 68     | 8      | `mc`             | `u64`      | Monotonic counter value observed at seal time        |
 
 The serialized index is 4 bytes per slot plus a 5-byte entry per stash slot:
 
@@ -400,26 +400,26 @@ region. The structure is specified here because closing the space-reuse gap of
 `recover::scan_segment_headers` — the ordering mechanism a circular log needs
 — already exists to read it.
 
-| Offset | Length | Field | Type | Notes |
-|---|---|---|---|---|
-| 0 | 1 | `magic` | `u8` | `MAGIC_SEG = 0x51` |
-| 1 | 1 | `format_version` | `u8` | |
-| 2 | 8 | `seg_seq` | `u64` | Segment allocation number; the circular-log ordering key |
-| 10 | 8 | `epoch` | `u64` | Epoch at segment open |
-| 18 | 8 | `minseq` | `u64` | Lowest record sequence number in the segment |
-| 26 | 1 | `sealed` | `u8` | `0xFF` open, `0x00` sealed |
-| 27 | 32 | `hdr_mac` | `[u8; 32]` | HMAC over bytes 0..27 |
+| Offset | Length | Field            | Type       | Notes                                                    |
+|--------|--------|------------------|------------|----------------------------------------------------------|
+| 0      | 1      | `magic`          | `u8`       | `MAGIC_SEG = 0x51`                                       |
+| 1      | 1      | `format_version` | `u8`       |                                                          |
+| 2      | 8      | `seg_seq`        | `u64`      | Segment allocation number; the circular-log ordering key |
+| 10     | 8      | `epoch`          | `u64`      | Epoch at segment open                                    |
+| 18     | 8      | `minseq`         | `u64`      | Lowest record sequence number in the segment             |
+| 26     | 1      | `sealed`         | `u8`       | `0xFF` open, `0x00` sealed                               |
+| 27     | 32     | `hdr_mac`        | `[u8; 32]` | HMAC over bytes 0..27                                    |
 
 ### 2.10 Magic byte registry
 
-| Value | Constant | Structure |
-|---|---|---|
-| `0x5A` | `MAGIC_REC` | Record header |
-| `0x5C` | `MAGIC_CM` | Commit marker |
-| `0x51` | `MAGIC_SEG` | Segment header (never written at this revision) |
-| `0x58` | `MAGIC_XOR` | XOR parity head page |
-| `0xCF` | `MAGIC_CKPT` | Checkpoint header |
-| `0xFF` | `ERASED_BYTE` | Erased flash; terminates the recovery scan |
+| Value  | Constant      | Structure                                       |
+|--------|---------------|-------------------------------------------------|
+| `0x5A` | `MAGIC_REC`   | Record header                                   |
+| `0x5C` | `MAGIC_CM`    | Commit marker                                   |
+| `0x51` | `MAGIC_SEG`   | Segment header (never written at this revision) |
+| `0x58` | `MAGIC_XOR`   | XOR parity head page                            |
+| `0xCF` | `MAGIC_CKPT`  | Checkpoint header                               |
+| `0xFF` | `ERASED_BYTE` | Erased flash; terminates the recovery scan      |
 
 The values are mutually distinct and distinct from `0xFF`, which is what lets
 the single-byte dispatch in the recovery scanner work.
@@ -610,12 +610,12 @@ separately.
 Replay walks forward from the checkpoint's `write_offset` one byte at a time,
 dispatching on the first byte at each position.
 
-| First byte | Action |
-|---|---|
-| `0xFF` (`ERASED_BYTE`) | If mid-page, skip to the next page boundary and continue; if page-aligned, the log ends — stop |
-| `0x5C` (`MAGIC_CM`) | Read marker copy 1; if it fails to verify, read copy 2. On success apply the three-way test below |
-| `0x5A` (`MAGIC_REC`) | Decode the header, fold the record into the scratch chain, and push `(seq, offset)` onto the pending batch |
-| anything else | Stop |
+| First byte             | Action                                                                                                     |
+|------------------------|------------------------------------------------------------------------------------------------------------|
+| `0xFF` (`ERASED_BYTE`) | If mid-page, skip to the next page boundary and continue; if page-aligned, the log ends — stop             |
+| `0x5C` (`MAGIC_CM`)    | Read marker copy 1; if it fails to verify, read copy 2. On success apply the three-way test below          |
+| `0x5A` (`MAGIC_REC`)   | Decode the header, fold the record into the scratch chain, and push `(seq, offset)` onto the pending batch |
+| anything else          | Stop                                                                                                       |
 
 A marker is accepted only if **all three** hold: it verifies under $k_{cm}$;
 its `seq_max` equals the last sequence number of the pending batch; and its
@@ -685,18 +685,18 @@ almost all of its segments are free. See
 
 The core error type is closed and small:
 
-| Variant | Meaning |
-|---|---|
-| `Tampered` | Authentication failed: AEAD open, marker HMAC, or counter MAC |
-| `Rollback` | Boot rule: checkpoint epoch below the counter tip |
-| `TornTail` | A partially written tail was detected and truncated |
-| `BatchFull` | The batch buffer cannot hold another record; caller must commit |
-| `FlashFull` | No space for the next append and no reusable free space reachable |
-| `WearOut` | Erase failed and the block is unusable |
-| `CounterExhausted` | The monotonic counter's increment budget is spent |
-| `Io` | Driver-level read/program/erase failure |
-| `FormatError` | A structure failed to decode: bad magic, bad lengths, bad geometry |
-| `IndexFull` | Cuckoo insertion failed after `MAX_KICKS` and the stash is full |
+| Variant            | Meaning                                                            |
+|--------------------|--------------------------------------------------------------------|
+| `Tampered`         | Authentication failed: AEAD open, marker HMAC, or counter MAC      |
+| `Rollback`         | Boot rule: checkpoint epoch below the counter tip                  |
+| `TornTail`         | A partially written tail was detected and truncated                |
+| `BatchFull`        | The batch buffer cannot hold another record; caller must commit    |
+| `FlashFull`        | No space for the next append and no reusable free space reachable  |
+| `WearOut`          | Erase failed and the block is unusable                             |
+| `CounterExhausted` | The monotonic counter's increment budget is spent                  |
+| `Io`               | Driver-level read/program/erase failure                            |
+| `FormatError`      | A structure failed to decode: bad magic, bad lengths, bad geometry |
+| `IndexFull`        | Cuckoo insertion failed after `MAX_KICKS` and the stash is full    |
 
 Mount surfaces a narrower set (`Rollback`, `Tampered`, `FormatError`, `Io`),
 which is what the tamper matrix of
@@ -706,11 +706,11 @@ which is what the tamper matrix of
 
 The mode reported by a mounted volume reflects the *counter*, not the engine:
 
-| `CounterKind` | `SecurityMode` | Meaning |
-|---|---|---|
-| `Hardware` | `Full` | eFuse, RPMC-backed flash, or a TEE-held counter: the freshness tip cannot be rolled back with the flash image |
-| `BestEffort` | `BestEffortRollback` | A counter file on a general-purpose filesystem: it can be snapshotted and restored *together with* the volume, so monotonicity is only as strong as the surrounding system |
-| `None` | `NoRollbackProtection` | No tip; the boot rule's freshness check is skipped entirely |
+| `CounterKind` | `SecurityMode`         | Meaning                                                                                                                                                                    |
+|---------------|------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `Hardware`    | `Full`                 | eFuse, RPMC-backed flash, or a TEE-held counter: the freshness tip cannot be rolled back with the flash image                                                              |
+| `BestEffort`  | `BestEffortRollback`   | A counter file on a general-purpose filesystem: it can be snapshotted and restored *together with* the volume, so monotonicity is only as strong as the surrounding system |
+| `None`        | `NoRollbackProtection` | No tip; the boot rule's freshness check is skipped entirely                                                                                                                |
 
 The boot rule executed is byte-identical in the `Hardware` and `BestEffort`
 modes; only the strength of the tip differs. This is deliberate honest
@@ -734,51 +734,51 @@ reformat.
 
 ### 4.1 Format constants
 
-| Constant | Value | Units | Kind | Notes |
-|---|---|---|---|---|
-| `MAGIC_REC` | `0x5A` | byte | format | Record header |
-| `MAGIC_CM` | `0x5C` | byte | format | Commit marker |
-| `MAGIC_SEG` | `0x51` | byte | format | Segment header (never written) |
-| `MAGIC_XOR` | `0x58` | byte | format | XOR parity page |
-| `MAGIC_CKPT` | `0xCF` | byte | format | Checkpoint header |
-| `ERASED_BYTE` | `0xFF` | byte | format | Erased flash |
-| `OP_PUT` | `0x00` | byte | format | |
-| `OP_DEL` | `0x01` | byte | format | Tombstone |
-| `REC_HDR_LEN` | 28 | bytes | format | Plaintext record header, AEAD associated data |
-| `TAG_LEN` | 16 | bytes | format | Poly1305 tag |
-| `REC_OVERHEAD` | 44 | bytes | format | `REC_HDR_LEN + TAG_LEN` |
-| `CM_LEN` | 83 | bytes | format | Commit marker, HMAC included |
-| `CKPT_HDR_LEN` | 76 | bytes | format | Checkpoint header, AEAD associated data |
-| `CHI_LEN` | 32 | bytes | format | Chain value width (SHA-256) |
-| `EPOCH_ANCHOR_TAG` | `"slate/epoch"` | — | format | Chain re-anchor domain separator |
-| `SEG_BLOCKS_DATA` | 8 | blocks | format | `RS_K` |
-| `SEG_BLOCKS_PARITY` | 4 | blocks | format | `RS_M` |
-| `SEG_BYTES` | 49,152 | bytes | format | $12 \times 4096$ |
-| `CKPT_SLOTS` | 2 | slots | format | |
-| `CKPT_BASE_BLOCK` | 2 | blocks | format | First checkpoint block |
-| `MAX_CKPT_LEN` | 262,276 | bytes | format | Derived, see [Section 4.3](#43-derived-sizes) |
-| `MAX_INDEX_SLOTS` | 65,536 | slots | format | Ties index capacity to checkpoint capacity |
-| `OFF_BITS` | 24 | bits | format | Index offset width; caps the region at 16 MiB |
-| `FP_BITS` | 8 | bits | format | Fingerprint width stored in an index slot |
+| Constant            | Value           | Units  | Kind   | Notes                                         |
+|---------------------|-----------------|--------|--------|-----------------------------------------------|
+| `MAGIC_REC`         | `0x5A`          | byte   | format | Record header                                 |
+| `MAGIC_CM`          | `0x5C`          | byte   | format | Commit marker                                 |
+| `MAGIC_SEG`         | `0x51`          | byte   | format | Segment header (never written)                |
+| `MAGIC_XOR`         | `0x58`          | byte   | format | XOR parity page                               |
+| `MAGIC_CKPT`        | `0xCF`          | byte   | format | Checkpoint header                             |
+| `ERASED_BYTE`       | `0xFF`          | byte   | format | Erased flash                                  |
+| `OP_PUT`            | `0x00`          | byte   | format |                                               |
+| `OP_DEL`            | `0x01`          | byte   | format | Tombstone                                     |
+| `REC_HDR_LEN`       | 28              | bytes  | format | Plaintext record header, AEAD associated data |
+| `TAG_LEN`           | 16              | bytes  | format | Poly1305 tag                                  |
+| `REC_OVERHEAD`      | 44              | bytes  | format | `REC_HDR_LEN + TAG_LEN`                       |
+| `CM_LEN`            | 83              | bytes  | format | Commit marker, HMAC included                  |
+| `CKPT_HDR_LEN`      | 76              | bytes  | format | Checkpoint header, AEAD associated data       |
+| `CHI_LEN`           | 32              | bytes  | format | Chain value width (SHA-256)                   |
+| `EPOCH_ANCHOR_TAG`  | `"slate/epoch"` | —      | format | Chain re-anchor domain separator              |
+| `SEG_BLOCKS_DATA`   | 8               | blocks | format | `RS_K`                                        |
+| `SEG_BLOCKS_PARITY` | 4               | blocks | format | `RS_M`                                        |
+| `SEG_BYTES`         | 49,152          | bytes  | format | $12 \times 4096$                              |
+| `CKPT_SLOTS`        | 2               | slots  | format |                                               |
+| `CKPT_BASE_BLOCK`   | 2               | blocks | format | First checkpoint block                        |
+| `MAX_CKPT_LEN`      | 262,276         | bytes  | format | Derived, see [Section 4.3](#43-derived-sizes) |
+| `MAX_INDEX_SLOTS`   | 65,536          | slots  | format | Ties index capacity to checkpoint capacity    |
+| `OFF_BITS`          | 24              | bits   | format | Index offset width; caps the region at 16 MiB |
+| `FP_BITS`           | 8               | bits   | format | Fingerprint width stored in an index slot     |
 
 ### 4.2 Tunable constants
 
-| Constant | Value | Units | Notes |
-|---|---|---|---|
-| `MAX_KEY_LEN` | 256 | bytes | `FormatError` above this |
-| `MAX_VAL_LEN` | 1024 | bytes | `FormatError` above this |
-| `B_COMMIT` | 27 | records | Compile-time default batch size |
-| `B_MAX` | 128 | records | Upper bound on the batch dial |
-| `MAX_PAGE_SIZE` | 512 | bytes | Sizes the stack page buffer |
-| `MAX_SEGS` | 256 | segments | Format-level cap |
-| `MAX_SEGMENTS` | 128 | segments | Segment-table cap (`gc.rs`); the binding one |
-| `THETA` | 16,384 | records | Automatic epoch-seal cadence |
-| `BUCKET_SLOTS` | 4 | slots | Cuckoo bucket width |
-| `STASH_SIZE` | 8 | entries | Cuckoo stash |
-| `MAX_KICKS` | 500 | kicks | Cuckoo insertion attempts before `IndexFull` |
-| `N_BUCKETS` | 2,048 | buckets | Compile-time default; the shipped ESP32 configuration |
-| `GC_YIELD_EVERY_RECORDS` | 8 | records | Compaction scan yield cadence |
-| `RECOVER_YIELD_EVERY_PAGES` | 32 | pages | **Declared but referenced nowhere** — see [Section 7.3](#73-defect-3-unimplemented-claims-in-the-async-design-document) |
+| Constant                    | Value  | Units    | Notes                                                                                                                   |
+|-----------------------------|--------|----------|-------------------------------------------------------------------------------------------------------------------------|
+| `MAX_KEY_LEN`               | 256    | bytes    | `FormatError` above this                                                                                                |
+| `MAX_VAL_LEN`               | 1024   | bytes    | `FormatError` above this                                                                                                |
+| `B_COMMIT`                  | 27     | records  | Compile-time default batch size                                                                                         |
+| `B_MAX`                     | 128    | records  | Upper bound on the batch dial                                                                                           |
+| `MAX_PAGE_SIZE`             | 512    | bytes    | Sizes the stack page buffer                                                                                             |
+| `MAX_SEGS`                  | 256    | segments | Format-level cap                                                                                                        |
+| `MAX_SEGMENTS`              | 128    | segments | Segment-table cap (`gc.rs`); the binding one                                                                            |
+| `THETA`                     | 16,384 | records  | Automatic epoch-seal cadence                                                                                            |
+| `BUCKET_SLOTS`              | 4      | slots    | Cuckoo bucket width                                                                                                     |
+| `STASH_SIZE`                | 8      | entries  | Cuckoo stash                                                                                                            |
+| `MAX_KICKS`                 | 500    | kicks    | Cuckoo insertion attempts before `IndexFull`                                                                            |
+| `N_BUCKETS`                 | 2,048  | buckets  | Compile-time default; the shipped ESP32 configuration                                                                   |
+| `GC_YIELD_EVERY_RECORDS`    | 8      | records  | Compaction scan yield cadence                                                                                           |
+| `RECOVER_YIELD_EVERY_PAGES` | 32     | pages    | **Declared but referenced nowhere** — see [Section 7.3](#73-defect-3-unimplemented-claims-in-the-async-design-document) |
 
 `GC_YIELD_EVERY_RECORDS` is a plain `pub const u16` with no runtime override, so
 sweeping it requires recompilation. The sweep in
@@ -837,23 +837,23 @@ The engine's whole RAM cost is a sum of compile-time constants. The table below
 is `size_of` measured on `riscv32imc-unknown-none-elf` (32-bit pointers,
 matching the ESP32-C3 build) for the struct terms, and `llvm-nm` symbol sizes
 for the firmware's static buffers. Source:
-`docs/proposal/data/ram_working_set.csv`.
+`docs/data/ram_working_set.csv`.
 
-| Term | Bytes | Scales with `n_buckets` | Resident | Source |
-|---|---:|:---:|:---:|---|
-| Index arena | 32,768 | yes | yes | `N_BUCKETS`$\cdot$`BUCKET_SLOTS`$\cdot 4$ |
-| Checkpoint buffer (required) | 32,900 | yes | yes | `ckpt_len_for_slots(8192)` |
-| Checkpoint buffer (as built in `kv_demo`) | 35,012 | yes | yes | `CKPT_BUF: [u8; 35000]`, `llvm-nm` size incl. alignment |
-| Hot batch buffer | 4,108 | no | yes | `HOT_BUF: [u8; 4096]` |
-| Cold batch buffer | 4,108 | no | yes | `COLD_BUF: [u8; 4096]` |
-| `ScratchWorkspace` | 5,720 | no | yes | Inline field of `Slate` (GC/candidate record buffers, page buffer) |
-| `SegTable` | 3,088 | no | yes | Inline field of `Slate` |
-| `EngineState` | 96 | no | yes | Inline field of `Slate` |
-| `Index` struct excl. arena | 80 | no | yes | Slots are a `&mut` slice; stash inline |
-| `Log` $\times 2$ excl. buffers | 64 | no | yes | Hot and cold |
-| `Scheduler` | 64 | no | yes | |
-| `Metrics` | 96 | no | yes | With the `metrics` feature enabled |
-| `RecoverWorkspace` | 4,672 | no | **no** | `Box`ed in `Db::open`, dropped when `open` returns |
+| Term                                      |  Bytes | Scales with `n_buckets` | Resident | Source                                                             |
+|-------------------------------------------|-------:|:-----------------------:|:--------:|--------------------------------------------------------------------|
+| Index arena                               | 32,768 |           yes           |   yes    | `N_BUCKETS`$\cdot$`BUCKET_SLOTS`$\cdot 4$                          |
+| Checkpoint buffer (required)              | 32,900 |           yes           |   yes    | `ckpt_len_for_slots(8192)`                                         |
+| Checkpoint buffer (as built in `kv_demo`) | 35,012 |           yes           |   yes    | `CKPT_BUF: [u8; 35000]`, `llvm-nm` size incl. alignment            |
+| Hot batch buffer                          |  4,108 |           no            |   yes    | `HOT_BUF: [u8; 4096]`                                              |
+| Cold batch buffer                         |  4,108 |           no            |   yes    | `COLD_BUF: [u8; 4096]`                                             |
+| `ScratchWorkspace`                        |  5,720 |           no            |   yes    | Inline field of `Slate` (GC/candidate record buffers, page buffer) |
+| `SegTable`                                |  3,088 |           no            |   yes    | Inline field of `Slate`                                            |
+| `EngineState`                             |     96 |           no            |   yes    | Inline field of `Slate`                                            |
+| `Index` struct excl. arena                |     80 |           no            |   yes    | Slots are a `&mut` slice; stash inline                             |
+| `Log` $\times 2$ excl. buffers            |     64 |           no            |   yes    | Hot and cold                                                       |
+| `Scheduler`                               |     64 |           no            |   yes    |                                                                    |
+| `Metrics`                                 |     96 |           no            |   yes    | With the `metrics` feature enabled                                 |
+| `RecoverWorkspace`                        |  4,672 |           no            |  **no**  | `Box`ed in `Db::open`, dropped when `open` returns                 |
 
 Exactly one of the two checkpoint-buffer rows is summed, never both.
 
@@ -881,14 +881,14 @@ as-built checkpoint buffer.
 **Configurations against the 64 KiB budget** (same arithmetic swept over table
 size, `ram_working_set.csv` Table 3):
 
-| `n_buckets` | `n_slots` | Keys at $\alpha = 0.95$ | Arena (B) | Ckpt (B) | Resident (B) | Resident (KiB) | Fits 64 KiB | Mount peak (B) | Peak fits |
-|---:|---:|---:|---:|---:|---:|---:|:---:|---:|:---:|
-| 128 | 512 | 486 | 2,048 | 2,180 | 21,652 | 21.14 | yes | 26,324 | yes |
-| 256 | 1,024 | 972 | 4,096 | 4,228 | 25,748 | 25.14 | yes | 30,420 | yes |
-| 512 | 2,048 | 1,945 | 8,192 | 8,324 | 33,940 | 33.14 | yes | 38,612 | yes |
-| 1,024 | 4,096 | 3,891 | 16,384 | 16,516 | 50,324 | 49.14 | yes | 54,996 | yes |
-| **2,048** | **8,192** | **7,782** | **32,768** | **32,900** | **83,092** | **81.14** | **no** | **87,764** | **no** |
-| 4,096 | 16,384 | 15,564 | 65,536 | 65,668 | 148,628 | 145.14 | no | 153,300 | no |
+| `n_buckets` | `n_slots` | Keys at $\alpha = 0.95$ |  Arena (B) |   Ckpt (B) | Resident (B) | Resident (KiB) | Fits 64 KiB | Mount peak (B) | Peak fits |
+|------------:|----------:|------------------------:|-----------:|-----------:|-------------:|---------------:|:-----------:|---------------:|:---------:|
+|         128 |       512 |                     486 |      2,048 |      2,180 |       21,652 |          21.14 |     yes     |         26,324 |    yes    |
+|         256 |     1,024 |                     972 |      4,096 |      4,228 |       25,748 |          25.14 |     yes     |         30,420 |    yes    |
+|         512 |     2,048 |                   1,945 |      8,192 |      8,324 |       33,940 |          33.14 |     yes     |         38,612 |    yes    |
+|       1,024 |     4,096 |                   3,891 |     16,384 |     16,516 |       50,324 |          49.14 |     yes     |         54,996 |    yes    |
+|   **2,048** | **8,192** |               **7,782** | **32,768** | **32,900** |   **83,092** |      **81.14** |   **no**    |     **87,764** |  **no**   |
+|       4,096 |    16,384 |                  15,564 |     65,536 |     65,668 |      148,628 |         145.14 |     no      |        153,300 |    no     |
 
 The largest configuration meeting the stated budget is `n_buckets` $= 1024$ at
 49.14 KiB resident, supporting roughly 3,891 keys. Either the budget or the
@@ -904,14 +904,14 @@ bare-metal target, which sizes `INDEX_SLOTS` directly, but **not** through
 
 Static ELF sizes for the four ESP32-C3 binaries, `llvm-size -A` on the release
 cross-build with features `chip-esp32c3,counter-flash,metrics`. Source:
-`docs/proposal/data/firmware_size.csv`.
+`docs/data/firmware_size.csv`.
 
-| Binary | Links engine | `.text` | `.rodata` | `.data` | `.bss` | Flash resident | SLATE static bufs | `.data` excl. bufs |
-|---|:---:|---:|---:|---:|---:|---:|---:|---:|
-| `kv_demo` | yes | 100,898 | 15,648 | 77,756 | 456 | 194,302 | 76,008 | 1,748 |
-| `embassy_demo` | yes | 91,530 | 14,076 | 77,696 | 456 | 183,302 | 76,008 | 1,688 |
-| `slate_node` | yes | 91,538 | 13,972 | 77,580 | 456 | 183,090 | 76,008 | 1,572 |
-| `bench` | **no** | 24,204 | 7,452 | 532 | 396 | 32,188 | 0 | 532 |
+| Binary         | Links engine | `.text` | `.rodata` | `.data` | `.bss` | Flash resident | SLATE static bufs | `.data` excl. bufs |
+|----------------|:------------:|--------:|----------:|--------:|-------:|---------------:|------------------:|-------------------:|
+| `kv_demo`      |     yes      | 100,898 |    15,648 |  77,756 |    456 |        194,302 |            76,008 |              1,748 |
+| `embassy_demo` |     yes      |  91,530 |    14,076 |  77,696 |    456 |        183,302 |            76,008 |              1,688 |
+| `slate_node`   |     yes      |  91,538 |    13,972 |  77,580 |    456 |        183,090 |            76,008 |              1,572 |
+| `bench`        |    **no**    |  24,204 |     7,452 |     532 |    396 |         32,188 |                 0 |                532 |
 
 Two cautions, both normative for anyone quoting these figures.
 
@@ -1132,7 +1132,7 @@ impl<'a, F: slate_kv_hal::AsyncFlash,
 
 All eight blocking wrappers have a one-line body of the form
 `crate::task::block_on(self.X_async(..))`. This was verified programmatically
-(`docs/proposal/data/async_facade.json`), which is what justifies treating the
+(`docs/data/async_facade.json`), which is what justifies treating the
 two façades as behaviourally identical: there is no second implementation that
 could drift.
 
@@ -1167,16 +1167,16 @@ name whose type changes with a feature flag; this is documented here because it
 surprises integrators.
 
 Asymmetries in the projection, all measured
-(`docs/proposal/data/async_facade.json`):
+(`docs/data/async_facade.json`):
 
-| Operation | Available in | Note |
-|---|---|---|
-| `recover::recover` | blocking only | Also `record_key_eq`, `scan_segment_headers` |
-| `repair::scrub` | blocking only | Body is a stub returning `Ok(())` |
-| `gc::compact_one_async` | async only | Sync callers must go through `Slate::compact` |
-| `segment::encode_parity` | async only | No caller anywhere in the workspace |
-| `Slate::append_hot` | sync only | Correct: it only touches the RAM batch |
-| `SlateSync` newtype | does not exist | Specified by the design document; never implemented |
+| Operation                | Available in   | Note                                                |
+|--------------------------|----------------|-----------------------------------------------------|
+| `recover::recover`       | blocking only  | Also `record_key_eq`, `scan_segment_headers`        |
+| `repair::scrub`          | blocking only  | Body is a stub returning `Ok(())`                   |
+| `gc::compact_one_async`  | async only     | Sync callers must go through `Slate::compact`       |
+| `segment::encode_parity` | async only     | No caller anywhere in the workspace                 |
+| `Slate::append_hot`      | sync only      | Correct: it only touches the RAM batch              |
+| `SlateSync` newtype      | does not exist | Specified by the design document; never implemented |
 
 ### 5.4 The index
 
@@ -1408,23 +1408,23 @@ still carry the old ones and will not run as written.
 
 ### 6.1 Provenance
 
-| Item | Value |
-|---|---|
-| Revision | `970324f20f3fc7d7df4249c4d51122f9a1a5e61c` (`970324f`), 2026-07-29 |
-| Workspace version | 0.4.0 |
-| Toolchain | `rustc` 1.97.1 (8bab26f4f 2026-07-14), `cargo` 1.97.1, edition 2021 |
-| Host | macOS 26.5.2 (25F84), arm64, 12 cores, 24 GiB |
-| Embedded target | `riscv32imc-unknown-none-elf` (ESP32-C3) |
-| `no_std` check target | `thumbv7em-none-eabihf` |
-| Firmware features | `chip-esp32c3,counter-flash,metrics` |
-| `cargo fmt --check` | clean |
-| `cargo clippy -D warnings` | clean |
-| `no_std` core build | ok |
-| Firmware build | ok, 4 binaries |
-| `cargo test` | 63 passed, 0 failed, 1 ignored |
+| Item                       | Value                                                               |
+|----------------------------|---------------------------------------------------------------------|
+| Revision                   | `970324f20f3fc7d7df4249c4d51122f9a1a5e61c` (`970324f`), 2026-07-29  |
+| Workspace version          | 0.4.0                                                               |
+| Toolchain                  | `rustc` 1.97.1 (8bab26f4f 2026-07-14), `cargo` 1.97.1, edition 2021 |
+| Host                       | macOS 26.5.2 (25F84), arm64, 12 cores, 24 GiB                       |
+| Embedded target            | `riscv32imc-unknown-none-elf` (ESP32-C3)                            |
+| `no_std` check target      | `thumbv7em-none-eabihf`                                             |
+| Firmware features          | `chip-esp32c3,counter-flash,metrics`                                |
+| `cargo fmt --check`        | clean                                                               |
+| `cargo clippy -D warnings` | clean                                                               |
+| `no_std` core build        | ok                                                                  |
+| Firmware build             | ok, 4 binaries                                                      |
+| `cargo test`               | 63 passed, 0 failed, 1 ignored                                      |
 
-Source: `docs/proposal/data/provenance.json`,
-`docs/proposal/data/testsuite.json`.
+Source: `docs/data/provenance.json`,
+`docs/data/testsuite.json`.
 
 The working tree carried 9 modified paths relative to `970324f` when the
 measurements were taken: the measurement harnesses listed in
@@ -1446,31 +1446,32 @@ suites `kv_roundtrip` 5, `epoch_lifecycle` 4, `esp32_defects` 4 (+1 ignored),
 
 ### 6.2 Reproduction commands
 
-| Data file | Command | Platform |
-|---|---|---|
-| `provenance.json` | environment capture (`git`, `rustc -V`, `cargo test`, `cargo fmt`, `clippy`, cross-builds) | host |
-| `testsuite.json` | `cargo test --workspace` | host |
-| `crash_mc.json` | `cargo run --release -p slate-kv-sim --bin crash_mc` | simulated |
-| `erasure.csv` | `cargo run --release -p slate-kv-sim --example rs_exhaustive` | pure computation |
-| `tamper.json` | `cargo run --release -p slate-kv-sim --example tamper_matrix` | host + simulated |
-| `wa_buckets.csv` | `cargo run --release -p slate-kv --example slate_wa_buckets` | host (`FileFlash`) |
-| `wa_study.csv` | `cargo run --release -p slate-kv-sim --bin wa_study_paper` | modelled (not the engine) |
-| `wa_study_matched.csv` | `cargo run --release -p slate-kv-sim --bin wa_study_paper --capacity-sweep` | modelled |
-| `wa_study_original.csv` | `cargo run --release -p slate-kv-sim --bin wa_study` | modelled (original harness) |
-| `throughput.csv` `[per_run]`, `[summary_by_b_commit]` | `cargo run --release -p slate-kv --example slate_throughput` | host (`FileFlash`) |
-| `throughput.csv` `[flash_barrier_calibration]` | `cargo run --release -p slate-kv --example slate_flash_calib` | host |
-| `energy_batch.csv` | `cargo run --release -p slate-kv-sim --bin slate_energy_batch` | simulated traffic + modelled joules |
-| `index_ram.csv` | `cargo run --release -p slate-kv-core --example slate_index` | pure in-RAM |
-| `fp_remedy.csv` | `cargo run --release -p slate-kv-core --example slate_fp_remedy` | modelled, pure in-RAM |
-| `recovery.csv` | `cargo run --release -p slate-kv --example slate_recovery` | host (`FileFlash`) |
-| `ram_working_set.csv` | `size_of` probe crate cross-built for `riscv32imc`, read back with `llvm-objdump`; `llvm-nm` for static buffers | static analysis |
-| `firmware_size.csv` | `cd targets/esp32 && cargo build --release --target riscv32imc-unknown-none-elf --features chip-esp32c3,counter-flash,metrics`, then `llvm-size -A` | static analysis |
-| `async_future_size.csv` | `cargo run -q --release -p slate-kv-sim --example slate_async_future_size` | host |
-| `async_yield.csv` | `cargo run -q --release -p slate-kv-sim --example slate_async_yield` | simulated latency model |
-| `async_blocking_cost.csv` | `cargo run -q --release -p slate-kv-sim --example slate_async_blocking_cost` | host |
-| `async_facade.json` | source reads, `grep`, `cargo tree`, `llvm-nm`, probe-crate compile matrix | static analysis |
-| `device_c3.csv`, `device_c3_analysis.json` | ESP32-C3 serial log, `embassy_demo` firmware, 9 checkpoint reports | **device** |
-| `user_bytes_bug.json` | ratio check plus post-fix regeneration of `wa_buckets.csv` | host + simulated |
+| Data file                                             | Command                                                                                                                                                                | Platform                            |
+|-------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-------------------------------------|
+| `provenance.json`                                     | environment capture (`git`, `rustc -V`, `cargo test`, `cargo fmt`, `clippy`, cross-builds)                                                                             | host                                |
+| `testsuite.json`                                      | `cargo test --workspace`                                                                                                                                               | host                                |
+| `crash_mc.json`                                       | `cargo run --release -p slate-kv-sim --bin crash_mc`                                                                                                                   | simulated                           |
+| `erasure.csv`                                         | `cargo run --release -p slate-kv-sim --example rs_exhaustive`                                                                                                          | pure computation                    |
+| `tamper.json`                                         | `cargo run --release -p slate-kv-sim --example tamper_matrix`                                                                                                          | host + simulated                    |
+| `wa_buckets.csv`                                      | `cargo run --release -p slate-kv --example slate_wa_buckets`                                                                                                           | host (`FileFlash`)                  |
+| `wa_study.csv`                                        | `cargo run --release -p slate-kv-sim --bin wa_study_paper`                                                                                                             | modelled (not the engine)           |
+| `wa_study_matched.csv`                                | `cargo run --release -p slate-kv-sim --bin wa_study_paper --capacity-sweep`                                                                                            | modelled                            |
+| `wa_study_original.csv`                               | `cargo run --release -p slate-kv-sim --bin wa_study`                                                                                                                   | modelled (original harness)         |
+| `wa_study_convergence.csv`                            | `cargo build --release -p slate-kv-sim --bin wa_study_paper`, then `SLATE_WA_NOPS=$N ./target/release/wa_study_paper` for `$N` in 25000, 50000, 100000, 200000, 400000 | modelled                            |
+| `throughput.csv` `[per_run]`, `[summary_by_b_commit]` | `cargo run --release -p slate-kv --example slate_throughput`                                                                                                           | host (`FileFlash`)                  |
+| `throughput.csv` `[flash_barrier_calibration]`        | `cargo run --release -p slate-kv --example slate_flash_calib`                                                                                                          | host                                |
+| `energy_batch.csv`                                    | `cargo run --release -p slate-kv-sim --bin slate_energy_batch`                                                                                                         | simulated traffic + modelled joules |
+| `index_ram.csv`                                       | `cargo run --release -p slate-kv-core --example slate_index`                                                                                                           | pure in-RAM                         |
+| `fp_remedy.csv`                                       | `cargo run --release -p slate-kv-core --example slate_fp_remedy`                                                                                                       | modelled, pure in-RAM               |
+| `recovery.csv`                                        | `cargo run --release -p slate-kv --example slate_recovery`                                                                                                             | host (`FileFlash`)                  |
+| `ram_working_set.csv`                                 | `size_of` probe crate cross-built for `riscv32imc`, read back with `llvm-objdump`; `llvm-nm` for static buffers                                                        | static analysis                     |
+| `firmware_size.csv`                                   | `cd targets/esp32 && cargo build --release --target riscv32imc-unknown-none-elf --features chip-esp32c3,counter-flash,metrics`, then `llvm-size -A`                    | static analysis                     |
+| `async_future_size.csv`                               | `cargo run -q --release -p slate-kv-sim --example slate_async_future_size`                                                                                             | host                                |
+| `async_yield.csv`                                     | `cargo run -q --release -p slate-kv-sim --example slate_async_yield`                                                                                                   | simulated latency model             |
+| `async_blocking_cost.csv`                             | `cargo run -q --release -p slate-kv-sim --example slate_async_blocking_cost`                                                                                           | host                                |
+| `async_facade.json`                                   | source reads, `grep`, `cargo tree`, `llvm-nm`, probe-crate compile matrix                                                                                              | static analysis                     |
+| `device_c3.csv`, `device_c3_analysis.json`            | ESP32-C3 serial log, `embassy_demo` firmware, 9 checkpoint reports                                                                                                     | **device**                          |
+| `user_bytes_bug.json`                                 | ratio check plus post-fix regeneration of `wa_buckets.csv`                                                                                                             | host + simulated                    |
 
 ### 6.3 Crash injection (simulated)
 
@@ -1488,11 +1489,11 @@ uniform over bytes rather than over records, which places most cuts *inside* a
 page program; the workload contains commits, garbage collection and checkpoint
 writes, so cuts land in all three.
 
-| Predicate | Trials | Violations |
-|---|---:|---:|
-| Recovered state is a prefix of the acknowledged sequence | 20,000 | **0** |
-| No acknowledged write lost | 20,000 | **0** |
-| No unacknowledged write accepted | 20,000 | **0** |
+| Predicate                                                | Trials | Violations |
+|----------------------------------------------------------|-------:|-----------:|
+| Recovered state is a prefix of the acknowledged sequence | 20,000 |      **0** |
+| No acknowledged write lost                               | 20,000 |      **0** |
+| No unacknowledged write accepted                         | 20,000 |      **0** |
 
 Campaign wall time 37.684 s.
 
@@ -1524,15 +1525,15 @@ for each $e$.
 
 **Declared erasures** (blocks zeroed *and* declared in the `BlockSet`):
 
-| Blocks lost $e$ | Patterns | Recovered exactly | Refused | Wrong bytes | Singular survivor matrices |
-|---:|---:|---:|---:|---:|---:|
-| 0 | 1 | 1 | 0 | 0 | 0 |
-| 1 | 12 | 12 | 0 | 0 | 0 |
-| 2 | 66 | 66 | 0 | 0 | 0 |
-| 3 | 220 | 220 | 0 | 0 | 0 |
-| 4 | 495 | 495 | 0 | 0 | 0 |
-| 5 | 792 | 0 | 792 | 0 | 0 |
-| **Total** | **1,586** | **794** | **792** | **0** | **0** |
+| Blocks lost $e$ |  Patterns | Recovered exactly | Refused | Wrong bytes | Singular survivor matrices |
+|----------------:|----------:|------------------:|--------:|------------:|---------------------------:|
+|               0 |         1 |                 1 |       0 |           0 |                          0 |
+|               1 |        12 |                12 |       0 |           0 |                          0 |
+|               2 |        66 |                66 |       0 |           0 |                          0 |
+|               3 |       220 |               220 |       0 |           0 |                          0 |
+|               4 |       495 |               495 |       0 |           0 |                          0 |
+|               5 |       792 |                 0 |     792 |           0 |                          0 |
+|       **Total** | **1,586** |           **794** | **792** |       **0** |                      **0** |
 
 All 794 patterns within the code distance ($e \le 4$) reconstructed byte-exactly;
 all 792 patterns at $e = 5$ were refused with an explicit error; no survivor
@@ -1543,9 +1544,9 @@ wrong bytes.
 different failure and is reported as such:
 
 | Blocks corrupted $e$ | Patterns | Recovered exactly | Wrong bytes | Caught by AEAD |
-|---:|---:|---:|---:|---:|
-| 1 | 12 | 0 | 12 | 8 |
-| 2 | 66 | 0 | 66 | 60 |
+|---------------------:|---------:|------------------:|------------:|---------------:|
+|                    1 |       12 |                 0 |          12 |              8 |
+|                    2 |       66 |                 0 |          66 |             60 |
 
 This is the expected behaviour of an erasure code as opposed to an
 error-correcting code: with no declaration the decoder cannot identify which
@@ -1569,26 +1570,26 @@ before the attack. Each row records whether mount succeeded, how many
 ground-truth keys still read back, and — the property that matters — whether
 any read returned a value that was never written.
 
-| Attack | Bytes changed | Outcome | Keys readable | Wrong values |
-|---|---:|---|---:|---:|
-| `control_no_attack_single_epoch` | 0 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `control_no_attack_two_epochs` | 0 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `control_no_attack_three_epochs` | 0 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `record_ciphertext_body_bitflip_first` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 0 / 48 | 0 |
-| `record_ciphertext_body_bitflip_last` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `record_header_bitflip` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `record_aead_tag_bitflip` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `log_truncated_mid_record` | 7,839,715 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `commit_marker_copy1_body_bitflip` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `commit_marker_copy1_zeroed` | 256 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `commit_marker_both_copies_zeroed` | 512 | Ok(mounted, security_mode=BestEffortRollback) | 40 / 48 | 0 |
-| `checkpoint_active_slot_bitflip` | 1 | Err(DbError::Mount(MountError::Rollback)) | — | — |
-| `checkpoint_older_slot_bitflip` | 1 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `checkpoint_both_slots_bitflip` | 2 | Err(DbError::Mount(MountError::Tampered)) | — | — |
-| `rollback_replay_older_epoch_image` | 8,388,608 | Err(DbError::Mount(MountError::Rollback)) | — | — |
-| `forward_spliced_image_epoch_gap` | 8,388,608 | Err(DbError::Mount(MountError::Tampered)) | — | — |
-| `cross_epoch_record_splice` | 256 | Ok(mounted, security_mode=BestEffortRollback) | 48 / 48 | 0 |
-| `counter_file_hmac_corrupt_both_slots` | 2 | Err(DbError::Mount(MountError::Tampered)) | — | — |
+| Attack                                 | Bytes changed | Outcome                                       | Keys readable | Wrong values |
+|----------------------------------------|--------------:|-----------------------------------------------|--------------:|-------------:|
+| `control_no_attack_single_epoch`       |             0 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `control_no_attack_two_epochs`         |             0 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `control_no_attack_three_epochs`       |             0 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `record_ciphertext_body_bitflip_first` |             1 | Ok(mounted, security_mode=BestEffortRollback) |        0 / 48 |            0 |
+| `record_ciphertext_body_bitflip_last`  |             1 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `record_header_bitflip`                |             1 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `record_aead_tag_bitflip`              |             1 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `log_truncated_mid_record`             |     7,839,715 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `commit_marker_copy1_body_bitflip`     |             1 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `commit_marker_copy1_zeroed`           |           256 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `commit_marker_both_copies_zeroed`     |           512 | Ok(mounted, security_mode=BestEffortRollback) |       40 / 48 |            0 |
+| `checkpoint_active_slot_bitflip`       |             1 | Err(DbError::Mount(MountError::Rollback))     |             — |            — |
+| `checkpoint_older_slot_bitflip`        |             1 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `checkpoint_both_slots_bitflip`        |             2 | Err(DbError::Mount(MountError::Tampered))     |             — |            — |
+| `rollback_replay_older_epoch_image`    |     8,388,608 | Err(DbError::Mount(MountError::Rollback))     |             — |            — |
+| `forward_spliced_image_epoch_gap`      |     8,388,608 | Err(DbError::Mount(MountError::Tampered))     |             — |            — |
+| `cross_epoch_record_splice`            |           256 | Ok(mounted, security_mode=BestEffortRollback) |       48 / 48 |            0 |
+| `counter_file_hmac_corrupt_both_slots` |             2 | Err(DbError::Mount(MountError::Tampered))     |             — |            — |
 
 **Summary: 18 attacks, 0 unsafe outcomes, 0 wrong values returned.** Three rows
 are pristine-volume controls. Of the 15 attacks, 5 were refused outright at
@@ -1630,17 +1631,17 @@ operations, explicit `compact()` at the end. Percentages are of
 `total_bytes` and are computed from the bucket columns; they sum to 100.00% on
 every row.
 
-| $B$ | Ops accepted | Commits | `user_bytes` | `total_bytes` | User % | Marker % | Parity % | Ckpt % | GC % | WA |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 1464 | 1522 | 230,005 | 1,450,831 | 15.9 | 52.8 | 26.4 | 4.5 | 0.37 | **6.3078** |
-| 2 | 2433 | 1281 | 382,138 | 1,381,818 | 27.7 | 45.1 | 22.5 | 4.8 | 0.00 | **3.6160** |
-| 4 | 3955 | 1039 | 621,092 | 1,476,537 | 42.1 | 35.0 | 17.5 | 4.5 | 0.95 | **2.3773** |
-| 8 | 6000 | 784 | 942,000 | 1,589,864 | 59.3 | 24.2 | 12.1 | 4.1 | 0.24 | **1.6878** |
-| 16 | 6000 | 377 | 942,000 | 1,295,792 | 72.7 | 14.8 | 7.4 | 5.1 | 0.00 | **1.3756** |
-| 27 | 6000 | 224 | 942,000 | 1,179,056 | 79.9 | 9.7 | 4.8 | 5.6 | 0.00 | **1.2517** |
-| 32 | 6000 | 189 | 942,000 | 1,152,176 | 81.8 | 8.4 | 4.2 | 5.7 | 0.00 | **1.2231** |
-| 64 | 6000 | 95 | 942,000 | 1,079,984 | 87.2 | 4.5 | 2.2 | 6.1 | 0.00 | **1.1465** |
-| 128 | 6000 | 48 | 942,000 | 1,043,888 | 90.2 | 2.3 | 1.2 | 6.3 | 0.00 | **1.1082** |
+| $B$ | Ops accepted | Commits | `user_bytes` | `total_bytes` | User % | Marker % | Parity % | Ckpt % | GC % |         WA |
+|----:|-------------:|--------:|-------------:|--------------:|-------:|---------:|---------:|-------:|-----:|-----------:|
+|   1 |         1464 |    1522 |      230,005 |     1,450,831 |   15.9 |     52.8 |     26.4 |    4.5 | 0.37 | **6.3078** |
+|   2 |         2433 |    1281 |      382,138 |     1,381,818 |   27.7 |     45.1 |     22.5 |    4.8 | 0.00 | **3.6160** |
+|   4 |         3955 |    1039 |      621,092 |     1,476,537 |   42.1 |     35.0 |     17.5 |    4.5 | 0.95 | **2.3773** |
+|   8 |         6000 |     784 |      942,000 |     1,589,864 |   59.3 |     24.2 |     12.1 |    4.1 | 0.24 | **1.6878** |
+|  16 |         6000 |     377 |      942,000 |     1,295,792 |   72.7 |     14.8 |      7.4 |    5.1 | 0.00 | **1.3756** |
+|  27 |         6000 |     224 |      942,000 |     1,179,056 |   79.9 |      9.7 |      4.8 |    5.6 | 0.00 | **1.2517** |
+|  32 |         6000 |     189 |      942,000 |     1,152,176 |   81.8 |      8.4 |      4.2 |    5.7 | 0.00 | **1.2231** |
+|  64 |         6000 |      95 |      942,000 |     1,079,984 |   87.2 |      4.5 |      2.2 |    6.1 | 0.00 | **1.1465** |
+| 128 |         6000 |      48 |      942,000 |     1,043,888 |   90.2 |      2.3 |      1.2 |    6.3 | 0.00 | **1.1082** |
 
 **Commit markers dominate at small batches, not garbage collection.** Marker
 bytes are 52.8% of everything written at $B = 1$ and 2.3% at $B = 128$.
@@ -1675,14 +1676,14 @@ fifth of the flash bytes of one that cannot tolerate losing any.
 `cargo run --release -p slate-kv --example slate_flash_calib`. **Data:**
 `throughput.csv` section `[flash_barrier_calibration]`, 300 programs per mode.
 
-| Operation | Mode | Mean (µs) | p50 (µs) | p90 (µs) | p99 (µs) |
-|---|---|---:|---:|---:|---:|
-| `FileFlash::program` | Full | 8249.4 | 8005.3 | 9955.0 | 14835.5 |
-| `FileFlash::program` | OsCache | 8363.0 | 8010.6 | 9924.0 | 12454.7 |
-| `barrier_only` | rust_File::sync_data | 10616.4 | 8024.0 | 11911.9 | 19099.1 |
-| `barrier_only` | libc_fsync | 519.7 | 185.5 | 382.4 | 5623.5 |
-| `barrier_only` | libc_fcntl_F_FULLFSYNC | 13636.9 | 11755.8 | 21719.8 | 29805.2 |
-| `raw_pwrite` | no_barrier | 265.4 | 3.1 | 7.9 | 4201.7 |
+| Operation            | Mode                   | Mean (µs) | p50 (µs) | p90 (µs) | p99 (µs) |
+|----------------------|------------------------|----------:|---------:|---------:|---------:|
+| `FileFlash::program` | Full                   |    8249.4 |   8005.3 |   9955.0 |  14835.5 |
+| `FileFlash::program` | OsCache                |    8363.0 |   8010.6 |   9924.0 |  12454.7 |
+| `barrier_only`       | rust_File::sync_data   |   10616.4 |   8024.0 |  11911.9 |  19099.1 |
+| `barrier_only`       | libc_fsync             |     519.7 |    185.5 |    382.4 |   5623.5 |
+| `barrier_only`       | libc_fcntl_F_FULLFSYNC |   13636.9 |  11755.8 |  21719.8 |  29805.2 |
+| `raw_pwrite`         | no_barrier             |     265.4 |      3.1 |      7.9 |   4201.7 |
 
 **The two `Durability` modes are indistinguishable on this platform**: 8,005 µs
 versus 8,010 µs at the median per 256 B page. `Durability::OsCache` calls Rust's
@@ -1715,17 +1716,17 @@ advancing, not by timing.
 **Absolute values characterise this host's filesystem barrier, not any device.**
 Only the shape versus $B$ and the commit/non-commit structure transfer.
 
-| $B$ | Put (ops/s) | CV | Commit put (ms) | Other put (µs) | Ratio | Get (ops/s) | Get p50 (µs) |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 30.6 | 3.3% | 32.7 | — | — | 162,135 | 5.2 |
-| 2 | 47.7 | 9.3% | 42.1 | 14.9 | 2,824 | 228,529 | 3.8 |
-| 4 | 85.1 | 2.1% | 47.0 | 10.9 | 4,324 | 197,040 | 4.5 |
-| 8 | 116.2 | 5.1% | 68.9 | 8.8 | 7,830 | 230,222 | 4.4 |
-| 16 | 128.0 | 4.0% | 125.0 | 8.4 | 14,951 | 171,268 | 6.1 |
-| 27 | 151.7 | 14.1% | 180.6 | 4.9 | 37,211 | 289,901 | 3.5 |
-| 32 | 136.2 | 5.6% | 237.1 | 6.9 | 34,588 | 214,564 | 5.0 |
-| 64 | 147.8 | 10.1% | 439.3 | 5.2 | 84,611 | 438,535 | 2.8 |
-| 128 | 183.0 | 12.0% | 735.2 | 5.8 | 126,911 | 153,697 | 6.1 |
+| $B$ | Put (ops/s) |    CV | Commit put (ms) | Other put (µs) |   Ratio | Get (ops/s) | Get p50 (µs) |
+|----:|------------:|------:|----------------:|---------------:|--------:|------------:|-------------:|
+|   1 |        30.6 |  3.3% |            32.7 |              — |       — |     162,135 |          5.2 |
+|   2 |        47.7 |  9.3% |            42.1 |           14.9 |   2,824 |     228,529 |          3.8 |
+|   4 |        85.1 |  2.1% |            47.0 |           10.9 |   4,324 |     197,040 |          4.5 |
+|   8 |       116.2 |  5.1% |            68.9 |            8.8 |   7,830 |     230,222 |          4.4 |
+|  16 |       128.0 |  4.0% |           125.0 |            8.4 |  14,951 |     171,268 |          6.1 |
+|  27 |       151.7 | 14.1% |           180.6 |            4.9 |  37,211 |     289,901 |          3.5 |
+|  32 |       136.2 |  5.6% |           237.1 |            6.9 |  34,588 |     214,564 |          5.0 |
+|  64 |       147.8 | 10.1% |           439.3 |            5.2 |  84,611 |     438,535 |          2.8 |
+| 128 |       183.0 | 12.0% |           735.2 |            5.8 | 126,911 |     153,697 |          6.1 |
 
 Throughput rises $5.98\times$ across the sweep, from 30.6 to 182.97 puts per
 second, with $4.18\times$ of that reached by $B = 16$. Run-to-run variation is
@@ -1753,16 +1754,16 @@ $\lceil 157B/256 \rceil + 3$ pages at the measured 8.005 ms per-page barrier
 cost:
 
 | $B$ | Predicted pages | Predicted (ms) | Measured (ms) | Measured / predicted |
-|---:|---:|---:|---:|---:|
-| 1 | 4 | 32.02 | 32.71 | 1.022 |
-| 2 | 5 | 40.03 | 42.15 | 1.053 |
-| 4 | 6 | 48.03 | 46.96 | 0.978 |
-| 8 | 8 | 64.04 | 68.90 | 1.076 |
-| 16 | 13 | 104.07 | 125.02 | 1.201 |
-| 27 | 20 | 160.10 | 180.61 | 1.128 |
-| 32 | 23 | 184.12 | 237.12 | 1.288 |
-| 64 | 43 | 344.22 | 439.27 | 1.276 |
-| 128 | 82 | 656.41 | 735.19 | 1.120 |
+|----:|----------------:|---------------:|--------------:|---------------------:|
+|   1 |               4 |          32.02 |         32.71 |                1.022 |
+|   2 |               5 |          40.03 |         42.15 |                1.053 |
+|   4 |               6 |          48.03 |         46.96 |                0.978 |
+|   8 |               8 |          64.04 |         68.90 |                1.076 |
+|  16 |              13 |         104.07 |        125.02 |                1.201 |
+|  27 |              20 |         160.10 |        180.61 |                1.128 |
+|  32 |              23 |         184.12 |        237.12 |                1.288 |
+|  64 |              43 |         344.22 |        439.27 |                1.276 |
+| 128 |              82 |         656.41 |        735.19 |                1.120 |
 
 The ratio stays within $0.978\times$ to $1.288\times$ across the whole sweep, so
 the engine adds no measurable cost of its own beyond the pages it writes.
@@ -1794,26 +1795,26 @@ Geometry: 8 MiB `SimFlash`, 16 B values, 1,000 distinct keys, 4,000 operations,
 deterministic, 1 rep.
 
 | $B$ | Commits | `full_bytes` | `report_bytes` | $E_{full}$ (µJ/op) | $E_{report}$ (µJ/op) |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 4000 | 4,096,000 | 1,568,000 | 1229.4 | 1087.8 |
-| 2 | 2000 | 2,048,000 | 1,056,000 | 614.7 | 559.1 |
-| 4 | 1000 | 1,280,000 | 800,000 | 321.7 | 294.8 |
-| 8 | 500 | 768,000 | 672,000 | 168.0 | 162.6 |
-| 16 | 250 | 512,000 | 608,000 | 91.2 | 96.5 |
-| 27 | 148 | 416,768 | 581,888 | 60.4 | 69.7 |
-| 32 | 125 | 384,000 | 576,000 | 52.8 | 63.5 |
-| 64 | 62 | 317,440 | 559,872 | 33.5 | 47.2 |
-| 128 | 31 | 293,632 | 551,936 | 24.4 | 39.0 |
+|----:|--------:|-------------:|---------------:|-------------------:|---------------------:|
+|   1 |    4000 |    4,096,000 |      1,568,000 |             1229.4 |               1087.8 |
+|   2 |    2000 |    2,048,000 |      1,056,000 |              614.7 |                559.1 |
+|   4 |    1000 |    1,280,000 |        800,000 |              321.7 |                294.8 |
+|   8 |     500 |      768,000 |        672,000 |              168.0 |                162.6 |
+|  16 |     250 |      512,000 |        608,000 |               91.2 |                 96.5 |
+|  27 |     148 |      416,768 |        581,888 |               60.4 |                 69.7 |
+|  32 |     125 |      384,000 |        576,000 |               52.8 |                 63.5 |
+|  64 |      62 |      317,440 |        559,872 |               33.5 |                 47.2 |
+| 128 |      31 |      293,632 |        551,936 |               24.4 |                 39.0 |
 
 Modelled energy per operation falls $50.4\times$ from $B = 1$ to $B = 128$ on the
 ground-truth accounting.
 
 Fitting $E(B) = A/B + P$ by ordinary least squares:
 
-| Accounting | $A$ (µJ/commit) | $P$ (nJ/op) | $R^2$ |
-|---|---:|---:|---:|
-| `full_includes_markers` | 1,209.35 | 14,952.3 | 0.999905 |
-| `report_omits_markers` | 1,056.77 | 30,717.7 | 0.999997 |
+| Accounting              | $A$ (µJ/commit) | $P$ (nJ/op) |    $R^2$ |
+|-------------------------|----------------:|------------:|---------:|
+| `full_includes_markers` |        1,209.35 |    14,952.3 | 0.999905 |
+| `report_omits_markers`  |        1,056.77 |    30,717.7 | 0.999997 |
 
 If uncommitted records are also charged a holding cost $c$ per
 operation-second — the energy of keeping a record alive but not yet durable —
@@ -1826,14 +1827,14 @@ for arrival rate $\lambda$. At $\lambda = 10$ operations per second, on the
 ground-truth accounting:
 
 | $c$ (nJ/op·s) | $B^\star$ closed form | $B^\star$ integer | Empirical argmin | Rel. error | Excess power at $B^\star$ |
-|---:|---:|---:|---:|---:|---:|
-| 3,000,000 | 2.84 | 2 | 3 | 5.35% | 0.00% |
-| 1,000,000 | 4.92 | 4 | 5 | 1.64% | 0.00% |
-| 300,000 | 8.98 | 8 | 9 | 0.23% | 0.00% |
-| 100,000 | 15.55 | 15 | 15 | 3.68% | 1.63% |
-| 30,000 | 28.39 | 28 | 30 | 5.35% | 0.89% |
-| 10,000 | 49.18 | 49 | 45 | 9.29% | 1.51% |
-| 3,000 | 89.79 | 89 | 90 | 0.23% | 0.00% |
+|--------------:|----------------------:|------------------:|-----------------:|-----------:|--------------------------:|
+|     3,000,000 |                  2.84 |                 2 |                3 |      5.35% |                     0.00% |
+|     1,000,000 |                  4.92 |                 4 |                5 |      1.64% |                     0.00% |
+|       300,000 |                  8.98 |                 8 |                9 |      0.23% |                     0.00% |
+|       100,000 |                 15.55 |                15 |               15 |      3.68% |                     1.63% |
+|        30,000 |                 28.39 |                28 |               30 |      5.35% |                     0.89% |
+|        10,000 |                 49.18 |                49 |               45 |      9.29% |                     1.51% |
+|         3,000 |                 89.79 |                89 |               90 |      0.23% |                     0.00% |
 
 The closed form is within 0.2% to 9.3% of the empirical minimum in batch size
 across three decades of holding cost, and the resulting power penalty never
@@ -1875,14 +1876,14 @@ $2b \cdot 2^{-f}$ bound assumes. The `sequential` family is
 constant.
 
 | `n_buckets` | Mixed mean | Mixed max | Sequential mean | Sequential max |
-|---:|---:|---:|---:|---:|
-| 256 | 0.02944 | 0.02997 | 0.02943 | 0.03064 |
-| 512 | 0.02935 | 0.03016 | 0.02944 | 0.03077 |
-| 1,024 | 0.02936 | 0.02957 | 0.03042 | 0.03270 |
-| 2,048 | 0.02933 | 0.02992 | 0.02951 | 0.03734 |
-| 4,096 | 0.02919 | 0.02990 | 0.03145 | 0.05563 |
-| 8,192 | 0.02922 | 0.02950 | 0.02915 | 0.09337 |
-| 16,384 | 0.02943 | 0.03018 | 0.03921 | 0.17685 |
+|------------:|-----------:|----------:|----------------:|---------------:|
+|         256 |    0.02944 |   0.02997 |         0.02943 |        0.03064 |
+|         512 |    0.02935 |   0.03016 |         0.02944 |        0.03077 |
+|       1,024 |    0.02936 |   0.02957 |         0.03042 |        0.03270 |
+|       2,048 |    0.02933 |   0.02992 |         0.02951 |        0.03734 |
+|       4,096 |    0.02919 |   0.02990 |         0.03145 |        0.05563 |
+|       8,192 |    0.02922 |   0.02950 |         0.02915 |        0.09337 |
+|      16,384 |    0.02943 |   0.03018 |         0.03921 |        0.17685 |
 
 Against the theoretical bound $2b \cdot 2^{-f} = 0.03125$:
 
@@ -1918,11 +1919,11 @@ first. Both arms use the same sequential keys and the same
 the only difference.
 
 | `n_buckets` | Shipped mean | Shipped max | Shipped max / bound | Finalized mean | Finalized max | Finalized max / bound |
-|---:|---:|---:|---:|---:|---:|---:|
-| 256 | 0.03015 | 0.03100 | 0.99 | 0.02867 | 0.02946 | 0.94 |
-| 1,024 | 0.03610 | 0.04742 | 1.52 | 0.02893 | 0.02938 | 0.94 |
-| 4,096 | 0.01432 | 0.01470 | 0.47 | 0.02864 | 0.02914 | 0.93 |
-| 16,384 | 0.01327 | 0.01370 | 0.44 | 0.02763 | 0.02866 | 0.92 |
+|------------:|-------------:|------------:|--------------------:|---------------:|--------------:|----------------------:|
+|         256 |      0.03015 |     0.03100 |                0.99 |        0.02867 |       0.02946 |                  0.94 |
+|       1,024 |      0.03610 |     0.04742 |                1.52 |        0.02893 |       0.02938 |                  0.94 |
+|       4,096 |      0.01432 |     0.01470 |                0.47 |        0.02864 |       0.02914 |                  0.93 |
+|      16,384 |      0.01327 |     0.01370 |                0.44 |        0.02763 |       0.02866 |                  0.92 |
 
 The finalizer does what it is meant to do: it makes the rate **uniform and
 bounded**. Across all 12 finalized cells the rate lies in
@@ -1983,15 +1984,15 @@ All 14 rows satisfy both.
 records:
 
 | Tail requested | Replayed | Ckpt read pages | Replay read pages | Mount read pages | Mount p50 (ms) | µs/record |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 0 | 260 | 1 | 261 | 0.43 | — |
-| 10 | 10 | 260 | 125 | 385 | 0.50 | 50.27 |
-| 50 | 50 | 260 | 625 | 885 | 1.26 | 25.21 |
-| 100 | 100 | 260 | 1,251 | 1,511 | 1.62 | 16.23 |
-| 500 | 500 | 260 | 6,251 | 6,511 | 2.97 | 5.93 |
-| 1000 | 1000 | 260 | 12,257 | 12,517 | 10.97 | 10.97 |
-| 4000 | 4000 | 260 | 48,257 | 48,517 | 19.96 | 4.99 |
-| 8000 | 8000 | 260 | 96,257 | 96,517 | 36.62 | 4.58 |
+|---------------:|---------:|----------------:|------------------:|-----------------:|---------------:|----------:|
+|              0 |        0 |             260 |                 1 |              261 |           0.43 |         — |
+|             10 |       10 |             260 |               125 |              385 |           0.50 |     50.27 |
+|             50 |       50 |             260 |               625 |              885 |           1.26 |     25.21 |
+|            100 |      100 |             260 |             1,251 |            1,511 |           1.62 |     16.23 |
+|            500 |      500 |             260 |             6,251 |            6,511 |           2.97 |      5.93 |
+|           1000 |     1000 |             260 |            12,257 |           12,517 |          10.97 |     10.97 |
+|           4000 |     4000 |             260 |            48,257 |           48,517 |          19.96 |      4.99 |
+|           8000 |     8000 |             260 |            96,257 |           96,517 |          36.62 |      4.58 |
 
 Least squares over the 7 nonzero-tail rows:
 
@@ -2066,46 +2067,50 @@ Single-head arm, mean over seeds, against the classical bound
 $\mathrm{WA} \le 1/(1-u)$:
 
 | $u$ | $s=0.0$ | $s=0.6$ | $s=0.9$ | $s=1.2$ | Bound $1/(1-u)$ | $s=0$ with parity floor |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0.5 | 1.283 | 1.389 | 1.493 | 1.544 | 2.000 | 1.925 |
-| 0.6 | 1.535 | 1.656 | 1.748 | 1.774 | 2.501 | 2.303 |
-| 0.7 | 2.008 | 2.153 | 2.297 | 2.504 | 3.333 | 3.012 |
-| 0.8 | 3.071 | 3.233 | 3.312 | 3.448 | 5.001 | 4.606 |
-| 0.9 | 7.351 | 7.426 | 7.226 | 5.521 | 9.990 | 11.026 |
+|----:|--------:|--------:|--------:|--------:|----------------:|------------------------:|
+| 0.5 |   1.283 |   1.389 |   1.493 |   1.544 |           2.000 |                   1.925 |
+| 0.6 |   1.535 |   1.656 |   1.748 |   1.774 |           2.501 |                   2.303 |
+| 0.7 |   2.008 |   2.153 |   2.297 |   2.504 |           3.333 |                   3.012 |
+| 0.8 |   3.071 |   3.233 |   3.312 |   3.448 |           5.001 |                   4.606 |
+| 0.9 |   7.351 |   7.426 |   7.226 |   5.521 |           9.990 |                  11.026 |
 
 In the corrected harness the bound holds at **every one of the 240 cells**, with
 at least 22.5% headroom at the worst cell, and there are **zero** degenerate rows
 (no GC starvation, no progress-guard hits). Realised utilisation matches its
 target to within 0.0001 at the reference capacity. Seed noise is under 1%
 everywhere (max CV 0.864%, median 0.214%), and WA measured over the second half
-of 100,000 operations is converged (max 0.784% change from 200k to 400k ops).
+of 100,000 operations is converged: the largest relative change from 200,000 to
+400,000 operations, across all 80 utilisation/skew/arm configurations, is 0.784%.
+Run length is swept through the `SLATE_WA_NOPS` environment variable rather than a
+command-line flag — the one harness parameter in this document not set by a
+`cargo` argument.
 
 **Hot/cold segregation pays off only under skew.** Comparing the two-head arm
 against the single-head arm *at matched capacity*, and against the arm given two
 extra segments (which reproduces the original harness's configuration):
 
-| $u$ | $s$ | Single | Hot/cold (matched) | Δ | Hot/cold (+2 segs) | Δ |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0.5 | 0.0 | 1.283 | 1.284 | +0.04% | 1.255 | -2.23% |
-| 0.5 | 0.6 | 1.389 | 1.375 | -1.00% | 1.344 | -3.21% |
-| 0.5 | 0.9 | 1.493 | 1.435 | -3.89% | 1.402 | -6.10% |
-| 0.5 | 1.2 | 1.544 | 1.481 | -4.08% | 1.440 | -6.75% |
-| 0.6 | 0.0 | 1.535 | 1.543 | +0.53% | 1.482 | -3.45% |
-| 0.6 | 0.6 | 1.656 | 1.651 | -0.26% | 1.586 | -4.20% |
-| 0.6 | 0.9 | 1.748 | 1.711 | -2.08% | 1.647 | -5.77% |
-| 0.6 | 1.2 | 1.774 | 1.723 | -2.88% | 1.672 | -5.74% |
-| 0.7 | 0.0 | 2.008 | 2.019 | +0.55% | 1.886 | -6.09% |
-| 0.7 | 0.6 | 2.153 | 2.139 | -0.64% | 1.995 | -7.33% |
-| 0.7 | 0.9 | 2.297 | 2.206 | -3.98% | 2.060 | -10.32% |
-| 0.7 | 1.2 | 2.504 | 2.043 | -18.41% | 1.971 | -21.27% |
-| 0.8 | 0.0 | 3.071 | 3.095 | +0.80% | 2.720 | -11.42% |
-| 0.8 | 0.6 | 3.233 | 3.228 | -0.14% | 2.840 | -12.15% |
-| 0.8 | 0.9 | 3.312 | 3.243 | -2.10% | 2.900 | -12.46% |
-| 0.8 | 1.2 | 3.448 | 2.597 | -24.67% | 2.412 | -30.05% |
-| 0.9 | 0.0 | 7.351 | 7.651 | +4.09% | 5.304 | -27.85% |
-| 0.9 | 0.6 | 7.426 | 7.699 | +3.66% | 5.424 | -26.97% |
-| 0.9 | 0.9 | 7.226 | 6.719 | -7.03% | 5.015 | -30.59% |
-| 0.9 | 1.2 | 5.521 | 4.625 | -16.23% | 3.587 | -35.02% |
+| $u$ | $s$ | Single | Hot/cold (matched) |       Δ | Hot/cold (+2 segs) |       Δ |
+|----:|----:|-------:|-------------------:|--------:|-------------------:|--------:|
+| 0.5 | 0.0 |  1.283 |              1.284 |  +0.04% |              1.255 |  -2.23% |
+| 0.5 | 0.6 |  1.389 |              1.375 |  -1.00% |              1.344 |  -3.21% |
+| 0.5 | 0.9 |  1.493 |              1.435 |  -3.89% |              1.402 |  -6.10% |
+| 0.5 | 1.2 |  1.544 |              1.481 |  -4.08% |              1.440 |  -6.75% |
+| 0.6 | 0.0 |  1.535 |              1.543 |  +0.53% |              1.482 |  -3.45% |
+| 0.6 | 0.6 |  1.656 |              1.651 |  -0.26% |              1.586 |  -4.20% |
+| 0.6 | 0.9 |  1.748 |              1.711 |  -2.08% |              1.647 |  -5.77% |
+| 0.6 | 1.2 |  1.774 |              1.723 |  -2.88% |              1.672 |  -5.74% |
+| 0.7 | 0.0 |  2.008 |              2.019 |  +0.55% |              1.886 |  -6.09% |
+| 0.7 | 0.6 |  2.153 |              2.139 |  -0.64% |              1.995 |  -7.33% |
+| 0.7 | 0.9 |  2.297 |              2.206 |  -3.98% |              2.060 | -10.32% |
+| 0.7 | 1.2 |  2.504 |              2.043 | -18.41% |              1.971 | -21.27% |
+| 0.8 | 0.0 |  3.071 |              3.095 |  +0.80% |              2.720 | -11.42% |
+| 0.8 | 0.6 |  3.233 |              3.228 |  -0.14% |              2.840 | -12.15% |
+| 0.8 | 0.9 |  3.312 |              3.243 |  -2.10% |              2.900 | -12.46% |
+| 0.8 | 1.2 |  3.448 |              2.597 | -24.67% |              2.412 | -30.05% |
+| 0.9 | 0.0 |  7.351 |              7.651 |  +4.09% |              5.304 | -27.85% |
+| 0.9 | 0.6 |  7.426 |              7.699 |  +3.66% |              5.424 | -26.97% |
+| 0.9 | 0.9 |  7.226 |              6.719 |  -7.03% |              5.015 | -30.59% |
+| 0.9 | 1.2 |  5.521 |              4.625 | -16.23% |              3.587 | -35.02% |
 
 At $s = 0$ the matched-capacity two-head arm is *worse* by up to 4.09%: two open
 heads consume an extra reserve segment for no separation benefit. Under heavy
@@ -2142,30 +2147,30 @@ document's stated bound, applied here as an **external check**: the constant
 compile-time assertion enforces it
 ([Section 7.3](#73-defect-3-unimplemented-claims-in-the-async-design-document)).
 
-| Operation | Future bytes | Under 2,048 B |
-|---|---:|:---:|
-| `Slate::get_into_async` | 360 | yes |
-| `Slate::index_update_offset_async` | 520 | yes |
-| `Slate::index_remove_key_async` | 512 | yes |
-| `Slate::append_cold_async` | 1,712 | yes |
-| `Slate::append_cold_tombstone_async` | 1,696 | yes |
-| `Slate::commit_async` | 1,656 | yes |
-| `Slate::seal_epoch_now_async` | 520 | yes |
-| `Slate::compact_async` | 1,624 | yes |
-| `gc::compact_one_async` | 1,592 | yes |
-| `Log::commit_async` | 1,304 | yes |
-| `segment::encode_parity` | 1,424 | yes |
-| `epoch::seal_epoch_async` | 496 | yes |
-| `epoch::mount_async` | 616 | yes |
-| `counterfactual::stack_local_1280B_across_await` | 1,328 | yes |
-| `counterfactual::borrowed_1280B_buffer` | 80 | yes |
-| `task::YieldNow` | 1 | yes |
-| `struct::ScratchWorkspace` | 5,720 | **no** |
-| `struct::Slate<SimFlash,SimCounter,CryptoSealer>` | 9,720 | **no** |
-| `struct::Slate<BlockingFlash<SimFlash>,BlockingCounter<SimCounter>,CryptoSealer>` | 9,720 | **no** |
-| `struct::SimFlash` | 224 | yes |
-| `struct::CryptoSealer` | 168 | yes |
-| `struct::EngineState` | 104 | yes |
+| Operation                                                                         | Future bytes | Under 2,048 B |
+|-----------------------------------------------------------------------------------|-------------:|:-------------:|
+| `Slate::get_into_async`                                                           |          360 |      yes      |
+| `Slate::index_update_offset_async`                                                |          520 |      yes      |
+| `Slate::index_remove_key_async`                                                   |          512 |      yes      |
+| `Slate::append_cold_async`                                                        |        1,712 |      yes      |
+| `Slate::append_cold_tombstone_async`                                              |        1,696 |      yes      |
+| `Slate::commit_async`                                                             |        1,656 |      yes      |
+| `Slate::seal_epoch_now_async`                                                     |          520 |      yes      |
+| `Slate::compact_async`                                                            |        1,624 |      yes      |
+| `gc::compact_one_async`                                                           |        1,592 |      yes      |
+| `Log::commit_async`                                                               |        1,304 |      yes      |
+| `segment::encode_parity`                                                          |        1,424 |      yes      |
+| `epoch::seal_epoch_async`                                                         |          496 |      yes      |
+| `epoch::mount_async`                                                              |          616 |      yes      |
+| `counterfactual::stack_local_1280B_across_await`                                  |        1,328 |      yes      |
+| `counterfactual::borrowed_1280B_buffer`                                           |           80 |      yes      |
+| `task::YieldNow`                                                                  |            1 |      yes      |
+| `struct::ScratchWorkspace`                                                        |        5,720 |    **no**     |
+| `struct::Slate<SimFlash,SimCounter,CryptoSealer>`                                 |        9,720 |    **no**     |
+| `struct::Slate<BlockingFlash<SimFlash>,BlockingCounter<SimCounter>,CryptoSealer>` |        9,720 |    **no**     |
+| `struct::SimFlash`                                                                |          224 |      yes      |
+| `struct::CryptoSealer`                                                            |          168 |      yes      |
+| `struct::EngineState`                                                             |          104 |      yes      |
 
 All **13** engine futures fit, the largest being `Slate::append_cold_async` at
 1,712 B. The rows marked `struct::` are not futures and are not expected to fit:
@@ -2198,19 +2203,19 @@ this harness wraps `SimFlash` in a microsecond latency accumulator.
 Geometry: 2 MiB region, 8,192-key index, `b_commit` $= 8$, except the
 `recover::recover` sweep, which used 16 MiB so a large tail fits.
 
-| Path | Yield points | Spans | Total sim (ms) | Mean span (ms) | Max span (ms) | Erases in longest | Max span excl. one erase (ms) |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| `Slate::commit_async[8 records]` | 0 | 1 | 12.5 | 12.5 | 12.5 | 0 | 12.5 |
-| `Slate::seal_epoch_now_async[8192-slot index]` | 138 | 139 | 470.0 | 3.4 | 45.0 | 1 | 0.0 |
-| `gc::compact_one_async[GC_YIELD_EVERY_RECORDS=8]` | 32 | 33 | 725.9 | 22.0 | 53.1 | 1 | 8.1 |
-| `recover::recover[BLOCKING Flash trait; 128 records replayed]` | 0 | 1 | 72.1 | 72.1 | 72.1 | 0 | 72.1 |
-| `recover::recover[BLOCKING Flash trait; 256 records replayed]` | 0 | 1 | 144.1 | 144.1 | 144.1 | 0 | 144.1 |
-| `recover::recover[BLOCKING Flash trait; 512 records replayed]` | 0 | 1 | 288.1 | 288.1 | 288.1 | 0 | 288.1 |
-| `epoch::mount_async[checkpoint load only]` | 2 | 3 | 13.1 | 4.4 | 13.0 | 0 | 13.0 |
-| `recover::recover[BLOCKING Flash trait; 1024 records replayed]` | 0 | 1 | 576.1 | 576.1 | 576.1 | 0 | 576.1 |
-| `recover::recover[BLOCKING Flash trait; 2048 records replayed]` | 0 | 1 | 1152.1 | 1152.1 | 1152.1 | 0 | 1152.1 |
-| `recover::recover[BLOCKING Flash trait; 4096 records replayed]` | 0 | 1 | 2304.1 | 2304.1 | 2304.1 | 0 | 2304.1 |
-| `recover::recover[BLOCKING Flash trait; 8192 records replayed]` | 0 | 1 | 4608.1 | 4608.1 | 4608.1 | 0 | 4608.1 |
+| Path                                                            | Yield points | Spans | Total sim (ms) | Mean span (ms) | Max span (ms) | Erases in longest | Max span excl. one erase (ms) |
+|-----------------------------------------------------------------|-------------:|------:|---------------:|---------------:|--------------:|------------------:|------------------------------:|
+| `Slate::commit_async[8 records]`                                |            0 |     1 |           12.5 |           12.5 |          12.5 |                 0 |                          12.5 |
+| `Slate::seal_epoch_now_async[8192-slot index]`                  |          138 |   139 |          470.0 |            3.4 |          45.0 |                 1 |                           0.0 |
+| `gc::compact_one_async[GC_YIELD_EVERY_RECORDS=8]`               |           32 |    33 |          725.9 |           22.0 |          53.1 |                 1 |                           8.1 |
+| `recover::recover[BLOCKING Flash trait; 128 records replayed]`  |            0 |     1 |           72.1 |           72.1 |          72.1 |                 0 |                          72.1 |
+| `recover::recover[BLOCKING Flash trait; 256 records replayed]`  |            0 |     1 |          144.1 |          144.1 |         144.1 |                 0 |                         144.1 |
+| `recover::recover[BLOCKING Flash trait; 512 records replayed]`  |            0 |     1 |          288.1 |          288.1 |         288.1 |                 0 |                         288.1 |
+| `epoch::mount_async[checkpoint load only]`                      |            2 |     3 |           13.1 |            4.4 |          13.0 |                 0 |                          13.0 |
+| `recover::recover[BLOCKING Flash trait; 1024 records replayed]` |            0 |     1 |          576.1 |          576.1 |         576.1 |                 0 |                         576.1 |
+| `recover::recover[BLOCKING Flash trait; 2048 records replayed]` |            0 |     1 |         1152.1 |         1152.1 |        1152.1 |                 0 |                        1152.1 |
+| `recover::recover[BLOCKING Flash trait; 4096 records replayed]` |            0 |     1 |         2304.1 |         2304.1 |        2304.1 |                 0 |                        2304.1 |
+| `recover::recover[BLOCKING Flash trait; 8192 records replayed]` |            0 |     1 |         4608.1 |         4608.1 |        4608.1 |                 0 |                        4608.1 |
 
 Compaction bounds its longest uninterruptible span at 53.1 ms regardless of how
 much work it does, and epoch sealing at 45.0 ms — both effectively at the 50 ms
@@ -2237,15 +2242,15 @@ constant, rebuilding, re-running and restoring the file to its committed value o
 8 — it is a plain `pub const u16` with no runtime override.
 
 | Cadence | Yield points | Flash ops | Mean span (ms) | Max span (ms) | Max excl. one erase (ms) |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 174 | 851 | 4.15 | 45.2 | 0.2 |
-| 2 | 93 | 851 | 7.72 | 45.2 | 0.2 |
-| 4 | 52 | 851 | 13.70 | 53.1 | 8.1 |
-| 8 | 32 | 851 | 22.00 | 53.1 | 8.1 |
-| 16 | 22 | 851 | 31.56 | 53.1 | 8.1 |
-| 32 | 17 | 851 | 40.33 | 53.1 | 8.1 |
-| 64 | 14 | 851 | 48.39 | 89.6 | 44.6 |
-| 128 | 13 | 851 | 51.85 | 141.3 | 141.3 |
+|--------:|-------------:|----------:|---------------:|--------------:|-------------------------:|
+|       1 |          174 |       851 |           4.15 |          45.2 |                      0.2 |
+|       2 |           93 |       851 |           7.72 |          45.2 |                      0.2 |
+|       4 |           52 |       851 |          13.70 |          53.1 |                      8.1 |
+|       8 |           32 |       851 |          22.00 |          53.1 |                      8.1 |
+|      16 |           22 |       851 |          31.56 |          53.1 |                      8.1 |
+|      32 |           17 |       851 |          40.33 |          53.1 |                      8.1 |
+|      64 |           14 |       851 |          48.39 |          89.6 |                     44.6 |
+|     128 |           13 |       851 |          51.85 |         141.3 |                    141.3 |
 
 `flash_ops_total` is invariant at 851 across the entire sweep. This is direct
 confirmation of the design's binding rule: **changing yield cadence MUST NOT
@@ -2272,12 +2277,12 @@ this is the configuration the "zero-cost" claim is about. `DeadlineFlash`
 suspends for a real 45,000 µs on erase (W25Q `tSE` typical), standing in for a
 DMA- or interrupt-backed QSPI driver.
 
-| Flash model | Executor | Reps | Wall p50 (ms) | CPU p50 (ms) | CPU/wall | Pending polls |
-|---|---|---:|---:|---:|---:|---:|
-| task::block_on (busy poll |  spin_loop hint) | 41 | 4.824 | 4.825 | 100.0% | 0 |
-| bare poll loop (native async |  no spin hint) | 41 | 4.813 | 4.812 | 100.0% | 0 |
-| task::block_on (busy poll |  spin_loop hint) | 5 | 1215.565 | 1213.843 | 99.9% | 52,621,624 |
-| parking executor (100 us park per Pending) | 5 | 300 | 36.086 | 2.800 | 9438.0% | 236 |
+| Flash model                                | Executor        | Reps | Wall p50 (ms) | CPU p50 (ms) | CPU/wall | Pending polls |
+|--------------------------------------------|-----------------|-----:|--------------:|-------------:|---------:|--------------:|
+| task::block_on (busy poll                  | spin_loop hint) |   41 |         4.824 |        4.825 |   100.0% |             0 |
+| bare poll loop (native async               | no spin hint)   |   41 |         4.813 |        4.812 |   100.0% |             0 |
+| task::block_on (busy poll                  | spin_loop hint) |    5 |      1215.565 |     1213.843 |    99.9% |    52,621,624 |
+| parking executor (100 us park per Pending) | 5               |  300 |        36.086 |        2.800 |  9438.0% |           236 |
 
 **When the driver never suspends, the projection is genuinely free:** 4.813 ms
 versus 4.824 ms, a 0.23% difference, which is noise.
@@ -2336,17 +2341,17 @@ Geometry as read from the device: 2 MiB region, `data_base` 540,672, usable
 1,556,480 B, 256 B pages, 4 KiB blocks, 31 segments, 74 B records (30 B of key
 plus value), checkpoint 33,024 B.
 
-| Records | Epoch | Hot head | Segs free | Segs sealed | `user_bytes` | `marker_bytes` | `ckpt_bytes` | Erases | WA |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1,000 | 2 | 732,672 | 27 | 2 | 74,000 | 64,000 | 33,024 | 21 | 2.7435 |
-| 2,000 | 3 | 924,672 | 24 | 5 | 148,000 | 128,000 | 66,048 | 42 | 2.7435 |
-| 3,000 | 4 | 1,116,672 | 21 | 8 | 222,000 | 192,000 | 99,072 | 63 | 2.7435 |
-| 4,000 | 5 | 1,308,672 | 18 | 11 | 296,000 | 256,000 | 132,096 | 84 | 2.7435 |
-| 5,000 | 6 | 1,500,672 | 15 | 14 | 370,000 | 320,000 | 165,120 | 105 | 2.7435 |
-| 6,000 | 7 | 1,692,672 | 12 | 17 | 444,000 | 384,000 | 198,144 | 126 | 2.7435 |
-| 7,000 | 8 | 1,884,672 | 9 | 20 | 518,000 | 448,000 | 231,168 | 147 | 2.7435 |
-| 8,000 | 10 | 2,076,672 | 29 | 0 | 592,000 | 512,000 | 297,216 | 441 | 2.7993 |
-| 8,112 | 10 | 2,096,640 | 29 | 0 | 600,288 | 518,656 | 297,216 | 441 | 2.7911 |
+| Records | Epoch |  Hot head | Segs free | Segs sealed | `user_bytes` | `marker_bytes` | `ckpt_bytes` | Erases |     WA |
+|--------:|------:|----------:|----------:|------------:|-------------:|---------------:|-------------:|-------:|-------:|
+|   1,000 |     2 |   732,672 |        27 |           2 |       74,000 |         64,000 |       33,024 |     21 | 2.7435 |
+|   2,000 |     3 |   924,672 |        24 |           5 |      148,000 |        128,000 |       66,048 |     42 | 2.7435 |
+|   3,000 |     4 | 1,116,672 |        21 |           8 |      222,000 |        192,000 |       99,072 |     63 | 2.7435 |
+|   4,000 |     5 | 1,308,672 |        18 |          11 |      296,000 |        256,000 |      132,096 |     84 | 2.7435 |
+|   5,000 |     6 | 1,500,672 |        15 |          14 |      370,000 |        320,000 |      165,120 |    105 | 2.7435 |
+|   6,000 |     7 | 1,692,672 |        12 |          17 |      444,000 |        384,000 |      198,144 |    126 | 2.7435 |
+|   7,000 |     8 | 1,884,672 |         9 |          20 |      518,000 |        448,000 |      231,168 |    147 | 2.7435 |
+|   8,000 |    10 | 2,076,672 |        29 |           0 |      592,000 |        512,000 |      297,216 |    441 | 2.7993 |
+|   8,112 |    10 | 2,096,640 |        29 |           0 |      600,288 |        518,656 |      297,216 |    441 | 2.7911 |
 
 **The instrument is self-consistent.** The device's reported write amplification
 of 2.7435 recomputes from its own byte buckets to 2.74357, a discrepancy of
@@ -2411,10 +2416,10 @@ The effect inflates the denominator while leaving overhead untouched, so
 
 $$\mathrm{WA}_{reported} = \frac{\mathrm{WA}_{true} + 1}{2}, \qquad \mathrm{WA}_{true} = 2\,\mathrm{WA}_{reported} - 1$$
 
-| Batch | Reported before fix | Correct after fix |
-|---:|---:|---:|
-| $B = 1$ | 3.6539 | **6.3078** |
-| $B = 128$ | 1.0541 | **1.1082** |
+|     Batch | Reported before fix | Correct after fix |
+|----------:|--------------------:|------------------:|
+|   $B = 1$ |              3.6539 |        **6.3078** |
+| $B = 128$ |              1.0541 |        **1.1082** |
 
 **Fix:** the five duplicate `add_user_bytes` calls were removed, leaving a single
 call site in the core append path. Verification after the fix: `cargo fmt` clean,
@@ -2455,11 +2460,11 @@ self-check was gated on `if u <= 0.8`, and it printed "passed all assertions".
 Above that gate, **3 of 40 cells violate** $\mathrm{WA} \le 1/(1-u)$, by up to
 **18.45%**:
 
-| $u$ | $s$ | Arm | WA | Realised $u$ | Bound | Excess |
-|---:|---:|---|---:|---:|---:|---:|
-| 0.9 | 0.6 | single | 11.07 | 0.893 | 9.346 | +18.45% |
-| 0.9 | 0.0 | single | 10.85 | 0.893 | 9.346 | +16.10% |
-| 0.9 | 0.9 | single | 9.77 | 0.893 | 9.346 | +4.54% |
+| $u$ | $s$ | Arm    |    WA | Realised $u$ | Bound |  Excess |
+|----:|----:|--------|------:|-------------:|------:|--------:|
+| 0.9 | 0.6 | single | 11.07 |        0.893 | 9.346 | +18.45% |
+| 0.9 | 0.0 | single | 10.85 |        0.893 | 9.346 | +16.10% |
+| 0.9 | 0.9 | single |  9.77 |        0.893 | 9.346 |  +4.54% |
 
 **The root cause is a small-capacity artefact, not a failure of the bound.** The
 2–3 segment GC reserve is a fixed overhead: at 35 segments it is 5.7% of
@@ -2468,15 +2473,15 @@ allocator-reachable capacity, and $1/(1-0.954) = 22.0$ — against which the
 measured 12.2 is well inside. A capacity sweep at $u = 0.9$, single head, makes
 this explicit:
 
-| Capacity (segs) | WA | Bound | Violations | Note |
-|---:|---:|---:|---:|---|
-| 16 | — | — | — | degenerate: GC starves |
-| 24 | 236.3 | — | — | degenerate |
-| 35 | 12.2 | 10.0 | 9 of 12 | the original harness's operating point |
-| 48 | 8.22 | 10.01 | 0 | |
-| 64 | 6.88 | 9.99 | 0 | |
-| 96 | 5.98 | 10.01 | 0 | |
-| 128 | 5.61 | 10.0 | 0 | |
+| Capacity (segs) |    WA | Bound | Violations | Note                                   |
+|----------------:|------:|------:|-----------:|----------------------------------------|
+|              16 |     — |     — |          — | degenerate: GC starves                 |
+|              24 | 236.3 |     — |          — | degenerate                             |
+|              35 |  12.2 |  10.0 |    9 of 12 | the original harness's operating point |
+|              48 |  8.22 | 10.01 |          0 |                                        |
+|              64 |  6.88 |  9.99 |          0 |                                        |
+|              96 |  5.98 | 10.01 |          0 |                                        |
+|             128 |  5.61 |  10.0 |          0 |                                        |
 
 **Normative consequence for anyone quoting the bound:** state it as
 $\mathrm{WA} \le 1/(1 - u_{net})$ where $u_{net}$ excludes the GC reserve, and
@@ -2506,25 +2511,25 @@ asserts machinery that does not exist. **Data:** `async_facade.json`,
 
 Constants the document tabulates as enforcement mechanisms:
 
-| Claimed | Reality at `970324f` |
-|---|---|
-| `MAX_FUTURE_BYTES = 2048`, "compile-time assert" | **Does not exist.** `grep` returns zero hits. The `const _` assertion block and the `crate::probe` module it references do not exist. The 2,048 B bound is met by construction today ([Section 6.14.1](#6141-future-sizes)) and nothing would catch a regression. |
-| `MAX_YIELD_SPAN_MS = 50`, "documentation constant + test bound" | **Does not exist.** Zero hits repository-wide. No test asserts any yield-span bound. |
-| `RECOVER_YIELD_EVERY_PAGES = 32` | **Exists** at `config.rs:46` but is **referenced nowhere** — only its declaration. It is dead code, because `recover.rs` is still on the blocking `Flash` trait. |
-| `SlateSync<'a, F, C, S>` newtype | **Does not exist.** The projection was done instead as `cfg`-gated inherent methods on `Slate` itself. |
-| `segment::write_parity` | No such symbol. The function is `segment::encode_parity`, and **it has no callers**. |
-| Debug assertion pairing `block_on` with `BlockingFlash` | Does not exist. |
+| Claimed                                                         | Reality at `970324f`                                                                                                                                                                                                                                              |
+|-----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `MAX_FUTURE_BYTES = 2048`, "compile-time assert"                | **Does not exist.** `grep` returns zero hits. The `const _` assertion block and the `crate::probe` module it references do not exist. The 2,048 B bound is met by construction today ([Section 6.14.1](#6141-future-sizes)) and nothing would catch a regression. |
+| `MAX_YIELD_SPAN_MS = 50`, "documentation constant + test bound" | **Does not exist.** Zero hits repository-wide. No test asserts any yield-span bound.                                                                                                                                                                              |
+| `RECOVER_YIELD_EVERY_PAGES = 32`                                | **Exists** at `config.rs:46` but is **referenced nowhere** — only its declaration. It is dead code, because `recover.rs` is still on the blocking `Flash` trait.                                                                                                  |
+| `SlateSync<'a, F, C, S>` newtype                                | **Does not exist.** The projection was done instead as `cfg`-gated inherent methods on `Slate` itself.                                                                                                                                                            |
+| `segment::write_parity`                                         | No such symbol. The function is `segment::encode_parity`, and **it has no callers**.                                                                                                                                                                              |
+| Debug assertion pairing `block_on` with `BlockingFlash`         | Does not exist.                                                                                                                                                                                                                                                   |
 
 Test suites the document names as the feature's acceptance criteria:
 
-| Claimed suite | Reality |
-|---|---|
-| Op-sequence equivalence over 1,000 seeds — the binding rule's **enforcement mechanism** | No such test exists. No async-versus-blocking trace comparison anywhere in `crates/*/tests/`. |
-| Drop-equivalence / cancellation-safety at every await point | No such test exists. |
-| Yield-span bound test | No such test exists. |
-| Future-size regression check | No such test exists. |
-| Executor portability smoke test under Embassy on the QEMU harness | Not present. |
-| Interrupt-latency / heartbeat-jitter measurement on hardware — called by the document "the headline claim of the feature", to be measured and not asserted | **Not present, and the instrument does not exist.** |
+| Claimed suite                                                                                                                                              | Reality                                                                                       |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| Op-sequence equivalence over 1,000 seeds — the binding rule's **enforcement mechanism**                                                                    | No such test exists. No async-versus-blocking trace comparison anywhere in `crates/*/tests/`. |
+| Drop-equivalence / cancellation-safety at every await point                                                                                                | No such test exists.                                                                          |
+| Yield-span bound test                                                                                                                                      | No such test exists.                                                                          |
+| Future-size regression check                                                                                                                               | No such test exists.                                                                          |
+| Executor portability smoke test under Embassy on the QEMU harness                                                                                          | Not present.                                                                                  |
+| Interrupt-latency / heartbeat-jitter measurement on hardware — called by the document "the headline claim of the feature", to be measured and not asserted | **Not present, and the instrument does not exist.**                                           |
 
 **The demonstration binary does not use its executor.** `embassy_demo` is not an
 Embassy binary: its `embassy_executor::Spawner` and `embassy_time` imports are
@@ -2648,41 +2653,41 @@ available.
 The data files are authoritative. Where an earlier prose description of this work
 disagrees with a data file, the following corrections apply.
 
-| Quantity | Earlier prose | Data file | Correct value |
-|---|---|---|---|
-| GC share of bytes written | "under 0.4% across the entire sweep" | `wa_buckets.csv` | Up to **0.95%** (at $B = 4$); it is 0.37% at $B = 1$ and 0% at most points. The claim holds only at $B = 1$. |
-| Amplification reduction $B{=}1 \to B{=}128$ | "$5.7\times$" | `wa_buckets.csv` | $6.3078/1.1082 = \mathbf{5.69\times}$ (rounds to $5.7\times$; stated here to the precision the data supports). |
-| WA at $B = 2$ | 3.62 | `wa_buckets.csv` | **3.6160** |
-| WA at $B = 4$ | 2.38 | `wa_buckets.csv` | **2.3773** |
-| Throughput at $B = 32$ | 151.9 ops/s | `throughput.csv` | **136.23** ops/s. 151.7 is the $B = 27$ row; the sweep is not monotone above $B = 16$. |
-| Get throughput range | "154,000 to 229,000 ops/s" | `throughput.csv` | **153,697 to 438,535** ops/s over the `Full` rows. |
-| Get median latency | "near 5 µs throughout" | `throughput.csv` | **2.8 to 6.1 µs**, and not monotone. |
-| Commit-put CV at $B = 128$ | "12.0%" | `throughput.csv` | 12.02% at $B = 128$, but the **maximum** CV is 14.09% at $B = 27$. |
-| Commit latency model agreement | "$0.98$ to $1.29\times$" | `throughput.csv` | Confirmed: $0.978\times$ to $1.288\times$. |
-| Energy fixed cost $A$ | 1209 µJ/commit, $R^2 = 0.9999$ | `energy_batch.csv` | **1,209.35** µJ/commit, $R^2 = 0.999905$, on the `full_includes_markers` accounting. The payload term is **14,952 nJ/op**, i.e. 15.0 µJ/op. |
-| $B^\star$ example | "28.4 against an empirical minimum at 30, 5.4% error, 0.9% excess power" | `energy_batch.csv` `[bstar]` | At $c = 30{,}000$ nJ/op·s: $B^\star = \mathbf{28.394}$, empirical argmin **30**, relative error **5.35%**, excess power **0.89%**. Values agree; the grid point is $c = 30{,}000$ nJ/op·s, not "0.03 mJ" loosely stated. |
-| Index load factor at first failure | "0.986" | `index_ram.csv` | **0.9858** pooled over both key families; 0.9773 for `mixed` alone and 0.9943 for `sequential`. |
-| Fingerprint bits | "$f = 9$" | `index_ram.csv`, `config.rs` | $f = \mathbf{8}$ (`FP_BITS = 8`). The bound $2b \cdot 2^{-f} = 0.03125$ is correct; the exponent quoted was not. |
-| Sequential collision worst case | "0.177, nearly $6\times$ the bound"; elsewhere "$5.7\times$" | `index_ram.csv` | **0.176845**, which is $\mathbf{5.66\times}$ the 0.03125 bound. |
-| Sequential-key collision trend with table size | (a single source was assumed) | `index_ram.csv` **vs** `fp_remedy.csv` | **The two harnesses disagree.** `index_ram.csv` has the shipped fingerprint degrading *with* table size (0.0295 at 2,048 rising to 0.17685 at 16,384); `fp_remedy.csv` has it *improving* with table size (0.04742 at 1,024 falling to 0.0133 at 16,384). Both are host in-RAM computations; only `index_ram.csv` drives the real `Index` type. Reported as an open discrepancy, not resolved — see [Section 6.11.1](#6111-a-probe-of-the-remedy-modelled-not-the-engine). |
-| Harness file names | data-file headers say `paper_*` | repository at time of writing | The measurement harnesses were **renamed `paper_* ` to `slate_*`** after the data files were generated, so every `command:` line inside the data-file headers names a path that no longer exists. The commands in [Section 6.2](#62-reproduction-commands) use the current names. Values in the data files are unaffected. |
-| Mixed-key collision rate | "0.0293, 95% upper bound 0.0301" | `index_ram.csv` | Mean **0.02933**; the highest Wilson 95% upper bound over all mixed rows is **0.03094**. |
-| Mount replay slope | "12.02 pages per record" | `recovery.csv` | Confirmed: **12.0242**, $R^2 = 0.999993$. |
-| Volume-sweep growth | "$44.8\times$ volume, $1.33\times$ reads" | `recovery.csv` | Confirmed: 204,800 to 9,164,800 B, 2,263 to 3,017 pages. |
-| Mount replay span at 8,192 records | "4.6 s" | `async_yield.csv` | **4,608.1 ms**. |
-| GC longest yield span | "53 ms" | `async_yield.csv` | **53.1 ms**; 8.1 ms excluding one erase. |
-| Epoch-seal yield span | "45 ms" | `async_yield.csv` | **45.0 ms**; 0.0 ms excluding one erase. |
-| Busy-poll spin count | "52.6 million" | `async_blocking_cost.csv` | **52,621,624**. |
-| Blocking-façade CPU reduction | "97%" | `async_blocking_cost.csv` | **97.03%**, for a **4.54%** wall-clock penalty. |
-| Zero-cost margin | "0.23%" | `async_blocking_cost.csv` | Confirmed: $-0.23\%$ wall, $-0.27\%$ CPU. |
-| Device exhaustion error | "0.07%" | `device_c3_analysis.json` | $\lvert 8112 - 8107 \rvert / 8112 = \mathbf{0.06\%}$. |
-| Device padding understatement | "11%" | `device_c3_analysis.json` | $3.0409/2.7436 - 1 = \mathbf{10.8\%}$. |
-| Device metrics bytes per record | "170 B counted, 192 B actual" | `device_c3_analysis.json` | The log-region figure is 192 B actual against 170 B attributed to the log; total metrics-counted bytes per record are **203.024** B. Both framings appear; the 22 B padding gap is the invariant. |
-| Firmware SLATE static buffers | "76,008 B in `.data`" | `firmware_size.csv` | Confirmed: $4108 + 4108 + 32780 + 35012 = 76{,}008$ B, identical across all three engine-linking binaries. |
-| Resident RAM | "83,092 B / 81.1 KiB" | `ram_working_set.csv` | Confirmed as the **minimum required** total. The **as-built** `kv_demo` total is **85,204 B / 83.21 KiB**, using the 35,012 B `CKPT_BUF` instead of the 32,900 B minimum. |
-| Segment count / `MAX_SEGMENTS` | "MAX_SEGS = 256" | `config.rs`, `gc.rs` | Both exist: `config::MAX_SEGS = 256` and `gc::MAX_SEGMENTS = 128`. The binding cap is **128**. |
-| Erasure stripe records | "27 records, 2,017 bytes" | `erasure.csv` | Confirmed. |
-| Tamper matrix disposition | "5 refused, 10 mounted" | `tamper.json` | Confirmed for the 15 non-control attacks: **5 refused** (2 `Rollback`, 3 `Tampered`), **10 mounted**, plus 3 pristine controls = 18 rows. |
+| Quantity                                       | Earlier prose                                                            | Data file                              | Correct value                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+|------------------------------------------------|--------------------------------------------------------------------------|----------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| GC share of bytes written                      | "under 0.4% across the entire sweep"                                     | `wa_buckets.csv`                       | Up to **0.95%** (at $B = 4$); it is 0.37% at $B = 1$ and 0% at most points. The claim holds only at $B = 1$.                                                                                                                                                                                                                                                                                                                                                               |
+| Amplification reduction $B{=}1 \to B{=}128$    | "$5.7\times$"                                                            | `wa_buckets.csv`                       | $6.3078/1.1082 = \mathbf{5.69\times}$ (rounds to $5.7\times$; stated here to the precision the data supports).                                                                                                                                                                                                                                                                                                                                                             |
+| WA at $B = 2$                                  | 3.62                                                                     | `wa_buckets.csv`                       | **3.6160**                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| WA at $B = 4$                                  | 2.38                                                                     | `wa_buckets.csv`                       | **2.3773**                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Throughput at $B = 32$                         | 151.9 ops/s                                                              | `throughput.csv`                       | **136.23** ops/s. 151.7 is the $B = 27$ row; the sweep is not monotone above $B = 16$.                                                                                                                                                                                                                                                                                                                                                                                     |
+| Get throughput range                           | "154,000 to 229,000 ops/s"                                               | `throughput.csv`                       | **153,697 to 438,535** ops/s over the `Full` rows.                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Get median latency                             | "near 5 µs throughout"                                                   | `throughput.csv`                       | **2.8 to 6.1 µs**, and not monotone.                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Commit-put CV at $B = 128$                     | "12.0%"                                                                  | `throughput.csv`                       | 12.02% at $B = 128$, but the **maximum** CV is 14.09% at $B = 27$.                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Commit latency model agreement                 | "$0.98$ to $1.29\times$"                                                 | `throughput.csv`                       | Confirmed: $0.978\times$ to $1.288\times$.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Energy fixed cost $A$                          | 1209 µJ/commit, $R^2 = 0.9999$                                           | `energy_batch.csv`                     | **1,209.35** µJ/commit, $R^2 = 0.999905$, on the `full_includes_markers` accounting. The payload term is **14,952 nJ/op**, i.e. 15.0 µJ/op.                                                                                                                                                                                                                                                                                                                                |
+| $B^\star$ example                              | "28.4 against an empirical minimum at 30, 5.4% error, 0.9% excess power" | `energy_batch.csv` `[bstar]`           | At $c = 30{,}000$ nJ/op·s: $B^\star = \mathbf{28.394}$, empirical argmin **30**, relative error **5.35%**, excess power **0.89%**. Values agree; the grid point is $c = 30{,}000$ nJ/op·s, not "0.03 mJ" loosely stated.                                                                                                                                                                                                                                                   |
+| Index load factor at first failure             | "0.986"                                                                  | `index_ram.csv`                        | **0.9858** pooled over both key families; 0.9773 for `mixed` alone and 0.9943 for `sequential`.                                                                                                                                                                                                                                                                                                                                                                            |
+| Fingerprint bits                               | "$f = 9$"                                                                | `index_ram.csv`, `config.rs`           | $f = \mathbf{8}$ (`FP_BITS = 8`). The bound $2b \cdot 2^{-f} = 0.03125$ is correct; the exponent quoted was not.                                                                                                                                                                                                                                                                                                                                                           |
+| Sequential collision worst case                | "0.177, nearly $6\times$ the bound"; elsewhere "$5.7\times$"             | `index_ram.csv`                        | **0.176845**, which is $\mathbf{5.66\times}$ the 0.03125 bound.                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Sequential-key collision trend with table size | (a single source was assumed)                                            | `index_ram.csv` **vs** `fp_remedy.csv` | **The two harnesses disagree.** `index_ram.csv` has the shipped fingerprint degrading *with* table size (0.0295 at 2,048 rising to 0.17685 at 16,384); `fp_remedy.csv` has it *improving* with table size (0.04742 at 1,024 falling to 0.0133 at 16,384). Both are host in-RAM computations; only `index_ram.csv` drives the real `Index` type. Reported as an open discrepancy, not resolved — see [Section 6.11.1](#6111-a-probe-of-the-remedy-modelled-not-the-engine). |
+| Harness file names                             | data-file headers say `paper_*`                                          | repository at time of writing          | The measurement harnesses were **renamed `paper_* ` to `slate_*`** after the data files were generated, so every `command:` line inside the data-file headers names a path that no longer exists. The commands in [Section 6.2](#62-reproduction-commands) use the current names. Values in the data files are unaffected.                                                                                                                                                 |
+| Mixed-key collision rate                       | "0.0293, 95% upper bound 0.0301"                                         | `index_ram.csv`                        | Mean **0.02933**; the highest Wilson 95% upper bound over all mixed rows is **0.03094**.                                                                                                                                                                                                                                                                                                                                                                                   |
+| Mount replay slope                             | "12.02 pages per record"                                                 | `recovery.csv`                         | Confirmed: **12.0242**, $R^2 = 0.999993$.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Volume-sweep growth                            | "$44.8\times$ volume, $1.33\times$ reads"                                | `recovery.csv`                         | Confirmed: 204,800 to 9,164,800 B, 2,263 to 3,017 pages.                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Mount replay span at 8,192 records             | "4.6 s"                                                                  | `async_yield.csv`                      | **4,608.1 ms**.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| GC longest yield span                          | "53 ms"                                                                  | `async_yield.csv`                      | **53.1 ms**; 8.1 ms excluding one erase.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Epoch-seal yield span                          | "45 ms"                                                                  | `async_yield.csv`                      | **45.0 ms**; 0.0 ms excluding one erase.                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Busy-poll spin count                           | "52.6 million"                                                           | `async_blocking_cost.csv`              | **52,621,624**.                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Blocking-façade CPU reduction                  | "97%"                                                                    | `async_blocking_cost.csv`              | **97.03%**, for a **4.54%** wall-clock penalty.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Zero-cost margin                               | "0.23%"                                                                  | `async_blocking_cost.csv`              | Confirmed: $-0.23\%$ wall, $-0.27\%$ CPU.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Device exhaustion error                        | "0.07%"                                                                  | `device_c3_analysis.json`              | $\lvert 8112 - 8107 \rvert / 8112 = \mathbf{0.06\%}$.                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Device padding understatement                  | "11%"                                                                    | `device_c3_analysis.json`              | $3.0409/2.7436 - 1 = \mathbf{10.8\%}$.                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Device metrics bytes per record                | "170 B counted, 192 B actual"                                            | `device_c3_analysis.json`              | The log-region figure is 192 B actual against 170 B attributed to the log; total metrics-counted bytes per record are **203.024** B. Both framings appear; the 22 B padding gap is the invariant.                                                                                                                                                                                                                                                                          |
+| Firmware SLATE static buffers                  | "76,008 B in `.data`"                                                    | `firmware_size.csv`                    | Confirmed: $4108 + 4108 + 32780 + 35012 = 76{,}008$ B, identical across all three engine-linking binaries.                                                                                                                                                                                                                                                                                                                                                                 |
+| Resident RAM                                   | "83,092 B / 81.1 KiB"                                                    | `ram_working_set.csv`                  | Confirmed as the **minimum required** total. The **as-built** `kv_demo` total is **85,204 B / 83.21 KiB**, using the 35,012 B `CKPT_BUF` instead of the 32,900 B minimum.                                                                                                                                                                                                                                                                                                  |
+| Segment count / `MAX_SEGMENTS`                 | "MAX_SEGS = 256"                                                         | `config.rs`, `gc.rs`                   | Both exist: `config::MAX_SEGS = 256` and `gc::MAX_SEGMENTS = 128`. The binding cap is **128**.                                                                                                                                                                                                                                                                                                                                                                             |
+| Erasure stripe records                         | "27 records, 2,017 bytes"                                                | `erasure.csv`                          | Confirmed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Tamper matrix disposition                      | "5 refused, 10 mounted"                                                  | `tamper.json`                          | Confirmed for the 15 non-control attacks: **5 refused** (2 `Rollback`, 3 `Tampered`), **10 mounted**, plus 3 pristine controls = 18 rows.                                                                                                                                                                                                                                                                                                                                  |
 
 ---
 
@@ -2868,61 +2873,61 @@ claim ([Section 6.8](#68-host-flash-barrier-calibration)).
 
 ## 9. Appendix A: data file inventory
 
-All paths relative to `docs/proposal/data/`. Twenty-seven files.
+All paths relative to `docs/data/`. Twenty-seven files.
 
-| File | Contents | Platform | Cited in |
-|---|---|---|---|
-| `provenance.json` | Revision, toolchain, host, gate results, line counts, firmware section sizes | host | [6.1](#61-provenance), [1.5](#15-crate-layout) |
-| `testsuite.json` | Per-suite test counts: 63 passed, 0 failed, 1 ignored | host | [6.1](#61-provenance) |
-| `crash_mc.json` | 20,000 crash trials, 5,000 rollback attempts, geometry, wall time | simulated | [6.3](#63-crash-injection-simulated), [6.4](#64-rollback-resistance-simulated) |
-| `erasure.csv` | Exhaustive RS(12,8) enumeration, declared and undeclared modes, space overhead | pure computation | [6.5](#65-erasure-coding-pure-computation) |
-| `tamper.json` | 18 at-rest attacks with per-attack rationale; security-mode findings | host + simulated | [6.6](#66-at-rest-tampering-host-and-simulated), [7.4](#74-defect-4-genesis-security-mode-misreport) |
-| `wa_buckets.csv` | Byte buckets and WA against $B$, real engine | host | [6.7](#67-write-amplification-host) |
-| `wa_study.csv` | Corrected GC model, 240 rows at fixed capacity | modelled | [6.13](#613-garbage-collection-model-modelled-not-the-engine) |
-| `wa_study_matched.csv` | Capacity-sensitivity sweep, 1,680 rows | modelled | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study) |
-| `wa_study_original.csv` | Original harness verbatim, 40 rows | modelled | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study) |
-| `wa_study_convergence.csv` | Steady-state convergence check over `n_ops` | modelled | [6.13](#613-garbage-collection-model-modelled-not-the-engine) |
-| `wa_study_findings.json` | Defect verdicts, capacity sweep, hot/cold decomposition, seed spread | modelled | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study) |
-| `wa_study.png` | GC model plot | modelled | — |
-| `throughput.csv` | Sectioned: `[per_run]`, `[summary_by_b_commit]`, `[flash_barrier_calibration]` | host | [6.8](#68-host-flash-barrier-calibration), [6.9](#69-throughput-and-latency-host) |
-| `energy_batch.csv` | Sectioned: `[sweep]`, `[user_bytes_double_count_check]`, `[fit]`, `[bstar]` | simulated traffic, modelled joules | [6.10](#610-energy-model-and-the-optimal-batch-size) |
-| `index_ram.csv` | 112 rows: load factor, bytes/key, probes, collisions, stash, Wilson intervals | pure in-RAM | [6.11](#611-index-behaviour-in-ram) |
-| `fp_remedy.csv` | Fingerprint finalizer probe: shipped vs SplitMix64-finalized, 24 rows | modelled (not the `Index` type) | [6.11.1](#6111-a-probe-of-the-remedy-modelled-not-the-engine) |
-| `recovery.csv` | Tail sweep and volume sweep with confound guards and cost decomposition | host | [6.12](#612-mount-cost-host) |
-| `ram_working_set.csv` | Three tables: per-term breakdown, totals, sweep over table size | static analysis | [4.4](#44-ram-working-set) |
-| `firmware_size.csv` | Four binaries, section sizes, engine-linkage flag, per-buffer sizes | static analysis | [4.5](#45-firmware-static-footprint) |
-| `async_future_size.csv` | 13 engine futures, 2 counterfactuals, 6 struct sizes | host | [6.14.1](#6141-future-sizes) |
-| `async_yield.csv` | Per-path yield spans; cadence sweep | simulated latency | [6.14.2](#6142-yield-spans) |
-| `async_yield_span.png` | Yield-span plot | simulated | — |
-| `async_blocking_cost.csv` | Two flash models, two executors, wall and CPU medians, pending polls | host | [6.14.3](#6143-the-cost-of-the-blocking-projection) |
-| `async_facade.json` | Façade verification, feature-gating probe, 12 unimplemented doc-018 claims, `embassy_demo` finding | static analysis | [6.14.4](#6144-façade-structure), [7.3](#73-defect-3-unimplemented-claims-in-the-async-design-document) |
-| `device_c3.csv` | Nine checkpoint reports over 8,112 records | **device** | [6.15](#615-device-run-esp32-c3) |
-| `device_c3_analysis.json` | Derived geometry, erase decomposition, exhaustion prediction, padding gap | **device** | [6.15](#615-device-run-esp32-c3) |
-| `user_bytes_bug.json` | Root cause, ratio, affected files, fix, before/after values | host + simulated | [7.1](#71-defect-1-user_bytes-double-counted-fixed) |
+| File                       | Contents                                                                                           | Platform                           | Cited in                                                                                                |
+|----------------------------|----------------------------------------------------------------------------------------------------|------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `provenance.json`          | Revision, toolchain, host, gate results, line counts, firmware section sizes                       | host                               | [6.1](#61-provenance), [1.5](#15-crate-layout)                                                          |
+| `testsuite.json`           | Per-suite test counts: 63 passed, 0 failed, 1 ignored                                              | host                               | [6.1](#61-provenance)                                                                                   |
+| `crash_mc.json`            | 20,000 crash trials, 5,000 rollback attempts, geometry, wall time                                  | simulated                          | [6.3](#63-crash-injection-simulated), [6.4](#64-rollback-resistance-simulated)                          |
+| `erasure.csv`              | Exhaustive RS(12,8) enumeration, declared and undeclared modes, space overhead                     | pure computation                   | [6.5](#65-erasure-coding-pure-computation)                                                              |
+| `tamper.json`              | 18 at-rest attacks with per-attack rationale; security-mode findings                               | host + simulated                   | [6.6](#66-at-rest-tampering-host-and-simulated), [7.4](#74-defect-4-genesis-security-mode-misreport)    |
+| `wa_buckets.csv`           | Byte buckets and WA against $B$, real engine                                                       | host                               | [6.7](#67-write-amplification-host)                                                                     |
+| `wa_study.csv`             | Corrected GC model, 240 rows at fixed capacity                                                     | modelled                           | [6.13](#613-garbage-collection-model-modelled-not-the-engine)                                           |
+| `wa_study_matched.csv`     | Capacity-sensitivity sweep, 1,680 rows                                                             | modelled                           | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study)                                        |
+| `wa_study_original.csv`    | Original harness verbatim, 40 rows                                                                 | modelled                           | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study)                                        |
+| `wa_study_convergence.csv` | Steady-state convergence check over `n_ops`                                                        | modelled                           | [6.13](#613-garbage-collection-model-modelled-not-the-engine)                                           |
+| `wa_study_findings.json`   | Defect verdicts, capacity sweep, hot/cold decomposition, seed spread                               | modelled                           | [7.2](#72-defect-2-two-defects-in-the-write-amplification-study)                                        |
+| `wa_study.png`             | GC model plot                                                                                      | modelled                           | —                                                                                                       |
+| `throughput.csv`           | Sectioned: `[per_run]`, `[summary_by_b_commit]`, `[flash_barrier_calibration]`                     | host                               | [6.8](#68-host-flash-barrier-calibration), [6.9](#69-throughput-and-latency-host)                       |
+| `energy_batch.csv`         | Sectioned: `[sweep]`, `[user_bytes_double_count_check]`, `[fit]`, `[bstar]`                        | simulated traffic, modelled joules | [6.10](#610-energy-model-and-the-optimal-batch-size)                                                    |
+| `index_ram.csv`            | 112 rows: load factor, bytes/key, probes, collisions, stash, Wilson intervals                      | pure in-RAM                        | [6.11](#611-index-behaviour-in-ram)                                                                     |
+| `fp_remedy.csv`            | Fingerprint finalizer probe: shipped vs SplitMix64-finalized, 24 rows                              | modelled (not the `Index` type)    | [6.11.1](#6111-a-probe-of-the-remedy-modelled-not-the-engine)                                           |
+| `recovery.csv`             | Tail sweep and volume sweep with confound guards and cost decomposition                            | host                               | [6.12](#612-mount-cost-host)                                                                            |
+| `ram_working_set.csv`      | Three tables: per-term breakdown, totals, sweep over table size                                    | static analysis                    | [4.4](#44-ram-working-set)                                                                              |
+| `firmware_size.csv`        | Four binaries, section sizes, engine-linkage flag, per-buffer sizes                                | static analysis                    | [4.5](#45-firmware-static-footprint)                                                                    |
+| `async_future_size.csv`    | 13 engine futures, 2 counterfactuals, 6 struct sizes                                               | host                               | [6.14.1](#6141-future-sizes)                                                                            |
+| `async_yield.csv`          | Per-path yield spans; cadence sweep                                                                | simulated latency                  | [6.14.2](#6142-yield-spans)                                                                             |
+| `async_yield_span.png`     | Yield-span plot                                                                                    | simulated                          | —                                                                                                       |
+| `async_blocking_cost.csv`  | Two flash models, two executors, wall and CPU medians, pending polls                               | host                               | [6.14.3](#6143-the-cost-of-the-blocking-projection)                                                     |
+| `async_facade.json`        | Façade verification, feature-gating probe, 12 unimplemented doc-018 claims, `embassy_demo` finding | static analysis                    | [6.14.4](#6144-façade-structure), [7.3](#73-defect-3-unimplemented-claims-in-the-async-design-document) |
+| `device_c3.csv`            | Nine checkpoint reports over 8,112 records                                                         | **device**                         | [6.15](#615-device-run-esp32-c3)                                                                        |
+| `device_c3_analysis.json`  | Derived geometry, erase decomposition, exhaustion prediction, padding gap                          | **device**                         | [6.15](#615-device-run-esp32-c3)                                                                        |
+| `user_bytes_bug.json`      | Root cause, ratio, affected files, fix, before/after values                                        | host + simulated                   | [7.1](#71-defect-1-user_bytes-double-counted-fixed)                                                     |
 
 Harnesses added to the working tree to produce these files, all committed
 alongside:
 
-| Path | Produces |
-|---|---|
-| `crates/slate-kv/examples/slate_wa_buckets.rs` | `wa_buckets.csv` |
-| `crates/slate-kv/examples/slate_throughput.rs` | `throughput.csv` sections 1–2 |
-| `crates/slate-kv/examples/slate_flash_calib.rs` | `throughput.csv` section 3 |
-| `crates/slate-kv/examples/slate_recovery.rs` | `recovery.csv` |
-| `crates/slate-kv-core/examples/slate_index.rs` | `index_ram.csv` |
-| `crates/slate-kv-core/examples/slate_fp_remedy.rs` | `fp_remedy.csv` |
-| `crates/slate-kv-sim/examples/rs_exhaustive.rs` | `erasure.csv` |
-| `crates/slate-kv-sim/examples/tamper_matrix.rs` | `tamper.json` |
-| `crates/slate-kv-sim/examples/probe_security_mode.rs` | `tamper.json` security-mode section |
-| `crates/slate-kv-sim/examples/slate_async_future_size.rs` | `async_future_size.csv` |
-| `crates/slate-kv-sim/examples/slate_async_yield.rs` | `async_yield.csv` |
-| `crates/slate-kv-sim/examples/slate_async_blocking_cost.rs` | `async_blocking_cost.csv` |
-| `crates/slate-kv-sim/src/bin/crash_mc.rs` | `crash_mc.json` |
-| `crates/slate-kv-sim/src/bin/slate_energy_batch.rs` | `energy_batch.csv` |
-| `crates/slate-kv-sim/src/bin/wa_study_paper.rs` | `wa_study.csv`, `wa_study_matched.csv` |
-| `crates/slate-kv-sim/src/bin/wa_study.rs` | `wa_study_original.csv` (original harness) |
+| Path                                                        | Produces                                   |
+|-------------------------------------------------------------|--------------------------------------------|
+| `crates/slate-kv/examples/slate_wa_buckets.rs`              | `wa_buckets.csv`                           |
+| `crates/slate-kv/examples/slate_throughput.rs`              | `throughput.csv` sections 1–2              |
+| `crates/slate-kv/examples/slate_flash_calib.rs`             | `throughput.csv` section 3                 |
+| `crates/slate-kv/examples/slate_recovery.rs`                | `recovery.csv`                             |
+| `crates/slate-kv-core/examples/slate_index.rs`              | `index_ram.csv`                            |
+| `crates/slate-kv-core/examples/slate_fp_remedy.rs`          | `fp_remedy.csv`                            |
+| `crates/slate-kv-sim/examples/rs_exhaustive.rs`             | `erasure.csv`                              |
+| `crates/slate-kv-sim/examples/tamper_matrix.rs`             | `tamper.json`                              |
+| `crates/slate-kv-sim/examples/probe_security_mode.rs`       | `tamper.json` security-mode section        |
+| `crates/slate-kv-sim/examples/slate_async_future_size.rs`   | `async_future_size.csv`                    |
+| `crates/slate-kv-sim/examples/slate_async_yield.rs`         | `async_yield.csv`                          |
+| `crates/slate-kv-sim/examples/slate_async_blocking_cost.rs` | `async_blocking_cost.csv`                  |
+| `crates/slate-kv-sim/src/bin/crash_mc.rs`                   | `crash_mc.json`                            |
+| `crates/slate-kv-sim/src/bin/slate_energy_batch.rs`         | `energy_batch.csv`                         |
+| `crates/slate-kv-sim/src/bin/wa_study_paper.rs`             | `wa_study.csv`, `wa_study_matched.csv`     |
+| `crates/slate-kv-sim/src/bin/wa_study.rs`                   | `wa_study_original.csv` (original harness) |
 
-Figures referenced in this document live in `docs/proposal/figures/` as both
+Figures referenced in this document live in `docs/figures/` as both
 `.png` (used here) and `.pdf`.
 
 ---
@@ -2937,15 +2942,15 @@ evidence supports which claim.
 
 The mapping is:
 
-| Property | Formal statement | Implementation mechanism | Evidence |
-|---|---|---|---|
-| Prefix durability | Recovered state is a prefix of the acknowledged sequence | Commit marker + chain value + `seq_max` three-way test | [6.3](#63-crash-injection-simulated): 20,000 trials, 0 violations |
-| Freshness / rollback resistance | A stale image is rejected at mount | Epoch bound to an external monotonic counter; boot rule | [6.4](#64-rollback-resistance-simulated): 5,000 of 5,000 rejected; [6.6](#66-at-rest-tampering-host-and-simulated) exercises both halves of the rule |
-| Erasure tolerance | Up to `RS_M` declared block erasures per segment are recoverable | RS(12,8) Cauchy over $\mathrm{GF}(2^8)$, encoded at seal | [6.5](#65-erasure-coding-pure-computation): 1,586 patterns, 0 wrong bytes |
-| Integrity under tampering | A modified record fails to open rather than decrypting to attacker-chosen plaintext | ChaCha20-Poly1305 with the header as associated data | [6.6](#66-at-rest-tampering-host-and-simulated): 18 attacks, 0 wrong values |
-| Bounded mount cost | Mount is $O(1) + O(\Theta)$, not $O(\text{volume})$ | Checkpointed index; tail replay from `write_offset` | [6.12](#612-mount-cost-host): $44.8\times$ volume gives $1.33\times$ reads, then saturates |
-| Bounded RAM | Working set is a compile-time constant | No heap in the core; borrowed arena | [4.4](#44-ram-working-set): exact, and **over the documented budget** |
-| Bounded uninterruptible span | Every path yields within a bounded interval | `task::yield_now` at the cadence constants | [6.14.2](#6142-yield-spans): holds for GC and sealing, **fails for mount replay** |
+| Property                        | Formal statement                                                                    | Implementation mechanism                                 | Evidence                                                                                                                                             |
+|---------------------------------|-------------------------------------------------------------------------------------|----------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Prefix durability               | Recovered state is a prefix of the acknowledged sequence                            | Commit marker + chain value + `seq_max` three-way test   | [6.3](#63-crash-injection-simulated): 20,000 trials, 0 violations                                                                                    |
+| Freshness / rollback resistance | A stale image is rejected at mount                                                  | Epoch bound to an external monotonic counter; boot rule  | [6.4](#64-rollback-resistance-simulated): 5,000 of 5,000 rejected; [6.6](#66-at-rest-tampering-host-and-simulated) exercises both halves of the rule |
+| Erasure tolerance               | Up to `RS_M` declared block erasures per segment are recoverable                    | RS(12,8) Cauchy over $\mathrm{GF}(2^8)$, encoded at seal | [6.5](#65-erasure-coding-pure-computation): 1,586 patterns, 0 wrong bytes                                                                            |
+| Integrity under tampering       | A modified record fails to open rather than decrypting to attacker-chosen plaintext | ChaCha20-Poly1305 with the header as associated data     | [6.6](#66-at-rest-tampering-host-and-simulated): 18 attacks, 0 wrong values                                                                          |
+| Bounded mount cost              | Mount is $O(1) + O(\Theta)$, not $O(\text{volume})$                                 | Checkpointed index; tail replay from `write_offset`      | [6.12](#612-mount-cost-host): $44.8\times$ volume gives $1.33\times$ reads, then saturates                                                           |
+| Bounded RAM                     | Working set is a compile-time constant                                              | No heap in the core; borrowed arena                      | [4.4](#44-ram-working-set): exact, and **over the documented budget**                                                                                |
+| Bounded uninterruptible span    | Every path yields within a bounded interval                                         | `task::yield_now` at the cadence constants               | [6.14.2](#6142-yield-spans): holds for GC and sealing, **fails for mount replay**                                                                    |
 
 Where the two documents differ in emphasis: the formal paper's model assumes the
 flash driver honours the contract of
