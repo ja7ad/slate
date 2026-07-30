@@ -377,14 +377,14 @@ $$\text{ckpt\_len\_for\_slots}(n) = \texttt{CKPT\_HDR\_LEN} + \text{index\_seria
 $$\texttt{MAX\_CKPT\_LEN} = \text{ckpt\_len\_for\_slots}(\texttt{MAX\_INDEX\_SLOTS}) = 4 \cdot 65536 + 132 = 262{,}276 \text{ B}$$
 
 For the shipped 8,192-slot index this is
-$\text{ckpt\_len\_for\_slots}(8192) = 32{,}900$ B — the single largest term in
+$\text{ckpt\\_len\\_for\\_slots}(8192) = 32{,}900$ B — the single largest term in
 the RAM budget, and the reason the budget is exceeded
 ([Section 4.4](#44-ram-working-set)). The device's own checkpoint writes are
 33,024 B, which is 9 erase blocks at 4 KiB: the format rounds the 32,900 B
 payload up to whole pages and blocks.
 
 A compile-time assertion enforces
-$\text{ckpt\_len\_for\_slots}(\texttt{MAX\_INDEX\_SLOTS}) \le \texttt{MAX\_CKPT\_LEN}$,
+$\text{ckpt\\_len\\_for\\_slots}(\texttt{MAX\\_INDEX\\_SLOTS}) \le \texttt{MAX\\_CKPT\\_LEN}$,
 so index capacity and checkpoint capacity cannot drift apart.
 
 ### 2.9 Segment header
@@ -2442,7 +2442,7 @@ error is detectable.
 
 **(a) The "measured" utilisation column was a closed form.** The original
 harness reported a `meas_u` that was in fact
-$n_{keys}/\text{cap\_records}$ — a closed form of the target — and never read
+$n_{keys}/\text{cap\\_records}$ — a closed form of the target — and never read
 simulator state. The evidence is that it is byte-identical across all four skew
 levels at every $u$ (0.496, 0.590, 0.694, 0.781, 0.893 for the single-head arm).
 Worse, device capacity varied with $u$ as a side effect, from 63 segments at
