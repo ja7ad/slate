@@ -1,0 +1,56 @@
+# SLATE paper measurement: mount (recovery) cost
+# cmd=cargo run --release -p slate-kv --example paper_recovery
+# source=crates/slate-kv/examples/paper_recovery.rs (added this session)
+# platform=macOS 26.5.2 / arm64 / 12 cores / 24 GiB. Backend=FileFlash, a FILE-BACKED flash emulation on the host
+#   filesystem (crates/slate-kv/src/file_flash.rs). This is NOT an ESP32-C3 and NOT a Raspberry Pi: the flash
+#   read/page COUNTS are device-model exact (256 B pages, 4 KiB blocks) but the MILLISECONDS are host-specific and
+#   include OS page-cache effects.
+# geometry: capacity=16777216 (16 MiB, the ceiling: epoch::mount rejects capacity > 1<<OFF_BITS = 16 MiB and
+#   Db::open turns that rejection into 'format a new volume', which would silently make every reopen replay nothing)
+#   page=256 block=4096 data_base=540672 MAX_CKPT_LEN=262276 CKPT_SLOTS=2 THETA=16384
+# workload: b_commit=8 auto_b=false n_keys=1024 (index_slots=16384) key_len=12 val_len=64 n_distinct_keys=512
+#   durability=OsCache (mount performs no program, so fsync policy cannot affect mount cost; it only shortens the setup phase)
+# TWO EXPERIMENTS:
+#   experiment=tail_sweep    -- total volume fixed (base_records=2000), replay tail swept 0..8000 (>2 decades).
+#   experiment=volume_sweep  -- replay tail fixed (200 records), base_records swept 0..40000 (>2 decades). THIS is
+#     the experiment that tests the O(Theta) claim: if checkpointing did not work, cost here would grow with volume.
+# CONFOUND GUARDS: tail_intact=1 asserts the realized replay_from equals the log head at seal time AND
+#   records_replayed equals the requested tail, i.e. no unplanned Theta-triggered seal moved the checkpoint. A row
+#   with tail_intact=0 is NOT the requested operating point. had_checkpoint=1 asserts mount actually loaded a
+#   checkpoint rather than reformatting. All 14 rows here have both = 1.
+# COST DECOMPOSITION (this is why the volume sweep is not perfectly flat, and it is bounded, not growth):
+#   ckpt_read_* = reads before tail replay begins. mount reads and AEAD-verifies EVERY populated checkpoint slot
+#     (ckpt_slots_verified, bounded by CKPT_SLOTS=2). It steps 260 -> 516 pages once base_records > THETA, because
+#     an automatic Theta seal has by then filled the second slot with a full-size checkpoint instead of the tiny
+#     genesis one. Bounded by CKPT_SLOTS, so it does not grow with volume.
+#   replay_read_* = reads during tail replay. Linear in records_replayed.
+#   key_verify_calls = full-key AEAD verifications replay issues to resolve fingerprint collisions. This grows with
+#     the number of LIVE KEYS (not the log volume) and saturates at one per replayed record once all 512 distinct
+#     keys are live -- visible as 1, 6, 200, 200, 200, 200 across the volume sweep.
+# MEASURED FITS (least squares over the 7 nonzero-tail rows of tail_sweep):
+#   replay_read_pages = 12.0242 * records_replayed + 110.4   R^2 = 0.999993
+#   mount_read_pages  = 12.0242 * records_replayed + 370.4   R^2 = 0.999993
+#   mount_ms_median   = 4.4183 us * records_replayed + 1.94 ms  R^2 = 0.975436
+# VOLUME INDEPENDENCE (volume_sweep): log_bytes_total grows 44.8x (204800 -> 9164800 B) while mount_read_pages grows
+#   only 1.333x (2263 -> 3017) and is IDENTICAL (3017) for base_records 20000 and 40000, i.e. saturated. scan_bytes
+#   is constant at 204800 for every row. mount_ms_median spans 1.536-4.561 ms with no monotone trend in volume
+#   (Spearman rho = 0.143).
+# TIMING CAVEAT: mount_ms_median/min/max are over repeats=5 reopens of the SAME on-disk volume. The first reopen is
+#   cold-cache, so mount_ms_max is usually that one; a device booting from cold flash is closer to max than median.
+#   Wall-clock is not resolvable below ~0.4 ms here, which is why the tail=0 row is dominated by the fixed term.
+# NOT MEASURED: mount on real ESP32-C3 or Raspberry Pi hardware (no device available in this session).
+experiment,base_records,tail_records_requested,seal_head,close_head,log_bytes_total,keys_at_close,had_checkpoint,replay_from,head_pos,scan_bytes,records_replayed,tail_intact,keys_after_mount,ckpt_index_bytes,index_slots,ckpt_slots_verified,ckpt_read_ops,ckpt_read_bytes,ckpt_read_pages,replay_read_ops,replay_read_bytes,replay_read_pages,key_verify_calls,mount_read_ops,mount_read_bytes,mount_read_pages,mount_program_ops,mount_erase_ops,mount_ms_median,mount_ms_min,mount_ms_max,repeats,mount_us_per_replayed_record
+tail_sweep,2000,0,988672,988672,448000,512,1,988672,988672,0,0,1,516,65576,16384,2,4,65760,260,1,1,1,0,5,65761,261,0,0,0.4325,0.4273,0.7157,5,
+tail_sweep,2000,10,988672,998912,458240,512,1,988672,998912,10240,10,1,516,65576,16384,2,4,65760,260,121,6141,125,10,125,71901,385,0,0,0.5028,0.4893,0.764,5,50.275
+tail_sweep,2000,50,988672,1039872,499200,512,1,988672,1039872,51200,50,1,516,65576,16384,2,4,65760,260,601,30701,625,50,605,96461,885,0,0,1.2605,1.1511,1.4885,5,25.21
+tail_sweep,2000,100,988672,1091072,550400,512,1,988672,1091072,102400,100,1,516,65576,16384,2,4,65760,260,1201,61401,1251,100,1205,127161,1511,0,0,1.623,1.6136,2.8281,5,16.2304
+tail_sweep,2000,500,988672,1500672,960000,512,1,988672,1500672,512000,500,1,516,65576,16384,2,4,65760,260,6001,307001,6251,500,6005,372761,6511,0,0,2.9664,2.8755,3.2062,5,5.9327
+tail_sweep,2000,1000,988672,2012672,1472000,512,1,988672,2012672,1024000,1000,1,516,65576,16384,2,4,65760,260,12001,614001,12257,1000,12005,679761,12517,0,0,10.9733,7.978,22.4127,5,10.9733
+tail_sweep,2000,4000,988672,5084672,4544000,512,1,988672,5084672,4096000,4000,1,516,65576,16384,2,4,65760,260,48001,2456001,48257,4000,48005,2521761,48517,0,0,19.9616,18.1174,51.6947,5,4.9904
+tail_sweep,2000,8000,988672,9180672,8640000,512,1,988672,9180672,8192000,8000,1,516,65576,16384,2,4,65760,260,96001,4912001,96257,8000,96005,4977761,96517,0,0,36.6195,36.2511,79.3805,5,4.5774
+volume_sweep,0,200,540672,745472,204800,200,1,540672,745472,204800,200,1,204,65576,16384,2,4,65760,260,2003,93349,2003,1,2007,159109,2263,0,0,2.4789,2.3308,2.6325,5,12.3944
+volume_sweep,100,200,563456,768256,227584,300,1,563456,768256,204800,200,1,304,65576,16384,2,4,65760,260,2013,94089,2013,6,2017,159849,2273,0,0,3.3342,2.7509,6.3295,5,16.6713
+volume_sweep,1000,200,764672,969472,428800,512,1,764672,969472,204800,200,1,516,65576,16384,2,4,65760,260,2401,122801,2501,200,2405,188561,2761,0,0,2.0264,1.9613,2.4875,5,10.1319
+volume_sweep,5000,200,1660672,1865472,1324800,512,1,1660672,1865472,204800,200,1,516,65576,16384,2,4,65760,260,2401,122801,2501,200,2405,188561,2761,0,0,4.5613,3.4053,9.4009,5,22.8067
+volume_sweep,20000,200,5020672,5225472,4684800,512,1,5020672,5225472,204800,200,1,512,65576,16384,2,4,131336,516,2401,122801,2501,200,2405,254137,3017,0,0,1.5358,1.4986,1.7545,5,7.6792
+volume_sweep,40000,200,9500672,9705472,9164800,512,1,9500672,9705472,204800,200,1,512,65576,16384,2,4,131336,516,2401,122801,2501,200,2405,254137,3017,0,0,3.9893,3.3737,4.4092,5,19.9465

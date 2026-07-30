@@ -1,0 +1,338 @@
+{
+  "total_passed": 63,
+  "total_failed": 0,
+  "total_ignored": 1,
+  "suites": [
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/epoch_lifecycle.rs",
+      "dep": "epoch_lifecycle",
+      "result": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/esp32_defects.rs",
+      "dep": "esp32_defects",
+      "result": "ok",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 1,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/kill9.rs",
+      "dep": "kill9",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/kv_roundtrip.rs",
+      "dep": "kv_roundtrip",
+      "result": "ok",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/probe_ckpt_size.rs",
+      "dep": "probe_ckpt_size",
+      "result": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/probe_cold_overlap.rs",
+      "dep": "probe_cold_overlap",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/probe_epoch.rs",
+      "dep": "probe_epoch",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/probe_epoch_key.rs",
+      "dep": "probe_epoch_key",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/probe_index_cap.rs",
+      "dep": "probe_index_cap",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/security.rs",
+      "dep": "security",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "unit",
+      "path": "src/main.rs",
+      "dep": "slate_kv_cli",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-cli"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_core",
+      "result": "ok",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-core"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/flash_region_layout.rs",
+      "dep": "flash_region_layout",
+      "result": "ok",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-core"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_crypto",
+      "result": "ok",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-crypto"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_erasure",
+      "result": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-erasure"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_ffi",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-ffi"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_hal",
+      "result": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-hal"
+    },
+    {
+      "kind": "unit",
+      "path": "src/lib.rs",
+      "dep": "slate_kv_sim",
+      "result": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "unit",
+      "path": "src/bin/crash_mc.rs",
+      "dep": "crash_mc",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "crash-mc"
+    },
+    {
+      "kind": "unit",
+      "path": "src/bin/energy_check.rs",
+      "dep": "energy_check",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "energy-check"
+    },
+    {
+      "kind": "unit",
+      "path": "src/bin/wa_study.rs",
+      "dep": "wa_study",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "wa-study"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/crash_monte_carlo.rs",
+      "dep": "crash_monte_carlo",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/debug.rs",
+      "dep": "debug",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/gc_compaction.rs",
+      "dep": "gc_compaction",
+      "result": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/kv_demo_readpath.rs",
+      "dep": "kv_demo_readpath",
+      "result": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "integration",
+      "path": "tests/rs_recovery.rs",
+      "dep": "rs_recovery",
+      "result": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv_core",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-core"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv_crypto",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-crypto"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv_erasure",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-erasure"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv_hal",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-hal"
+    },
+    {
+      "kind": "doc",
+      "path": "doc-tests",
+      "dep": "slate_kv_sim",
+      "result": "ok",
+      "passed": 0,
+      "failed": 0,
+      "ignored": 0,
+      "crate": "slate-kv-sim"
+    }
+  ],
+  "command": "cargo test --workspace --release"
+}

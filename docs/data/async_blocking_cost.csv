@@ -1,0 +1,30 @@
+# SLATE blocking-projection cost measurement (design doc 018 §10 'zero-cost check': the blocking facade must be
+#   within 2 % of the blocking engine; §3.2 documents task::block_on as a busy-poll loop over Waker::noop with
+#   core::hint::spin_loop()).
+# Platform: macOS 26.5.2 / arm64 / 12 cores; rustc+cargo 1.97.1. Host run. NOT a device run; CPU-time figures are macOS getrusage(RUSAGE_SELF) user+sys.
+# Command: cargo run -q -p slate-kv-sim --example paper_async_blocking_cost --release
+# Source:  crates/slate-kv-sim/examples/paper_async_blocking_cost.rs (added this session).
+# Executor: HAND-ROLLED poll loops. embassy-executor was NOT used -- it is a dependency of targets/esp32 only, is not
+#   a host dependency of any workspace crate, and its ESP32 time driver does not build for aarch64-apple-darwin.
+#   Arm A is verbatim slate_kv_core::task::block_on (busy poll + spin_loop). Arm B is the same loop without the spin
+#   hint (model 1) or parking the thread 100 us per Pending instead of spinning (model 2).
+# Workload: put + commit through Slate::commit_async, b_commit=8, 128 B values, 8192-key index, 2 MiB region.
+#   Model 2 additionally forces an epoch seal every 100 records so the run actually contains erases.
+# Two flash models, because they answer different questions:
+#   BlockingFlash<SimFlash> -- the PRODUCTION sync facade. No future ever suspends for an I/O reason, so block_on
+#     never actually spins. This is the configuration the 'zero-cost' claim is about.
+#   DeadlineFlash -- erase suspends for a REAL 45 000 us (W25Q tSE typical) before completing, standing in for the
+#     DMA/interrupt-backed QSPI driver of doc 018 §6. Both executors face the identical 45 ms wait; only what they do
+#     during it differs.
+# Statistic is the MEDIAN of the listed reps, not the mean: a single scheduler preemption on a shared host adds an
+#   outlier a 41-sample mean cannot absorb. Both arms are interleaved rep-by-rep so frequency drift hits them equally.
+# wall_delta_pct / cpu_delta_pct are relative to the task::block_on row of the SAME flash model.
+# pending_polls counts Poll::Pending returns observed by the flash adapter (model 2 only); it is the direct measure of
+#   busy-poll waste.
+# CAVEAT on the model-2 parking arm's +4.6 % wall time: that is the 100 us park granularity overshooting the 45 ms
+#   erase deadline, not engine cost. A real executor woken by a completion interrupt would not pay it.
+flash_model,executor,reps,records_per_rep,erases_per_rep,median_wall_ms,median_cpu_ms,cpu_over_wall_pct,pending_polls,throughput_records_per_s,wall_delta_pct,cpu_delta_pct
+BlockingFlash<SimFlash> (never suspends),task::block_on (busy poll, spin_loop hint),41,4000,0,4.824,4.825,100.0,0,829187.4,+0.00,+0.00
+BlockingFlash<SimFlash> (never suspends),bare poll loop (native async, no spin hint),41,4000,0,4.813,4.812,100.0,0,831082.5,-0.23,-0.27
+DeadlineFlash (erase suspends 45000 us of real time),task::block_on (busy poll, spin_loop hint),5,300,27,1215.565,1213.843,99.9,52621624,246.8,+0.00,+0.00
+DeadlineFlash (erase suspends 45000 us of real time),parking executor (100 us park per Pending),5,300,27,1270.799,36.086,2.8,9438,236.1,+4.54,-97.03

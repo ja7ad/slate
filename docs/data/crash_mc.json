@@ -1,0 +1,23 @@
+{
+  "command": "cargo run --release -p slate-kv-sim --bin crash_mc",
+  "platform": "macOS 26.5.2 arm64; slate-kv-sim SimFlash in-RAM fault-injecting flash simulator",
+  "geometry": {
+    "capacity": 1048576,
+    "page_size": 256,
+    "block_size": 4096,
+    "b_commit": 8,
+    "auto_b": false,
+    "n_keys": 1024
+  },
+  "crash_trials": 20000,
+  "crash_model": "power loss at a uniformly random byte offset within a uniformly random flash operation",
+  "records_per_trial": 600,
+  "prefix_durability_violations": 0,
+  "acked_write_losses": 0,
+  "uncommitted_acceptances": 0,
+  "stale_epoch_trials": 5000,
+  "stale_epoch_rejections": 5000,
+  "stale_epoch_rejection_rate": 1.0,
+  "stale_epoch_attack": "an earlier-epoch data page is spliced (AND-merged) over the log tail; mount must still report acked_seq==32",
+  "wall_time_s": 37.684
+}

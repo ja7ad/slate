@@ -1,0 +1,170 @@
+{
+  "platform": "macOS 26.5.2 / arm64 / 12 cores / 24 GiB; pure in-process GC model (no flash backend, NOT the SLATE engine)",
+  "rs_parity": {
+    "RS_K": 8,
+    "RS_M": 4,
+    "RS_N": 12,
+    "parity_factor": 1.5,
+    "source": "crates/slate-kv-erasure/src/lib.rs",
+    "note": "Data->parity ratio at segment seal. Multiplicative floor on engine WA that the GC model does NOT include."
+  },
+  "defect_a_saturation": {
+    "verdict": "CONFIRMED in original harness; FIXED in corrected harness",
+    "original_meas_u_is_measured": false,
+    "original_meas_u_formula": "n_keys/cap_records where cap_segs=max(8,ceil(n_keys/(u*seg_recs))) -> a closed form of u_target",
+    "evidence": "meas_u is byte-identical across all 4 skew levels at every u (0.496/0.590/0.694/0.781/0.893 for single; 0.481/0.568/0.665/0.744/0.845 for hot_cold) because it never reads simulator state",
+    "original_target_vs_realized": {
+      "0.5": 0.496,
+      "0.6": 0.59,
+      "0.7": 0.694,
+      "0.8": 0.781,
+      "0.9": 0.893
+    },
+    "original_second_confound": "cap_segs varied with u (63,53,45,40,35 segs at u=0.5..0.9), so the u axis also swept physical capacity by 1.8x",
+    "corrected_realized_u": {
+      "0.5": 0.5,
+      "0.6": 0.6001,
+      "0.7": 0.7,
+      "0.8": 0.8,
+      "0.9": 0.8999
+    },
+    "corrected_max_abs_error_single_and_hot_cold": 0.0001,
+    "corrected_distinct_operating_points": 5,
+    "corrected_degenerate_rows": 0
+  },
+  "defect_b_bound": {
+    "claim": "WA <= 1/(1-u)",
+    "original_harness": {
+      "violations": 3,
+      "of_cells": 40,
+      "max_excess_pct": 18.45,
+      "cells": [
+        {
+          "u": 0.9,
+          "s": 0.6,
+          "gc": "single",
+          "wa": 11.07,
+          "realized_u": 0.893,
+          "bound": 9.346,
+          "excess_pct": 18.45
+        },
+        {
+          "u": 0.9,
+          "s": 0.0,
+          "gc": "single",
+          "wa": 10.85,
+          "realized_u": 0.893,
+          "bound": 9.346,
+          "excess_pct": 16.1
+        },
+        {
+          "u": 0.9,
+          "s": 0.9,
+          "gc": "single",
+          "wa": 9.77,
+          "realized_u": 0.893,
+          "bound": 9.346,
+          "excess_pct": 4.54
+        }
+      ],
+      "why_harness_reported_pass": "its assertion block is gated on `if u <= 0.8`, so every violating cell was excluded from checking; it printed 'passed all assertions'"
+    },
+    "corrected_harness_cap64": {
+      "violations": 0,
+      "of_cells": 240,
+      "worst_margin_pct": -22.5,
+      "interpretation": "bound holds with >=22% headroom at every cell"
+    },
+    "root_cause": "SMALL-CAPACITY ARTIFACT, not a real bound failure. The 2-3 segment GC reserve is a fixed overhead: at cap=35 it is 5.7% of capacity, so gross u=0.90 is really net u=0.954 on reachable capacity, and 1/(1-0.954)=22.0 - the measured WA of 12.2 is well inside that. Violations vanish once capacity is large enough that reserve overhead is small.",
+    "capacity_sweep_u09_single": {
+      "16": {
+        "wa": null,
+        "degenerate": true
+      },
+      "24": {
+        "wa": 236.3,
+        "degenerate": true
+      },
+      "35": {
+        "wa": 12.2,
+        "bound": 10.0,
+        "violations": 9,
+        "of": 12
+      },
+      "48": {
+        "wa": 8.22,
+        "bound": 10.01,
+        "violations": 0
+      },
+      "64": {
+        "wa": 6.88,
+        "bound": 9.99,
+        "violations": 0
+      },
+      "96": {
+        "wa": 5.98,
+        "bound": 10.01,
+        "violations": 0
+      },
+      "128": {
+        "wa": 5.61,
+        "bound": 10.0,
+        "violations": 0
+      }
+    },
+    "net_u_bound_violations_cap64": 0,
+    "paper_recommendation": "State the bound as WA <= 1/(1-u_net) where u_net excludes the GC reserve, and state the capacity regime. As WA <= 1/(1-u_gross) it is FALSIFIED at small capacity (up to +2269% at cap=24, +21.5% at cap=35) and holds only for cap >= 48 segments."
+  },
+  "hot_cold_capacity_confound": {
+    "verdict": "CONFIRMED - the original's hot/cold win is PARTLY extra capacity",
+    "original_gave_hot_cold_2_extra_segments": true,
+    "equal_gross_capacity_result": {
+      "s_0.0": "hot/cold is NOT better: +0.04% at u=0.5 rising to +4.09% WORSE at u=0.9. The entire apparent win at zero skew was extra capacity.",
+      "s_1.2": "effect SURVIVES: -4.1% at u=0.5, -18.4% at u=0.7, -24.7% at u=0.8, -16.2% at u=0.9"
+    },
+    "extra2_arm_reproduces_original": {
+      "s_0.0_u_0.9": -27.85,
+      "s_1.2_u_0.9": -35.02
+    },
+    "decomposition_s0_u09": "original reported hot/cold 5.20 vs single 10.85 (-52%). At equal gross capacity: 7.65 vs 7.35 (+4.1%). The sign flips.",
+    "conclusion": "Age separation is real but requires workload skew. At s=0 it does not help and slightly hurts (two open heads consume an extra reserve segment for no separation benefit)."
+  },
+  "seed_spread": {
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "metric": "coefficient of variation of wa_steady",
+    "max_cv_pct": 0.864,
+    "median_cv_pct": 0.214,
+    "interpretation": "Seed noise is <1% everywhere, so the hot/cold-vs-single differences above 4% are real and the s=0 near-tie (0.04-0.8%) is within/near noise."
+  },
+  "steady_state": {
+    "max_abs_pct_change_200k_to_400k_ops": 0.784,
+    "interpretation": "WA measured over the second half of 100k ops is converged; wa_all vs wa_steady differ by <1.5% at cap=64."
+  },
+  "headline_wa_cap64_single_mean_over_seeds": {
+    "s_0.0": {
+      "0.5": 1.283,
+      "0.6": 1.535,
+      "0.7": 2.008,
+      "0.8": 3.071,
+      "0.9": 7.351
+    },
+    "s_1.2": {
+      "0.5": 1.544,
+      "0.6": 1.774,
+      "0.7": 2.504,
+      "0.8": 3.448,
+      "0.9": 5.521
+    }
+  },
+  "wa_times_parity_floor_single_s09": {
+    "0.5": 2.239,
+    "0.6": 2.622,
+    "0.7": 3.446,
+    "0.8": 4.969,
+    "0.9": 10.839
+  }
+}

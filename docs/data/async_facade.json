@@ -1,0 +1,492 @@
+{
+ "_provenance": {
+  "what": "Verification of design doc 018 (docs/design/018-native-async-support.md, 856 lines) claim 1 ('one source, two facades'), claim 5 (embedded build reality), and the feature-gating mechanism. Every field is either a source-read at the stated file:line or the exit status of a command run in this session.",
+  "platform_host": "macOS 26.5.2 / arm64 / 12 cores; rustc+cargo 1.97.1",
+  "platform_note": "riscv32imc-unknown-none-elf figures are STATIC ANALYSIS of the cross-compiled ELF via llvm-size -A. No ESP32 device was run, no QEMU run, no on-hardware timing.",
+  "repo": "/Users/javad/Projects/rust/slate",
+  "git_head": "970324f (chore: resolve clippy warnings and formatting), workspace v0.4.0",
+  "git_working_tree": "DIRTY before this session: modified .gitignore, Cargo.lock, crates/slate-kv-core/src/index.rs, crates/slate-kv-core/src/recover.rs, crates/slate-kv-sim/Cargo.toml, crates/slate-kv/src/db.rs, crates/slate-kv/src/file_flash.rs, crates/slate-kv/src/lib.rs. Async source files (task.rs, gc.rs, epoch.rs, log.rs, segment.rs, slate.rs, slate-kv-hal/src/lib.rs) are UNMODIFIED at HEAD.",
+  "session_additions": [
+   "crates/slate-kv-sim/examples/paper_async_future_size.rs",
+   "crates/slate-kv-sim/examples/paper_async_yield.rs",
+   "crates/slate-kv-sim/examples/paper_async_blocking_cost.rs",
+   "crates/slate-kv-sim/Cargo.toml: added libc dev/normal dependency for getrusage"
+  ],
+  "commits_named_in_task": "cc938d4 and e7a3b5f are NOT reachable in this repository's history; the async work at HEAD comes from a0932e0 ('feat: integrate native async support and expand metrics') and its predecessor fc024e9 ('feat(core): complete native async Phase 3 and fix config yield constants')."
+ },
+ "claim_1_one_source_two_facades": {
+  "verdict": "CONFIRMED for the Slate/Log/epoch surface, with one documented hole (recover.rs) and one asymmetry.",
+  "mechanism_verified_by_source_read": {
+   "core_generic_bounds": "slate.rs:66 \u2014 impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S: Sealer> Slate<'a, F, C, S>. There is exactly ONE impl block; the async methods are the only implementations of every algorithm.",
+   "sync_projection": "Each blocking method is `#[cfg(feature = \"blocking\")] pub fn X(..) { crate::task::block_on(self.X_async(..)) }`. Measured: all 8 Slate wrappers and the Log wrapper have a ONE-LINE body (verified programmatically).",
+   "adapters": "slate_kv_hal::BlockingFlash<F: Flash> (hal/src/lib.rs:121) and BlockingCounter<C: MonotonicCounter> (hal:157) implement AsyncFlash/AsyncMonotonicCounter by returning already-ready futures via `async fn` bodies that call the blocking method directly (NOT core::future::ready as doc 018 \u00a73 writes it \u2014 same effect, different code).",
+   "yield_primitive": "task.rs YieldNow(bool) \u2014 returns Pending once, self-wakes via cx.waker().wake_by_ref(). Measured size_of::<YieldNow>() = 1 byte.",
+   "block_on": "task.rs block_on<F: Future> \u2014 busy-poll loop over Waker::noop() with core::hint::spin_loop() on Pending. Matches doc 018 \u00a73.2 verbatim.",
+   "no_unsafe": "#![forbid(unsafe_code)] present in slate-kv-core/src/lib.rs:4 and slate-kv-hal/src/lib.rs:4. grep for `unsafe ` in either crate's src/: zero hits outside doc comments. CONFIRMED.",
+   "executor_agnostic": "cargo tree -p slate-kv-core --all-features -e normal contains NO embassy-* crate. Dependencies are heapless, sha2, slate-kv-erasure, slate-kv-hal only. Amendment A0.3 CONFIRMED."
+  },
+  "feature_gating": {
+   "declared": {
+    "slate-kv-hal": {
+     "default": [],
+     "async": [],
+     "embedded-storage-async": [
+      "async",
+      "dep:embedded-storage-async"
+     ]
+    },
+    "slate-kv-core": {
+     "default": [
+      "blocking"
+     ],
+     "blocking": [],
+     "async": [
+      "slate-kv-hal/async"
+     ],
+     "metrics": []
+    }
+   },
+   "finding_async_feature_is_INERT": {
+    "severity": "documentation defect, not a build defect",
+    "evidence": "grep -rn 'feature = \"async\"' over crates/slate-kv-hal/src/ and crates/slate-kv-core/src/ returns ZERO hits. Only `feature = \"embedded-storage-async\"` gates anything in the HAL (the storage_async module at hal:63).",
+    "probe": "A separate crate depending on both slate-kv-hal and slate-kv-core with default-features = false (async OFF in both) compiles a function generic over AsyncFlash, one over AsyncMonotonicCounter, a BlockingFlash construction, and task::yield_now(). Exit 0. So AsyncFlash/AsyncMonotonicCounter/BlockingFlash/BlockingCounter/YieldNow/block_on are UNCONDITIONALLY compiled regardless of the `async` feature.",
+    "consequence": "Doc 018 \u00a73 states the traits are 'gated behind feature = \"async\", default OFF' and \u00a78 repeats it. That is not what the code does: the async HAL surface is always on. The bare-metal build pays for it unconditionally. The paper must not claim the async surface is opt-in."
+   },
+   "finding_blocking_feature_DOES_gate": {
+    "evidence": "The same probe crate, extended to call Slate::commit() with slate-kv-core default-features = false, fails to compile: `error[E0599]: no method named commit found for mutable reference &mut Slate<..>` (rc=101). Adding --features slate-kv-core/blocking makes it compile (rc=0)."
+   },
+   "not_blocking_reexports": "epoch.rs:231-232 `#[cfg(not(feature = \"blocking\"))] pub use seal_epoch_async as seal_epoch;` and epoch.rs:441-442 the same for mount_async. So with blocking OFF the free functions keep their short names but become async \u2014 a name that changes its type with a feature flag."
+  },
+  "async_operations": [
+   {
+    "op": "Log::commit_async",
+    "file": "crates/slate-kv-core/src/log.rs:294",
+    "visibility": "pub",
+    "blocking_wrapper": "Log::commit (log.rs:322, cfg blocking, one-line block_on)",
+    "yield_points_in_body": 0,
+    "note": "Doc 018 \u00a74.1 deliberately places no yield inside commit: the two-marker window is a durability property. CONFIRMED in source."
+   },
+   {
+    "op": "Log::program_batch_pages",
+    "file": "log.rs:214",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Log::program_xor_parity",
+    "file": "log.rs:241",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Log::program_page",
+    "file": "log.rs:274",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "epoch::program_checkpoint",
+    "file": "epoch.rs:66",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 2,
+    "yield_lines": [
+     85,
+     107
+    ],
+    "note": "one yield per erase-loop iteration and one per page program \u2014 doc 018 \u00a74.2 as written. CONFIRMED."
+   },
+   {
+    "op": "epoch::seal_epoch_async",
+    "file": "epoch.rs:125",
+    "visibility": "pub",
+    "blocking_wrapper": "epoch::seal_epoch (epoch.rs:205, cfg blocking; body wraps args in BlockingFlash/BlockingCounter then block_on)",
+    "yield_points_in_body": 0,
+    "note": "Yields come from program_checkpoint. Counter increment is awaited (amendment A0.2 CONFIRMED)."
+   },
+   {
+    "op": "epoch::load_best_checkpoint_async",
+    "file": "epoch.rs:236",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 4,
+    "yield_lines": [
+     251,
+     263,
+     274,
+     313
+    ]
+   },
+   {
+    "op": "epoch::mount_async",
+    "file": "epoch.rs:353",
+    "visibility": "pub",
+    "blocking_wrapper": "epoch::mount (epoch.rs:427, cfg blocking)",
+    "yield_points_in_body": 0,
+    "yield_lines": [],
+    "note": "Yields come from load_best_checkpoint_async, which it awaits. The yield at epoch.rs:313 is inside load_best_checkpoint_async's slot loop (that fn spans 236-~350), not in mount_async's own body. Counter read is awaited."
+   },
+   {
+    "op": "segment::encode_parity",
+    "file": "crates/slate-kv-core/src/segment.rs:82",
+    "visibility": "pub",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 2,
+    "yield_lines": [
+     91,
+     116
+    ],
+    "note": "ASYMMETRY: async-only, no blocking projection exists. Also DEAD CODE \u2014 grep over crates/ and targets/ finds no caller anywhere in the workspace outside the measurement example added this session. Doc 018 \u00a74.3 names this function `segment::write_parity`; no such symbol exists."
+   },
+   {
+    "op": "Slate::index_update_offset_async",
+    "file": "slate.rs:88",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::index_update_offset (slate.rs:664)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::get_into_async",
+    "file": "slate.rs:133",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::get_into (slate.rs:675)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::index_remove_key_async",
+    "file": "slate.rs:193",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::index_remove_key (slate.rs:669)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::append_cold_async",
+    "file": "slate.rs:248",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::append_cold (slate.rs:680)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::append_cold_tombstone_async",
+    "file": "slate.rs:272",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::append_cold_tombstone (slate.rs:685)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::commit_async",
+    "file": "slate.rs:308",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::commit (slate.rs:690)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::commit_inner_async",
+    "file": "slate.rs:325",
+    "visibility": "pub(crate)",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0,
+    "note": "Exists to break the infinite future type commit -> reserve -> compact -> commit. GC calls this, not commit_async."
+   },
+   {
+    "op": "Slate::is_erased_at",
+    "file": "slate.rs:456",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::reserve_space_async",
+    "file": "slate.rs:493",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0,
+    "note": "Task brief listed reserve_space_async as a candidate public operation; it is PRIVATE (`async fn`, no pub) and has no blocking wrapper. It is reached only via commit_async."
+   },
+   {
+    "op": "Slate::relocate_cold_head_async",
+    "file": "slate.rs:557",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::seal_epoch_now_async",
+    "file": "slate.rs:602",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::seal_epoch_now (slate.rs:695)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "Slate::compact_async",
+    "file": "slate.rs:650",
+    "visibility": "pub",
+    "blocking_wrapper": "Slate::compact (slate.rs:700)",
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "gc::compact_one_async",
+    "file": "crates/slate-kv-core/src/gc.rs:302",
+    "visibility": "pub",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 2,
+    "yield_lines": [
+     348,
+     498
+    ],
+    "note": "ASYMMETRY: async-only, no blocking projection. Reached synchronously only via Slate::compact -> compact_async."
+   },
+   {
+    "op": "gc::reindex_update_offset",
+    "file": "gc.rs:261",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "slate::read_candidate_async",
+    "file": "slate.rs:724",
+    "visibility": "private",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   },
+   {
+    "op": "slate::cand_matches_key_async",
+    "file": "slate.rs:766",
+    "visibility": "pub(crate)",
+    "blocking_wrapper": null,
+    "yield_points_in_body": 0
+   }
+  ],
+  "operations_available_in_one_facade_only": [
+   {
+    "op": "recover::recover",
+    "available_in": "BLOCKING ONLY",
+    "file": "crates/slate-kv-core/src/recover.rs:196",
+    "detail": "`pub fn recover<F: Flash, S: Sealer>` \u2014 imports slate_kv_hal::Flash at recover.rs:8. No async form exists. Also recover::record_key_eq (recover.rs:83) and recover::scan_segment_headers (recover.rs:130) are blocking-only. Doc 018 \u00a79 step 6 ('Convert recovery') was NOT done; the doc's own \u00a713 addendum admits this."
+   },
+   {
+    "op": "repair::scrub",
+    "available_in": "BLOCKING ONLY",
+    "file": "crates/slate-kv-core/src/repair.rs:31",
+    "detail": "`pub fn scrub<F: Flash>` \u2014 blocking trait, and the body is a stub returning Ok(())."
+   },
+   {
+    "op": "gc::compact_one_async",
+    "available_in": "ASYNC ONLY",
+    "detail": "No `#[cfg(feature = \"blocking\")] pub fn compact_one` wrapper exists. Sync callers must go through Slate::compact."
+   },
+   {
+    "op": "segment::encode_parity",
+    "available_in": "ASYNC ONLY",
+    "detail": "No blocking wrapper, and no caller anywhere in the workspace."
+   },
+   {
+    "op": "Slate::append_hot",
+    "available_in": "SYNC ONLY (correctly)",
+    "file": "slate.rs:227",
+    "detail": "Not async, and does not need to be \u2014 it only touches the RAM batch. Matches doc 018 \u00a74.1's stated intent for Log::append."
+   },
+   {
+    "op": "SlateSync wrapper type",
+    "available_in": "DOES NOT EXIST",
+    "detail": "Doc 018 \u00a74.0 and \u00a79 step 8 specify a `SlateSync<'a, F: Flash, C: MonotonicCounter, S>` newtype = Slate<BlockingFlash<F>, BlockingCounter<C>, S>. grep for SlateSync over crates/ and targets/: ZERO hits. The projection was instead done as cfg-gated inherent methods on Slate itself, and every caller (slate-kv/src/db.rs:477, slate-kv-sim/src/sim_db.rs:318, all three ESP32 binaries) constructs Slate { flash: BlockingFlash(f), counter: BlockingCounter(c), .. } BY HAND. Doc 018 \u00a73.2's claim that 'the sync facade is generic over F: Flash and only ever constructs BlockingFlash<F> internally, so a user cannot reach the bad combination' is therefore FALSE as implemented: nothing prevents a user pairing block_on with a genuinely-suspending AsyncFlash. There is no debug assertion either (grep: none)."
+   }
+  ],
+  "build_matrix": [
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-core",
+    "features": "default (= blocking)",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-core",
+    "features": "--no-default-features --features async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-core",
+    "features": "--no-default-features (neither facade)",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-core",
+    "features": "--features async (async + default blocking)",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-core",
+    "features": "--all-features",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-hal",
+    "features": "--no-default-features",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-hal",
+    "features": "--features async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "aarch64-apple-darwin (host)",
+    "package": "slate-kv-hal",
+    "features": "--features embedded-storage-async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "thumbv7em-none-eabihf (no_std cross)",
+    "package": "slate-kv-core",
+    "features": "default (= blocking)",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "thumbv7em-none-eabihf (no_std cross)",
+    "package": "slate-kv-core",
+    "features": "--no-default-features --features async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "thumbv7em-none-eabihf (no_std cross)",
+    "package": "slate-kv-hal",
+    "features": "--features async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "thumbv7em-none-eabihf (no_std cross)",
+    "package": "slate-kv-hal",
+    "features": "--features embedded-storage-async",
+    "result": "PASS",
+    "exit_code": 0
+   },
+   {
+    "target": "riscv32imc-unknown-none-elf (no_std cross)",
+    "package": "slate-esp32",
+    "features": "chip-esp32c3,counter-flash,metrics",
+    "bins": [
+     "embassy_demo",
+     "kv_demo"
+    ],
+    "result": "PASS",
+    "exit_code": 0,
+    "profile": "release"
+   }
+  ],
+  "build_note": "Both no_std cross-builds are `cargo build`, i.e. compile+link of the library or firmware. No device was flashed."
+ },
+ "claim_5_embedded_build_reality": {
+  "verdict": "Binaries build and were measured. But the premise of the experiment does NOT hold: embassy_demo is not an Embassy binary and does not use the async facade differently from kv_demo, so the size delta below is NOT 'what async costs' \u2014 it is the delta between two blocking-facade programs with different application logic.",
+  "command": "cargo build --release --target riscv32imc-unknown-none-elf --features chip-esp32c3,counter-flash,metrics --bin embassy_demo --bin kv_demo",
+  "size_command": "$(find ~/.rustup/toolchains -name llvm-size | head -1) -A <elf>  [llvm-size from stable-aarch64-apple-darwin]",
+  "measurement_type": "STATIC ANALYSIS of the cross-compiled ELF. Not a device run.",
+  "finding_embassy_demo_does_not_use_embassy": {
+   "severity": "This invalidates doc 018 \u00a79 step 11 and acceptance criterion 'Measured ESP32 max task jitter under seal+GC load reduced by >=8x versus blocking'. The instrument for that measurement does not exist.",
+   "evidence": [
+    "targets/esp32/src/bin/embassy_demo.rs:4-5 \u2014 `use embassy_executor::Spawner;` and `use embassy_time::{Duration, Instant, Timer};` are COMMENTED OUT.",
+    "lines 32-66 \u2014 heartbeat_task() and jitter_logger_task(), the two #[embassy_executor::task] functions, are inside a /* ... */ block comment.",
+    "line 69 \u2014 entry point is `#[esp_hal::main] fn main() -> !`, a plain synchronous main, NOT #[embassy_executor::main].",
+    "lines 78-83 \u2014 in-source comments: 'we leave this as a template', 'In a real Embassy setup, we would start an executor here', spawner.spawn(..) calls commented out.",
+    "line 92-93 \u2014 flash and counter are wrapped in BlockingFlash / BlockingCounter, exactly as kv_demo does.",
+    "lines 107, 239, 253, 256, 259 \u2014 every engine call goes through slate_kv_core::task::block_on(..). No executor ever polls a Slate future.",
+    "line 30 \u2014 MAX_JITTER_US is #[allow(dead_code)]: the jitter metric the doc calls 'the headline claim of the feature' is never written."
+   ],
+   "conclusion": "embassy_demo is kv_demo's write loop driven by block_on, with the Embassy parts commented out. It exercises the async core through the blocking bridge, which is genuinely useful as a compile+run smoke test of the async engine on the real target, but it demonstrates neither concurrency nor DMA offload. The banner it prints, 'embassy_demo started (concurrency, not DMA offload)', overstates what the binary does.",
+   "link_level_confirmation": "llvm-nm on targets/esp32/target/riscv32imc-unknown-none-elf/release/embassy_demo: ZERO symbols from embassy_executor or embassy_time are linked in. Every 'embassy' substring in the symbol table is the crate-name suffix '12embassy_demo' in a Rust v0 mangled name belonging to slate_kv_core/slate_kv_hal generics. So the Embassy dependency declared in targets/esp32/Cargo.toml (embassy-executor 0.10.0, embassy-time 0.5.1) is compiled but entirely dead-stripped: the firmware contains no executor. Confirmed at link level, not just source level.",
+   "async_core_IS_linked": "Both binaries do link the async engine: llvm-nm shows monomorphised block_on / commit_async / index_update_offset_async / gc::reindex_update_offset over BlockingFlash<EspFlash>, BlockingCounter<EspCounter>, CryptoSealer. The async state machines are real generated code on the RISC-V target, driven by block_on. That part of doc 018 holds on hardware-targeted code."
+  },
+  "section_sizes_bytes": {
+   "embassy_demo": {
+    ".text": 91468,
+    ".rodata": 13456,
+    ".data": 77696,
+    ".bss": 456,
+    ".rwtext": 2564,
+    ".trap": 1292,
+    ".stack": 238504,
+    ".rwdata_dummy": 3856,
+    ".rotext_dummy": 65536,
+    ".flash.appdesc": 256,
+    ".eh_frame": 2588,
+    "llvm_size_total": 497900,
+    "file_size_on_disk": 410852
+   },
+   "kv_demo": {
+    ".text": 100836,
+    ".rodata": 15028,
+    ".data": 77756,
+    ".bss": 456,
+    ".rwtext": 2564,
+    ".trap": 1292,
+    ".stack": 238444,
+    ".rwdata_dummy": 3856,
+    ".rotext_dummy": 65536,
+    ".flash.appdesc": 256,
+    ".eh_frame": 2608,
+    "llvm_size_total": 508860,
+    "file_size_on_disk": 424644
+   },
+   "slate_node": {
+    ".text": 91466,
+    ".rodata": 13972,
+    ".data": 77580,
+    ".bss": 456,
+    ".stack": 238620,
+    "llvm_size_total": 498414,
+    "file_size_on_disk": 408260,
+    "_note": "measured for context; built in an earlier session's invocation (mtime 15:23 vs 15:51 for the other two)"
+   }
+  },
+  "derived": {
+   "text_delta_embassy_demo_minus_kv_demo_bytes": -9368,
+   "text_delta_pct": -9.29,
+   "flash_footprint_text_plus_rodata_plus_data_embassy_demo": 182620,
+   "flash_footprint_text_plus_rodata_plus_data_kv_demo": 193620,
+   "static_ram_data_plus_bss_embassy_demo": 78152,
+   "static_ram_data_plus_bss_kv_demo": 78212,
+   "interpretation": "embassy_demo's .text is 9368 B SMALLER than kv_demo's. kv_demo carries a UART command interpreter and a self-check harness that embassy_demo does not; embassy_demo's loop is a bare write/seal/compact cycle. Because BOTH binaries use the blocking facade over the same async core, this number does NOT measure the flash cost of async. The paper CANNOT state an async-vs-blocking firmware size delta from these two binaries. Measuring that would require a genuinely async build of the same application logic, which does not exist in the tree.",
+   "ram_note": "The ~78 KB of .data+.bss is dominated by the statically-allocated engine buffers each binary declares identically (HOT_BUF 4096 + COLD_BUF 4096 + INDEX_SLOTS 2048*4 u32 = 32768 + CKPT_BUF 35000 = 75960 B, verified at kv_demo.rs:21-24 and embassy_demo.rs:25-28), not by async. The 60 B .data difference between them is not attributable to async. .stack (~238 KB) is a linker-reserved region, not an allocation."
+  }
+ },
+ "doc_018_claims_not_implemented": [
+  "MAX_YIELD_SPAN_MS = 50 (doc 018 \u00a72 table, 'slate-kv-core::config', 'Documentation constant + test bound'): grep over the entire repository returns ZERO hits. The constant does not exist. No test asserts any yield-span bound.",
+  "MAX_FUTURE_BYTES = 2048 (doc 018 \u00a72 table, 'slate-kv-core (compile-time assert)'): grep returns ZERO hits. The const _ assertion block of doc 018 \u00a75 step 3, and the crate::probe module it references, do not exist.",
+  "RECOVER_YIELD_EVERY_PAGES = 32 exists at crates/slate-kv-core/src/config.rs:46 but is REFERENCED NOWHERE. grep across crates/ and targets/ finds only its declaration. It is dead, because recover.rs is still on the blocking Flash trait.",
+  "SlateSync (doc 018 \u00a74.0 diagram, \u00a79 step 8): does not exist. See operations_available_in_one_facade_only.",
+  "segment::write_parity (doc 018 \u00a74.3): no such symbol. The function is segment::encode_parity, and it has no callers.",
+  "The debug assertion pairing block_on with BlockingFlash (doc 018 \u00a73.2 'Contract'): does not exist.",
+  "Op-sequence equivalence suite over 1000 seeds (doc 018 \u00a710 first bullet, the BINDING RULE's enforcement mechanism): no such test exists. grep over crates/*/tests/ finds no async-vs-blocking trace comparison.",
+  "Drop-equivalence / cancellation-safety tests at every await point (doc 018 \u00a77, \u00a710, acceptance criterion 4): no such test exists.",
+  "Yield-span bound test (doc 018 \u00a710): no such test exists.",
+  "Future-size regression check (doc 018 \u00a710): no such test exists.",
+  "Executor portability smoke test under Embassy on the QEMU harness (doc 018 \u00a710): not present.",
+  "Interrupt-latency / heartbeat-jitter measurement on hardware (doc 018 \u00a710, called 'the headline claim of the feature and must be measured, not asserted'; acceptance criterion 9): not present, and the binary that was to carry it has its Embassy tasks commented out."
+ ],
+ "dead_code_check_gc_compact_one_async": {
+  "suspicion_in_task_brief": "a vestigial `if false { ... }` block around gc.rs lines 295-297, guarding a yield that would therefore never be taken",
+  "verdict": "NOT PRESENT AT HEAD \u2014 the suspicion was correct historically and has since been fixed.",
+  "evidence": "git grep 'if false' at HEAD over crates/ and targets/: zero hits. `git log -S\"if false\"` shows it was INTRODUCED by fc024e9 ('feat(core): complete native async Phase 3') at gc.rs and REMOVED by a0932e0 ('feat: integrate native async support and expand metrics'). The a0932e0 diff replaces `if false { st.commit_async().await?; }` followed by an unconditional `st.commit_async().await?;` with a single `st.commit_inner_async().await?;`. What it guarded was a commit, not a yield.",
+  "gc_yield_sites_at_head": "gc.rs:348 (scan loop, gated on GC_YIELD_EVERY_RECORDS) and gc.rs:498 (victim erase loop, one per iteration). Both are live and both were exercised in the yield measurement: 32 yields observed on a 12-erase compaction of 174 scanned records."
+ }
+}

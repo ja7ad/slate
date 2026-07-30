@@ -1,0 +1,56 @@
+# SLATE async yield-span measurement (design doc 018 §1/§2/§10: MAX_YIELD_SPAN_MS = 50 claimed as a config constant
+#   and test bound; span excluding one indivisible erase is the stated acceptance criterion, amendment A0.4).
+# Platform: macOS 26.5.2 / arm64 / 12 cores; rustc+cargo 1.97.1. Host run with a SIMULATED flash-latency model. NOT a device run.
+# Command: cargo run -q -p slate-kv-sim --example paper_async_yield --release
+# Source:  crates/slate-kv-sim/examples/paper_async_yield.rs (added this session).
+# Latency model (W25Q-class SPI NOR at 40 MHz, values chosen as datasheet TYPICALS and stated so they can be cited):
+#   read    100 us per 256 B page  (256 B over SPI at 40 MHz plus command/address overhead)
+#   program 500 us per 256 B page  (W25Q tPP typical 0.4-0.5 ms)
+#   erase 45000 us per 4 KiB block (W25Q tSE typical 45 ms; datasheet MAX is 400 ms)
+#   counter increment 500 us       (modelled as one durable off-chip page write, per doc-018 amendment A0.2)
+# WHY a custom adapter: SimFlash's own read_lat_ms/prog_lat_ms/erase_lat_ms fields are u64 MILLISECONDS and are read
+#   by NO code path anywhere in the workspace (grep: only their declaration and initialisation to 0 exist). A 100 us
+#   page read is therefore inexpressible with them. This harness wraps SimFlash in a microsecond latency accumulator.
+# Span definition: simulated time between consecutive Poll::Pending returns while driving each future on a poll loop.
+#   Every Poll::Pending on this configuration is a task::yield_now (an always-ready flash cannot suspend for I/O).
+#   The final span ends in Poll::Ready, so spans = yield_points + 1.
+# max_span_ms_excl_one_erase subtracts one 45 ms erase from the longest span if that span contained any erase --
+#   this is the doc-018 A0.4 form of the criterion ('bound the uninterruptible span to one erase').
+# GEOMETRY: 2 MiB region (4096*512, the ESP32 SLATE_FLASH_LEN), 8192-key index, b_commit=8, except the
+#   recover::recover sweep which used a 16 MiB region so a large tail fits.
+# NOTE on recover::recover rows: recover.rs is on the BLOCKING slate_kv_hal::Flash trait, contains no await and no
+#   yield point, so it is ONE span by construction: yield_points=0. This is doc 018 §9 step 6 not done (the doc's own
+#   §13 addendum admits it). Its 'max_span_ms' is the whole replay.
+# NOTE on the intervening-checkpoint limit: a tail of THETA=16384 records could not be measured -- the engine's
+#   reserve_space_async seals a checkpoint before the tail gets that long, so mount loads the NEWER checkpoint and the
+#   replayable tail collapses to 0. Largest directly-measured tail: 8192 records.
+#
+# ==== part 1: per-path yield spans at the shipped cadence constants (GC_YIELD_EVERY_RECORDS=8) ====
+path,yield_points,spans,flash_ops_total,total_sim_ms,mean_span_ms,max_span_ms,ops_in_longest_span,erases_in_longest_span,max_span_ms_excl_one_erase
+Slate::commit_async[8 records],0,1,97,12.500,12.500,12.500,97,0,12.500
+Slate::seal_epoch_now_async[8192-slot index],138,139,139,470.000,3.381,45.000,1,1,0.000
+gc::compact_one_async[GC_YIELD_EVERY_RECORDS=8],32,33,851,725.900,21.996,53.100,26,1,8.100
+recover::recover[BLOCKING Flash trait; 128 records replayed],0,1,721,72.100,72.100,72.100,721,0,72.100
+recover::recover[BLOCKING Flash trait; 256 records replayed],0,1,1441,144.100,144.100,144.100,1441,0,144.100
+recover::recover[BLOCKING Flash trait; 512 records replayed],0,1,2881,288.100,288.100,288.100,2881,0,288.100
+epoch::mount_async[checkpoint load only],2,3,3,13.100,4.366,13.000,2,0,13.000
+recover::recover[BLOCKING Flash trait; 1024 records replayed],0,1,5761,576.100,576.100,576.100,5761,0,576.100
+recover::recover[BLOCKING Flash trait; 2048 records replayed],0,1,11521,1152.100,1152.100,1152.100,11521,0,1152.100
+recover::recover[BLOCKING Flash trait; 4096 records replayed],0,1,23041,2304.100,2304.100,2304.100,23041,0,2304.100
+recover::recover[BLOCKING Flash trait; 8192 records replayed],0,1,46081,4608.100,4608.100,4608.100,46081,0,4608.100
+#
+# ==== part 2: GC_YIELD_EVERY_RECORDS cadence sweep on the same compaction workload ====
+# Swept by editing the const in crates/slate-kv-core/src/config.rs, rebuilding, re-running, and restoring the file
+#   to its committed value of 8. The constant is a plain `pub const u16` with no runtime override, so recompilation is
+#   the only way to sweep it. flash_ops_total is invariant across the sweep (851), confirming the binding rule of doc
+#   018 holds here: changing yield cadence does not change the flash op sequence.
+# 'cadence' column = the GC_YIELD_EVERY_RECORDS value compiled in for that row.
+cadence,path,yield_points,spans,flash_ops_total,total_sim_ms,mean_span_ms,max_span_ms,ops_in_longest_span,erases_in_longest_span,max_span_ms_excl_one_erase
+1,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=1],174,175,851,725.900,4.148,45.200,3,1,0.200
+2,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=2],93,94,851,725.900,7.722,45.200,3,1,0.200
+4,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=4],52,53,851,725.900,13.696,53.100,26,1,8.100
+8,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=8],32,33,851,725.900,21.996,53.100,26,1,8.100
+16,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=16],22,23,851,725.900,31.560,53.100,26,1,8.100
+32,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=32],17,18,851,725.900,40.327,53.100,26,1,8.100
+64,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=64],14,15,851,725.900,48.393,89.600,189,1,44.600
+128,gc::compact_one_async[GC_YIELD_EVERY_RECORDS=128],13,14,851,725.900,51.850,141.300,651,0,141.300

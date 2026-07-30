@@ -1,0 +1,75 @@
+{
+  "git_head": "970324f20f3fc7d7df4249c4d51122f9a1a5e61c",
+  "git_head_short": "970324f",
+  "git_head_date": "2026-07-29 14:38:43 +0330",
+  "dirty_paths": 9,
+  "workspace_version": "0.4.0",
+  "rust_edition": "2021",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "cargo": "1.97.1 (c980f4866 2026-06-30)",
+  "host_os": "macOS 26.5.2 (25F84)",
+  "host_arch": "arm64",
+  "host_cores": 12,
+  "host_ram_gib": 24,
+  "embedded_target": "riscv32imc-unknown-none-elf",
+  "nostd_check_target": "thumbv7em-none-eabihf",
+  "firmware_features": "chip-esp32c3,counter-flash,metrics",
+  "gate": {
+    "fmt": "clean",
+    "clippy": "clean (-D warnings)",
+    "nostd_core_build": "ok",
+    "firmware_build": "ok (4 binaries)"
+  },
+  "loc_src": {
+    "slate-kv-core": 3931,
+    "slate-kv-crypto": 467,
+    "slate-kv-erasure": 372,
+    "slate-kv-hal": 473,
+    "slate-kv": 1201,
+    "slate-kv-cli": 146,
+    "slate-kv-ffi": 363,
+    "slate-kv-sim": 1747
+  },
+  "loc_tests": {
+    "slate-kv-core": 142,
+    "slate-kv-crypto": 0,
+    "slate-kv-erasure": 0,
+    "slate-kv-hal": 0,
+    "slate-kv": 957,
+    "slate-kv-cli": 0,
+    "slate-kv-ffi": 0,
+    "slate-kv-sim": 690
+  },
+  "loc_esp32_target": 1477,
+  "loc_go_binding": 719,
+  "loc_engine_total": 6444,
+  "loc_src_total": 8700,
+  "loc_tests_total": 1789,
+  "firmware_sizes": {
+    "kv_demo": {
+      "text": 100826,
+      "rodata": 15028,
+      "data": 77756,
+      "bss": 456
+    },
+    "embassy_demo": {
+      "text": 91458,
+      "rodata": 13456,
+      "data": 77696,
+      "bss": 456
+    },
+    "slate_node": {
+      "text": 91466,
+      "rodata": 13352,
+      "data": 77580,
+      "bss": 456
+    },
+    "bench": {
+      "text": 24204,
+      "rodata": 7016,
+      "data": 532,
+      "bss": 396
+    }
+  },
+  "tex_engine": "/Library/TeX/texbin/pdflatex (pdfTeX 3.141592653-2.6-1.40.29, TeX Live 2026)"
+}
