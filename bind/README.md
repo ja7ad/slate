@@ -74,32 +74,61 @@ tell you that you mismatched it.
 
 ### The libc of the archive must match the libc of the host
 
-A Rust `staticlib` carries libc-dependent startup and thread-local machinery
-baked in at build time. Link a **glibc** archive into a **musl** host — or the
-reverse — and it links without a single warning, then takes a **SIGSEGV on the
-first call into the engine**.
-
-This is exactly what happened with TinyGo. `cargo build` on Ubuntu produces a
-glibc archive; TinyGo's default Linux target is musl (`tinygo info` prints
-`LLVM triple: x86_64-unknown-linux-musl…`). The suite crashed in the first test
-that merely opened and closed a database, while plain `go test` — glibc on both
-sides — passed everything.
+A Rust `staticlib` bakes in libc-dependent startup machinery at build time.
+Linking a **glibc** archive into a **musl** host — or the reverse — succeeds at
+link time and then misbehaves at runtime. Check and match before you debug
+anything else:
 
 ```sh
 tinygo info | grep 'LLVM triple'        # what libc is your host targeting?
 
-# Build the archive to match:
 rustup target add x86_64-unknown-linux-musl
 cargo build -p slate-kv-ffi --release --target x86_64-unknown-linux-musl
 export CGO_LDFLAGS="-L$PWD/target/x86_64-unknown-linux-musl/release -lslate_kv_ffi -lm -lpthread -ldl"
 ```
 
-Related: the FFI deliberately uses a process-wide `Mutex` rather than
-`thread_local!` for the last-open-error slot. A TLS static's model is fixed by
-the libc it was compiled against, so it is a portability hazard across this
-boundary — and a thread-local also gave the *wrong answer* to any caller that
-opened on one thread and read the error on another. If you are auditing a
-build, `nm libslate_kv_ffi.a | grep __tls_get_addr` should return nothing.
+Note that a musl target **cannot produce a `cdylib`** — cargo warns `dropping
+unsupported crate type cdylib` — so on musl the static archive is your only
+option.
+
+### TinyGo can compile this binding, but cannot run it
+
+**Standard Go (`gc`) is the supported runtime.** TinyGo is supported as a
+*compile* target only, and CI enforces exactly that: it builds the TinyGo test
+binary and does not execute it.
+
+This is not for want of trying. Every fallback in doc 017 §7 was attempted and
+the outcome recorded in `DEVELOPMENT_STATE.md`:
+
+| Attempt                                       | Outcome                                                                                               |
+|-----------------------------------------------|-------------------------------------------------------------------------------------------------------|
+| Explicit native libs on the TinyGo link line  | Still SIGSEGV                                                                                         |
+| Link the `.so` instead of the `.a`            | Not possible on musl (`cdylib` unsupported); the glibc `.so` crashes inside glibc `malloc` under musl |
+| Build the archive natively for musl           | Still SIGSEGV — so it is not a cross-libc mismatch                                                    |
+| Raise the goroutine stack (`-stack-size=1MB`) | Identical crash — so it is not stack depth                                                            |
+
+The crash is in the **first** test that opens and closes a database, i.e. at
+the first real call into the engine. The remaining explanation is runtime
+coexistence: TinyGo's Linux runtime brings its own GC (`gc.boehm`) and scheduler
+(`scheduler.threads`), and hosting a Rust `std` library — with its own thread,
+panic, and allocator machinery — inside it is not a combination either side
+supports.
+
+If you need SLATE on TinyGo, the tractable path is not to keep fighting the
+static link: it is a `no_std` FFI variant that brings no Rust runtime with it.
+That is real work, not a flag.
+
+### The FFI must not use thread-local storage
+
+The last-open-error slot is a process-wide `Mutex`, not a `thread_local!`, and
+that is deliberate for a reason unrelated to TinyGo: **a thread-local gave the
+wrong answer.** A C caller who opened a database on one thread and read
+`slate_last_error_message` on another silently got an empty string, and nothing
+in the C ABI promises thread affinity. Conformance case C15 pins this.
+
+(Rust `std` itself uses TLS internally for panic state and stdio, so `nm | grep
+tls` on the archive is *not* a useful audit — it will never be zero. The rule
+applies to code you write in the FFI layer.)
 
 ### `slate_get` takes five parameters, not six
 
