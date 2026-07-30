@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "crates/*",
-    "fuzz",
+    "artifacts/fuzz",
 ]
 exclude = [
     "targets/esp32",

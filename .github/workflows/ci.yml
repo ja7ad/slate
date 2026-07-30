@@ -85,11 +85,11 @@ jobs:
         # so the summary printed in the job log agrees with Codecov.
         run: |
           cargo llvm-cov --workspace --lcov --output-path lcov.info \
-            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
+            --ignore-filename-regex '(/examples/|/src/bin/|^artifacts/fuzz/|^targets/)'
       - name: Coverage summary
         run: |
           cargo llvm-cov report --summary-only \
-            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
+            --ignore-filename-regex '(/examples/|/src/bin/|^artifacts/fuzz/|^targets/)'
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:

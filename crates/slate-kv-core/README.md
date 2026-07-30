@@ -243,7 +243,7 @@ cargo test -p slate-kv-core                                    # unit tests
 cargo build -p slate-kv-core --target thumbv7em-none-eabihf    # no_std purity (make build-bare)
 cargo test -p slate-kv-sim                                     # crash injection, GC, RS recovery
 cargo run --release -p slate-kv-core --example slate_index     # the index measurements above
-cargo +nightly fuzz run fuzz_record_decode                     # decoders, from fuzz/
+cargo +nightly fuzz run fuzz_record_decode                     # decoders, from artifacts/fuzz/
 ```
 
 CI additionally runs Miri and a bare-metal matrix build; this crate must build with no `std` and no `alloc` on every change.

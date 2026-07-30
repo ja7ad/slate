@@ -2,7 +2,7 @@ use slate_kv::{Db, KeySource, Options, Profile};
 use std::time::Instant;
 
 fn main() {
-    let path = std::path::Path::new("./pi_bench_db");
+    let path = std::path::Path::new("./artifacts/pi_bench_db");
     let _ = std::fs::remove_dir_all(path);
     std::fs::create_dir_all(path).unwrap();
 

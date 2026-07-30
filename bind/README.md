@@ -34,8 +34,8 @@ language-agnostic driver test — it drives the shared library through Python
 `ctypes`, so it needs no Rust and no C compiler:
 
 ```sh
-python3 tools/slate_driver_test.py          # finds the library automatically
-python3 tools/slate_driver_test.py --lib target/release
+python3 artifacts/tools/slate_driver_test.py          # finds the library automatically
+python3 artifacts/tools/slate_driver_test.py --lib target/release
 ```
 
 44 checks covering round-trip, durability across reopen, the two-call `get`

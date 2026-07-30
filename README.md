@@ -4,6 +4,8 @@
   <img src="https://raw.githubusercontent.com/ja7ad/slate/main/docs/slate_logo.png" alt="SLATE Logo" width="300"/>
 </p>
 
+[![crates.io](https://img.shields.io/crates/v/slate-kv.svg)](https://crates.io/crates/slate-kv)
+[![docs.rs](https://docs.rs/slate-kv/badge.svg)](https://docs.rs/slate-kv)
 [![codecov](https://codecov.io/gh/ja7ad/slate/graph/badge.svg?token=leYIzSiuLf)](https://codecov.io/gh/ja7ad/slate)
 [![CI](https://github.com/ja7ad/slate/actions/workflows/ci.yml/badge.svg)](https://github.com/ja7ad/slate/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)

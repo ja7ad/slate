@@ -41,7 +41,7 @@ ignore:
   - "crates/*/examples/**"
 
   # The fuzz target: driven by cargo-fuzz, never by the test suite.
-  - "fuzz/**"
+  - "artifacts/fuzz/**"
 
   # Out-of-workspace bare-metal firmware. It cannot be built or run on the
   # coverage host (riscv32imc, no_std), so it can only ever report 0%.

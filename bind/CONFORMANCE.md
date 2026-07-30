@@ -24,7 +24,7 @@ in the first place. C14–C18 test that assumption.
 Prove the artifact is sound before you debug your binding:
 
 ```sh
-python3 tools/slate_driver_test.py
+python3 artifacts/tools/slate_driver_test.py
 ```
 
 This drives the shared library through Python `ctypes` — no Rust toolchain, no
