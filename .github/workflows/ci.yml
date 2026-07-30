@@ -254,10 +254,23 @@ jobs:
       - name: Run TinyGo conformance tests
         continue-on-error: true
         run: |
-          # `make bind-test` above builds the staticlib as a dependency; this
-          # step previously ran `tinygo test` on its own and so could link a
-          # stale or absent libslate_kv_ffi.a. Build it explicitly so the step
-          # is independent of job ordering.
+          # TinyGo's default Linux target is MUSL (see the "LLVM triple:
+          # x86_64-unknown-linux-musl..." line printed below), while
+          # `cargo build` on ubuntu-latest produces a GLIBC static library.
+          # Mixing the two links without complaint and then faults at runtime:
+          # the archive's libc-dependent startup and TLS machinery are not the
+          # ones the musl host set up. That is why TestC1 — which only opens
+          # and closes a database — took a SIGSEGV while plain `go test`
+          # (glibc both sides) passed every test.
+          #
+          # Build the archive for the musl target so both halves agree on a
+          # libc. `make bind-test` above already covers the glibc/`go test`
+          # combination, so between the two steps both ABIs are exercised.
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo build -p slate-kv-ffi --release --target x86_64-unknown-linux-musl
+          # Keep a glibc copy too: the diagnostics below and any non-TinyGo
+          # consumer in this job expect the default path to exist.
           cargo build -p slate-kv-ffi --release
           # Diagnostics first: a bare SIGSEGV says nothing about which of the
           # doc 017 §7 failure modes fired, and the crash happens at process
@@ -266,8 +279,16 @@ jobs:
           tinygo version
           echo "=== tinygo default target ==="
           tinygo info 2>/dev/null | head -20 || true
-          echo "=== staticlib present ==="
+          echo "=== staticlibs present ==="
           ls -la target/release/libslate_kv_ffi.a
+          ls -la target/x86_64-unknown-linux-musl/release/libslate_kv_ffi.a
+          echo "=== TLS references in the musl archive (must be 0) ==="
+          # `thread_local!` lowers to a TLS static whose model is fixed by the
+          # libc the archive was built against, so any TLS reference here is a
+          # portability hazard for a musl host. The FFI deliberately uses a
+          # process-wide Mutex instead.
+          nm target/x86_64-unknown-linux-musl/release/libslate_kv_ffi.a 2>/dev/null \
+            | grep -ci '__tls_get_addr' || echo 0
           echo "=== build the test binary without running it ==="
           cd bind/go
           # Separating compile from run localises the fault: if this succeeds
@@ -295,8 +316,9 @@ jobs:
             exit 1
           fi
         env:
-          # Rust staticlibs do not bundle libc/libm/pthread/dl; TinyGo's default
-          # link line is narrower than cgo's, so name them explicitly. This is
-          # fallback 1 from doc 017 §7.
-          CGO_LDFLAGS: "-L${{ github.workspace }}/target/release -lslate_kv_ffi -lm -lpthread -ldl"
+          # Point at the MUSL archive, not the glibc one — TinyGo's default
+          # Linux target is musl and mixing libcs is what crashed TestC1.
+          # Rust staticlibs also do not bundle libc/libm/pthread/dl, and
+          # TinyGo's link line is narrower than cgo's, so name them explicitly
+          CGO_LDFLAGS: "-L${{ github.workspace }}/target/x86_64-unknown-linux-musl/release -lslate_kv_ffi -lm -lpthread -ldl"
 
