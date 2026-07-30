@@ -80,8 +80,7 @@ pub const SLATE_FLASH_LEN: u32 = 0x200000;
 /// the first commit.
 pub fn slate_region_ok(len: u32, min_segments: u32) -> bool {
     let data_base = slate_kv_core::config::data_base_offset(FLASH_BLOCK_SIZE);
-    let need = data_base as u64
-        + min_segments as u64 * slate_kv_core::config::SEG_BYTES as u64;
+    let need = data_base as u64 + min_segments as u64 * slate_kv_core::config::SEG_BYTES as u64;
     (len as u64) >= need
 }
 
@@ -188,7 +187,7 @@ impl<'a> Flash for EspFlash<'a> {
         let aligned_len = want.next_multiple_of(W as usize);
 
         // Fast path: already aligned both ways.
-        if skew == 0 && buf.len() % W as usize == 0 {
+        if skew == 0 && buf.len().is_multiple_of(W as usize) {
             return self
                 .inner
                 .read(aligned_start, buf)
@@ -240,19 +239,20 @@ impl<'a> Flash for EspFlash<'a> {
             {
                 for &b in check_buf.iter() {
                     if b != 0xFF {
-                        esp_println::println!("EspFlash program error: not erased at addr {}", addr + chunk_offset as u32);
+                        esp_println::println!(
+                            "EspFlash program error: not erased at addr {}",
+                            addr + chunk_offset as u32
+                        );
                         return Err(EspFlashError::ProgramWithoutErase);
                     }
                 }
             }
         }
 
-        self.inner
-            .write(self.base + addr, buf)
-            .map_err(|e| {
-                esp_println::println!("EspFlash write error at {}: {:?}", addr, e);
-                EspFlashError::StorageError
-            })
+        self.inner.write(self.base + addr, buf).map_err(|e| {
+            esp_println::println!("EspFlash write error at {}: {:?}", addr, e);
+            EspFlashError::StorageError
+        })
     }
 
     fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {

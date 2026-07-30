@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c rustfmt
       - run: cargo fmt --all --check
+      # targets/esp32 is `exclude`d from the workspace, so `--all` above does
+      # not reach it. Without this it was never format-checked.
+      - name: Format check (esp32 firmware)
+        run: cd targets/esp32 && cargo fmt --all --check
 
   clippy:
     name: Clippy
@@ -25,6 +29,23 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  clippy-esp32:
+    name: Clippy (esp32 firmware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The firmware is outside the workspace and was therefore never linted.
+      # Its warnings surfaced only as build noise inside the QEMU and Wokwi
+      # jobs — an `unused_mut` in kv_demo.rs shipped that way. Lint it here so
+      # a warning fails fast in its own job instead of being missed.
+      - run: rustup toolchain install stable --profile minimal -c clippy --target riscv32imc-unknown-none-elf
+      - name: Clippy
+        run: |
+          cd targets/esp32
+          cargo clippy --release --target riscv32imc-unknown-none-elf \
+            --no-default-features --features chip-esp32c3,counter-flash,metrics \
+            --bins -- -D warnings
 
   test:
     name: Test
@@ -79,27 +100,74 @@ jobs:
       - run: cargo miri test -p slate-kv-core
 
   qemu-sim:
-    name: QEMU Crash Simulator
+    name: QEMU Crash Simulator (${{ matrix.attack }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The three attack modes are independent runs over their own fresh flash
+    # image, so they fan out instead of running back-to-back. Wall clock for
+    # the job drops to the slowest leg rather than their sum.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - attack: none
+            iters: 25
+          - attack: rollback
+            iters: 2
+          - attack: tamper
+            iters: 2
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
-      - name: Install espflash
-        run: cargo install espflash cargo-binutils
+      # Cache the cargo registry and the built firmware. The crash script
+      # rebuilds kv_demo on every qemu_run.sh invocation, so a warm target dir
+      # turns each of those into a no-op recompile check.
+      - name: Cache cargo + firmware build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            targets/esp32/target
+          key: qemu-${{ runner.os }}-${{ hashFiles('targets/esp32/Cargo.lock') }}
+          restore-keys: qemu-${{ runner.os }}-
+      # `cargo install espflash` compiles from source and was the single
+      # largest cost in this job (minutes). cargo-binutils was installed but
+      # never used by any script here. Take the prebuilt binary instead.
+      - name: Install espflash (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash
       - name: Install Espressif QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20 python3-serial
-          wget https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20 python3-serial
+          wget -q https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           echo "$PWD/qemu/bin" >> $GITHUB_PATH
-      - name: Run QEMU Crash Suite (None)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 25 --attack none
-      - name: Run QEMU Crash Suite (Rollback)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack rollback
-      - name: Run QEMU Crash Suite (Tamper)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack tamper
+      # Build once up front so the per-iteration `cargo build` inside
+      # qemu_run.sh is a cache hit rather than a fresh compile.
+      - name: Prebuild firmware
+        run: |
+          cd targets/esp32
+          cargo build --bin kv_demo --release --no-default-features \
+            --features chip-esp32c3,counter-efuse --target riscv32imc-unknown-none-elf
+      - name: Run QEMU crash suite
+        run: |
+          cd targets/esp32
+          ./scripts/qemu_crash.sh --iters ${{ matrix.iters }} --attack ${{ matrix.attack }}
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-logs-${{ matrix.attack }}
+          path: |
+            targets/esp32/qemu.log
+            targets/esp32/drive.log
+            targets/esp32/verify.log
+          if-no-files-found: ignore
 
   wokwi-sim:
     name: Wokwi Simulator
@@ -111,17 +179,31 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
       - name: Install Wokwi CLI
         run: curl -L https://wokwi.com/ci/install.sh | sh
+      # Delegate to scripts/wokwi_run.sh rather than reimplementing the
+      # invocation here. The inlined version passed a bare
+      # `--scenario kv_demo.scenario.yaml` (the file lives in wokwi/) and
+      # omitted --diagram-file and --elf, so the run never matched the
+      # scenario and always ended in the 120 s timeout (exit 42).
       - name: Run Wokwi scenario
         run: |
-          cd targets/esp32
-          cargo build --release --no-default-features --features chip-esp32c3,counter-flash,metrics --bin kv_demo --target riscv32imc-unknown-none-elf
           if [ -z "$WOKWI_CLI_TOKEN" ]; then
             echo "WOKWI_CLI_TOKEN is empty. Skipping Wokwi simulation."
             exit 0
           fi
-          wokwi-cli --timeout 120000 --scenario kv_demo.scenario.yaml wokwi
+          cd targets/esp32 && ./scripts/wokwi_run.sh
         env:
           WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN || vars.WOKWI_CLI_TOKEN }}
+          # Must match the scenario's assertions: `metrics` is what makes the
+          # write-amplification buckets non-zero for the `stats` step.
+          FEATURES: chip-esp32c3,counter-flash,metrics
+          TIMEOUT_MS: "180000"
+      - name: Upload Wokwi serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wokwi-serial-log
+          path: targets/esp32/wokwi-serial.log
+          if-no-files-found: ignore
 
   bindings:
     name: Language Bindings
@@ -139,13 +221,45 @@ jobs:
           go-version: '1.21'
       - name: Run Go conformance tests
         run: make bind-test
-      # Non-blocking until the TinyGo + Rust staticlib link is settled (doc 017 §Risks).
-      # Flip continue-on-error to false in the same PR that settles it.
+      # Non-blocking until the TinyGo + Rust staticlib link is settled
+      # (doc 017 §7). Flip continue-on-error to false in the same PR that
+      # settles it.
       - name: Set up TinyGo
         uses: acifani/setup-tinygo@v3
         with:
           tinygo-version: '0.40.1'
       - name: Run TinyGo conformance tests
         continue-on-error: true
-        run: cd bind/go && tinygo test ./...
+        run: |
+          # `make bind-test` above builds the staticlib as a dependency; this
+          # step previously ran `tinygo test` on its own and so could link a
+          # stale or absent libslate_kv_ffi.a. Build it explicitly so the step
+          # is independent of job ordering.
+          cargo build -p slate-kv-ffi --release
+          # Diagnostics first: a bare SIGSEGV says nothing about which of the
+          # doc 017 §7 failure modes fired, and the crash happens at process
+          # start (0.089 s), i.e. during runtime init, not inside a test body.
+          echo "=== tinygo version ==="
+          tinygo version
+          echo "=== tinygo default target ==="
+          tinygo info 2>/dev/null | head -20 || true
+          echo "=== staticlib present ==="
+          ls -la target/release/libslate_kv_ffi.a
+          echo "=== build the test binary without running it ==="
+          cd bind/go
+          # Separating compile from run localises the fault: if this succeeds
+          # and execution still segfaults, the problem is runtime coexistence
+          # (fallback 2/3), not the link line (fallback 1).
+          if tinygo test -c -o /tmp/slate_tinygo_test ./... ; then
+            echo "compile+link OK -> running"
+            /tmp/slate_tinygo_test -test.v
+          else
+            echo "compile/link FAILED — this is doc 017 §7 fallback 1 territory"
+            exit 1
+          fi
+        env:
+          # Rust staticlibs do not bundle libc/libm/pthread/dl; TinyGo's default
+          # link line is narrower than cgo's, so name them explicitly. This is
+          # fallback 1 from doc 017 §7.
+          CGO_LDFLAGS: "-L${{ github.workspace }}/target/release -lslate_kv_ffi -lm -lpthread -ldl"
 

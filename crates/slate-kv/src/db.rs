@@ -23,6 +23,32 @@ pub enum DbError {
     InvalidArg(String),
 }
 
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The core error types are `no_std` and carry no Display impl, so
+            // format them with Debug rather than duplicating their variants
+            // here — a mirrored list would drift the moment core gains one.
+            DbError::Core(e) => write!(f, "engine error: {e:?}"),
+            DbError::Mount(e) => write!(f, "mount failed: {e:?}"),
+            DbError::Io(e) => write!(f, "i/o error: {e}"),
+            DbError::Config(m) => write!(f, "configuration error: {m}"),
+            DbError::InvalidArg(m) => write!(f, "invalid argument: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for DbError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Only `Io` wraps a type that itself implements `Error`; the core
+        // variants are `no_std` enums with no such impl to chain to.
+        match self {
+            DbError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl From<slate_kv_core::error::Error> for DbError {
     fn from(e: slate_kv_core::error::Error) -> Self {
         DbError::Core(e)

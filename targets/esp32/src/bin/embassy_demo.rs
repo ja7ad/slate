@@ -3,10 +3,10 @@
 
 // use embassy_executor::Spawner;
 // use embassy_time::{Duration, Instant, Timer};
+use core::sync::atomic::AtomicU32;
 use esp_backtrace as _;
 use esp_hal::uart::Uart;
 use esp_println::println;
-use core::sync::atomic::AtomicU32;
 
 use slate_kv_core::config::SchedCfg;
 use slate_kv_core::gc::SegTable;
@@ -16,9 +16,9 @@ use slate_kv_core::metrics::Metrics;
 use slate_kv_core::sched::Scheduler;
 use slate_kv_core::slate::Slate;
 
-use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
-use slate_kv_hal::{BlockingFlash, BlockingCounter};
+use slate_kv_crypto::sealer::CryptoSealer;
+use slate_kv_hal::{BlockingCounter, BlockingFlash};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -44,7 +44,7 @@ async fn heartbeat_task() {
         } else {
             target_us - elapsed_us
         };
-        
+
         // Manual compare_exchange to max since load/store is safe
         let mut curr_max = MAX_JITTER_US.load(Ordering::Relaxed);
         while jitter > curr_max {
@@ -71,7 +71,7 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let _esp_hal_timer = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
     // esp_hal::embassy::init(esp_hal_timer.timer0); // Wait, this needs esp-hal-embassy
-    
+
     let _uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
     println!("embassy_demo started (concurrency, not DMA offload)");
 
@@ -104,7 +104,12 @@ fn main() -> ! {
 
     let ckpt_buf = CKPT_BUF.take();
     let (engine_state, _plain_len) =
-        match slate_kv_core::task::block_on(slate_kv_core::epoch::mount_async(&mut async_flash, &mut async_counter, &mut sealer, &mut *ckpt_buf)) {
+        match slate_kv_core::task::block_on(slate_kv_core::epoch::mount_async(
+            &mut async_flash,
+            &mut async_counter,
+            &mut sealer,
+            &mut *ckpt_buf,
+        )) {
             Ok(mi) => {
                 head_state.seg_seq = mi.ckpt_seg_seq;
                 head_state.write_offset = mi.ckpt_write_offset;
@@ -146,7 +151,6 @@ fn main() -> ! {
     let cold_buf = COLD_BUF.take();
     let index_slots = INDEX_SLOTS.take();
 
-
     let sched_cfg = SchedCfg {
         auto_b: false,
         fixed_cost_uj: 1000,
@@ -168,10 +172,7 @@ fn main() -> ! {
         counter: async_counter,
         sealer,
         engine: engine_state,
-        log_hot: slate_kv_core::log::Log::new(
-            hot_buf,
-            head_state,
-        ),
+        log_hot: slate_kv_core::log::Log::new(hot_buf, head_state),
         log_cold: slate_kv_core::log::Log::new(
             cold_buf,
             HeadState {
@@ -287,7 +288,9 @@ where
         cap.saturating_sub(hot.max(cold)),
         slate.segs.free_count(),
         slate.segs.num_segments,
-        slate.segs.count_in_state(slate_kv_core::gc::SegState::Sealed),
+        slate
+            .segs
+            .count_in_state(slate_kv_core::gc::SegState::Sealed),
     );
     #[cfg(feature = "metrics")]
     {
@@ -305,7 +308,10 @@ where
             wa_bp % 10_000
         );
         if m.gc_open_failed > 0 {
-            println!("     WARNING: gc could not decrypt {} records", m.gc_open_failed);
+            println!(
+                "     WARNING: gc could not decrypt {} records",
+                m.gc_open_failed
+            );
         }
     }
 }

@@ -10,8 +10,12 @@ steps:
   - write-serial: "mode\n"
   - wait-serial: "BestEffortRollback"
   - wait-serial: "slate> "
+  # `stats` prints sections headed `engine:`, `log:`, `index:`, `segments:`,
+  # `flash bytes written`, `durability:` and `gc:` — it never prints a line
+  # "stats:". Waiting on that string hung until the CI timeout (exit 42) with
+  # the whole stats block already visible in the serial log.
   - write-serial: "stats\n"
-  - wait-serial: "stats:"
+  - wait-serial: "engine:"
   - wait-serial: "slate> "
   # Layout invariants, asserted before anything is written. A FAIL here names
   # the misconfiguration directly instead of letting it surface as an opaque

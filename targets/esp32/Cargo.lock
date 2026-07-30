@@ -1445,7 +1445,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "slate-esp32"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "critical-section",
  "embassy-executor",
@@ -1463,7 +1463,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "heapless 0.8.0",
  "sha2",
@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-crypto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
@@ -1485,11 +1485,11 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-erasure"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "slate-kv-hal"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "smallvec"

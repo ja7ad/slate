@@ -13,8 +13,8 @@ use slate_kv_core::metrics::Metrics;
 use slate_kv_core::sched::Scheduler;
 use slate_kv_core::slate::Slate;
 
-use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
+use slate_kv_crypto::sealer::CryptoSealer;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -131,10 +131,7 @@ fn main() -> ! {
         counter: slate_kv_hal::BlockingCounter(counter),
         sealer,
         engine: engine_state,
-        log_hot: slate_kv_core::log::Log::new(
-            HOT_BUF.take(),
-            head_state,
-        ),
+        log_hot: slate_kv_core::log::Log::new(HOT_BUF.take(), head_state),
         log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
@@ -284,17 +281,15 @@ where
                 Err(e) => println!("err del {:?}", e),
             }
         }
-        Some("commit") => {
-            match slate.commit() {
-                Ok(_) => {
-                    let ack_seq = slate.engine.acked_seq;
-                    println!("ack {}", ack_seq);
-                }
-                Err(e) => {
-                    println!("err commit {:?}", e);
-                }
+        Some("commit") => match slate.commit() {
+            Ok(_) => {
+                let ack_seq = slate.engine.acked_seq;
+                println!("ack {}", ack_seq);
             }
-        }
+            Err(e) => {
+                println!("err commit {:?}", e);
+            }
+        },
         Some("seal") => {
             // Force an epoch seal by pretending we reached THETA
             slate.engine.records_in_epoch = slate_kv_core::config::THETA;
@@ -357,7 +352,9 @@ where
                 "  total={} free={} sealed={} data_base={} seg_end={} cap={}",
                 slate.segs.num_segments,
                 slate.segs.free_count(),
-                slate.segs.count_in_state(slate_kv_core::gc::SegState::Sealed),
+                slate
+                    .segs
+                    .count_in_state(slate_kv_core::gc::SegState::Sealed),
                 data_base,
                 seg_end,
                 cap
@@ -388,7 +385,10 @@ where
                     None => println!("  WA     =unmeasured (no user bytes yet)"),
                 }
                 println!("durability:");
-                println!("  commits={} wakes={} erases={}", m.commits, m.wakes, m.erases);
+                println!(
+                    "  commits={} wakes={} erases={}",
+                    m.commits, m.wakes, m.erases
+                );
                 println!("gc:");
                 println!(
                     "  scanned={} relocated={} open_failed={} segments_freed={}",
@@ -412,7 +412,9 @@ where
             let cold = slate.log_cold.head.write_offset;
             let mut fails = 0;
 
-            let mut check = |name: &str, ok: bool, detail: &str| {
+            // Not `mut`: the closure only prints. `fails` is incremented by the
+            // caller at each site, so nothing is captured mutably here.
+            let check = |name: &str, ok: bool, detail: &str| {
                 if ok {
                     println!("  PASS {} {}", name, detail);
                 } else {
@@ -425,13 +427,21 @@ where
             if !ok {
                 fails += 1;
             }
-            check("hot_above_ckpt_region", ok, "hot head must not overlap checkpoint slots");
+            check(
+                "hot_above_ckpt_region",
+                ok,
+                "hot head must not overlap checkpoint slots",
+            );
 
             let ok = cold >= data_base;
             if !ok {
                 fails += 1;
             }
-            check("cold_above_ckpt_region", ok, "cold head must not overlap checkpoint slots");
+            check(
+                "cold_above_ckpt_region",
+                ok,
+                "cold head must not overlap checkpoint slots",
+            );
 
             let hot_seg = slate.segs.seg_of(hot);
             let cold_seg = slate.segs.seg_of(cold);
@@ -449,19 +459,31 @@ where
             if !ok {
                 fails += 1;
             }
-            check("heads_in_region", ok, "both heads must lie inside the mapped region");
+            check(
+                "heads_in_region",
+                ok,
+                "both heads must lie inside the mapped region",
+            );
 
             let ok = slate_esp32::slate_region_ok(slate_esp32::SLATE_FLASH_LEN, 1);
             if !ok {
                 fails += 1;
             }
-            check("region_fits_format", ok, "region must hold the reserved layout + 1 segment");
+            check(
+                "region_fits_format",
+                ok,
+                "region must hold the reserved layout + 1 segment",
+            );
 
             let ok = slate.segs.num_segments > 0;
             if !ok {
                 fails += 1;
             }
-            check("segment_map_present", ok, "a zero-length segment map disables GC entirely");
+            check(
+                "segment_map_present",
+                ok,
+                "a zero-length segment map disables GC entirely",
+            );
 
             #[cfg(feature = "metrics")]
             {
