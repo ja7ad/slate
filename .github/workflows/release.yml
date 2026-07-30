@@ -127,9 +127,6 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: slate-kv-ffi-macos-arm64
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset_name: slate-kv-ffi-macos-amd64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: slate-kv-ffi-windows-amd64
