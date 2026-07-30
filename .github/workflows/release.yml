@@ -214,6 +214,21 @@ jobs:
           Static: link the .a/.lib PLUS the system libraries listed in
           native-libs.txt — Rust static libraries do not bundle them.
 
+          On Windows, lib/ holds four files and the names are easy to confuse:
+            slate_kv_ffi.dll        the shared library — ship this next to your
+                                    executable, or put it on PATH
+            slate_kv_ffi.dll.lib    the IMPORT library for that DLL — link this
+                                    when you want the shared library
+            slate_kv_ffi.lib        the STATIC library — link this instead if
+                                    you want no DLL at runtime
+            slate_kv_ffi.pdb        debug symbols, optional; keep it beside the
+                                    DLL if you want readable stack traces in a
+                                    crash dump. Not needed to build or run.
+
+          Note the distinction between .dll.lib and .lib: linking the wrong one
+          either leaves you needing a DLL you did not ship, or statically links
+          a copy you did not intend.
+
           Before use, check slate_abi_version() against the header's
           SLATE_ABI_VERSION_MAJOR / _MINOR.
 
