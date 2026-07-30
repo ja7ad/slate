@@ -9,40 +9,103 @@ permissions:
   contents: write
 
 jobs:
+  verify-version:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          TAG="${GITHUB_REF_NAME#v}"
+          echo "manifest=$VERSION tag=$TAG"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match workspace version $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   build-esp32:
     name: Build ESP32 Firmware
     runs-on: ubuntu-latest
+    needs: [verify-version]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust target
         run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
-      - name: Install espflash
-        run: cargo install espflash
+      # Prebuilt binary: `cargo install espflash` compiles from source and cost
+      # minutes on every release.
+      - name: Install espflash (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash
       - name: Build ESP32-C3 Firmware
         run: |
+          set -euo pipefail
           cd targets/esp32
-          cargo build --release --bin kv_demo --no-default-features --features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
-          espflash save-image --ignore-app-descriptor --merge --chip esp32c3 target/riscv32imc-unknown-none-elf/release/kv_demo slate-esp32c3-flash.img
-          truncate -s 4194304 slate-esp32c3-flash.img
-          tar -czvf slate-esp32c3-${{ github.ref_name }}.tar.gz slate-esp32c3-flash.img target/riscv32imc-unknown-none-elf/release/kv_demo
+          cargo build --release --bin kv_demo --no-default-features \
+            --features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
+          espflash save-image --ignore-app-descriptor --merge --chip esp32c3 \
+            target/riscv32imc-unknown-none-elf/release/kv_demo slate-esp32c3-flash.img
+          # Pad to 4 MiB with 0xFF, the NOR erased state. `truncate` pads with
+          # 0x00, which EspFlash::program() rejects as ProgramWithoutErase — so
+          # the previously released image failed on the first write past the
+          # firmware. scripts/qemu_run.sh documents exactly this trap.
+          CURRENT=$(wc -c < slate-esp32c3-flash.img | tr -d ' ')
+          TARGET=4194304
+          if [ "$CURRENT" -gt "$TARGET" ]; then
+            echo "::error::image is $CURRENT B, larger than the 4 MiB flash"
+            exit 1
+          fi
+          python3 -c "import sys; sys.stdout.buffer.write(b'\xff' * ($TARGET - $CURRENT))" \
+            >> slate-esp32c3-flash.img
+          # Assert the padding really is 0xFF before shipping it.
+          python3 - <<'PY'
+          data = open("slate-esp32c3-flash.img", "rb").read()
+          assert len(data) == 4194304, len(data)
+          tail = data[-4096:]
+          assert set(tail) == {0xFF}, f"padding is not 0xFF: {sorted(set(tail))[:8]}"
+          print("image OK: 4 MiB, tail padded with 0xFF")
+          PY
+          cp ../../LICENSE-MIT ../../LICENSE-APACHE .
+          tar -czf "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
+            slate-esp32c3-flash.img \
+            target/riscv32imc-unknown-none-elf/release/kv_demo \
+            LICENSE-MIT LICENSE-APACHE
+          shasum -a 256 "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
+            > "slate-esp32c3-${{ github.ref_name }}.tar.gz.sha256"
       - name: Upload ESP32 Release Asset
         uses: softprops/action-gh-release@v2
         with:
           files: |
             targets/esp32/slate-esp32c3-${{ github.ref_name }}.tar.gz
+            targets/esp32/slate-esp32c3-${{ github.ref_name }}.tar.gz.sha256
 
   build-ffi:
-    name: Build C FFI (${{ matrix.target }})
+    name: Build C FFI (${{ matrix.asset_name }})
     runs-on: ${{ matrix.os }}
+    needs: [verify-version]
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset_name: slate-kv-ffi-linux-amd64
+          # Linux arm64 covers Raspberry Pi class boards, which the README names
+          # as a target platform and which had no release artifact at all.
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_name: slate-kv-ffi-linux-arm64
           - os: macos-latest
             target: aarch64-apple-darwin
             asset_name: slate-kv-ffi-macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            asset_name: slate-kv-ffi-macos-amd64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: slate-kv-ffi-windows-amd64
@@ -52,30 +115,96 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
       - name: Build FFI Library
         run: cargo build --release -p slate-kv-ffi --target ${{ matrix.target }}
-      - name: Package FFI Artifacts (Unix)
-        if: matrix.os != 'windows-latest'
-        run: |
-          mkdir -p dist
-          cp crates/slate-kv-ffi/include/slate.h dist/
-          cp target/${{ matrix.target }}/release/libslate_kv_ffi.* dist/ 2>/dev/null || true
-          tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
-      - name: Package FFI Artifacts (Windows)
-        if: matrix.os == 'windows-latest'
+      # The staticlib carries no system libraries, so a consumer needs the
+      # platform link line. Capture it per target and ship it — otherwise every
+      # user rediscovers it from linker errors.
+      - name: Record native link requirements
         shell: bash
         run: |
-          mkdir -p dist
-          cp crates/slate-kv-ffi/include/slate.h dist/
-          cp target/${{ matrix.target }}/release/slate_kv_ffi.* dist/ 2>/dev/null || true
-          tar -czvf ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz -C dist .
+          cargo rustc -p slate-kv-ffi --release --target ${{ matrix.target }} \
+            --crate-type staticlib -- --print native-static-libs \
+            2>&1 | grep -i 'native-static-libs' | tail -1 > native-libs.txt || true
+          cat native-libs.txt || true
+      - name: Package FFI Artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="target/${{ matrix.target }}/release"
+          mkdir -p dist/include dist/lib
+          cp crates/slate-kv-ffi/include/slate.h dist/include/
+          cp LICENSE-MIT LICENSE-APACHE dist/
+          # Copy each library extension explicitly. The previous
+          # `cp libslate_kv_ffi.* … 2>/dev/null || true` swallowed every error,
+          # so a build that produced no library still uploaded a tarball
+          # containing only a header — and shipped the .d dependency file when
+          # it did work. `found` makes an empty lib/ a hard failure.
+          found=0
+          for ext in a so dylib lib dll dll.lib pdb; do
+            for base in libslate_kv_ffi slate_kv_ffi; do
+              f="$OUT/$base.$ext"
+              if [ -f "$f" ]; then cp "$f" dist/lib/; found=1; fi
+            done
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no FFI library produced in $OUT"
+            ls -la "$OUT" || true
+            exit 1
+          fi
+          [ -f native-libs.txt ] && cp native-libs.txt dist/ || true
+          cat > dist/README.txt <<'EOF'
+          SLATE C ABI release artifact
+          ============================
+          include/slate.h        C header (generated by cbindgen)
+          lib/                   static and shared libraries for this platform
+          native-libs.txt        system libraries the STATIC lib must link against
+          LICENSE-MIT, LICENSE-APACHE
+
+          Linking
+          -------
+          Shared: link the .so/.dylib/.dll and ensure it is on the runtime
+          search path (LD_LIBRARY_PATH / DYLD_LIBRARY_PATH / PATH).
+          Static: link the .a/.lib PLUS the system libraries listed in
+          native-libs.txt — Rust static libraries do not bundle them.
+
+          Before use, check slate_abi_version() against the header's
+          SLATE_ABI_VERSION_MAJOR / _MINOR.
+
+          Treat SLATE_ERR_TAMPERED (-10) and SLATE_ERR_ROLLBACK (-11) as
+          distinct security failures. Never retry or flatten them into a
+          generic I/O error.
+
+          Full specification: docs/specification.md in the source repository,
+          https://github.com/ja7ad/slate
+          EOF
+          echo "=== packaged ==="; find dist -type f | sort
+          tar -czf "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz" -C dist .
+          shasum -a 256 "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz" \
+            > "${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz.sha256"
+      # Prove the artifact is usable rather than merely present: compile and run
+      # the C smoke test against the packaged header and static library.
+      - name: Verify artifact links and runs (Unix)
+        if: matrix.os != 'windows-latest' && !contains(matrix.target, 'aarch64-unknown-linux')
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIBS=$(sed -E 's/.*native-static-libs: *//' native-libs.txt 2>/dev/null || true)
+          cc -Idist/include crates/slate-kv-ffi/tests/ffi_smoke.c \
+             dist/lib/libslate_kv_ffi.a $LIBS -o smoke
+          ./smoke
       - name: Upload FFI Release Asset
         uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz
+            ${{ matrix.asset_name }}-${{ github.ref_name }}.tar.gz.sha256
 
   publish-crates:
     name: Publish crates.io release
     runs-on: ubuntu-latest
+    # Publishing is irreversible — a crates.io version can be yanked but never
+    # replaced. Gate it on the tag/manifest check and on the artifacts actually
+    # building, so a broken release fails before anything is published.
+    needs: [verify-version, build-ffi, build-esp32]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust

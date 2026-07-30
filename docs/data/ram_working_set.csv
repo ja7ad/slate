@@ -1,0 +1,45 @@
+# SLATE paper measurement: engine RAM working set at the ESP32-C3 configuration (explicit arithmetic)
+# cmd(struct sizes)=cargo build --release --target riscv32imc-unknown-none-elf in .paper_sizes/ (probe crate exporting size_of::<T>() into a .rodata array), read back with llvm-objdump --full-contents --section=.rodata.SLATE_RAM_SIZES
+# cmd(static buffer sizes)=$(find ~/.rustup/toolchains -name llvm-nm | head -1) --print-size --radix=d targets/esp32/target/riscv32imc-unknown-none-elf/release/kv_demo
+# All 'bytes' are for riscv32imc (32-bit pointers), matching the ESP32-C3 build; host size_of would differ.
+# Config: N_BUCKETS=2048 BUCKET_SLOTS=4 STASH_SIZE=8 FP_BITS=8 OFF_BITS=24 CKPT_HDR_LEN=76 (config.rs at HEAD 970324f).
+# Allocation sites: crates/slate-kv/src/db.rs Db::open (hot/cold/index/ckpt boxes, RecoverWorkspace) and the
+#   Slate struct's inline fields (crates/slate-kv-core/src/slate.rs); on the firmware the same four buffers are the
+#   statics HOT_BUF/COLD_BUF/INDEX_SLOTS/CKPT_BUF in targets/esp32/src/bin/kv_demo.rs.
+# resident=1 terms are live for the whole life of the Db. resident=0 (RecoverWorkspace) is allocated by Db::open
+#   for tail replay and dropped when open returns, so it adds to the MOUNT PEAK but not the steady-state total.
+# Two checkpoint-buffer rows are given: 'required' is config::ckpt_len_for_slots(n_slots), the minimum the format
+#   needs; 'as_built' is what the demo firmware actually reserves. Sum ONE of them, not both.
+# Note: db.rs sizes the arena from Options::n_keys as next_power_of_two(max(n_keys,2048)/0.95)*BUCKET_SLOTS, so the
+#   std build's floor is also n_buckets=2048; n_buckets<2048 in the scan below is reachable on the bare-metal
+#   target (which sizes INDEX_SLOTS directly) but NOT through Db::open today.
+# --- TABLE 1: per-term breakdown at N_BUCKETS=2048 (the shipped ESP32 configuration) ---
+term,bytes,source,scales_with_n_buckets,resident
+index_arena,32768,N_BUCKETS(2048) * BUCKET_SLOTS(4) * 4 bytes/slot; config.rs + kv_demo static INDEX_SLOTS:[u32;2048*4],1,1
+checkpoint_buffer_required,32900,config::ckpt_len_for_slots(8192) = CKPT_HDR_LEN(76) + index_serialized_len(8192)(32808) + AEAD tag(16),1,1
+checkpoint_buffer_as_built,35012,kv_demo static CKPT_BUF:[u8;35000] (llvm-nm size 35012 incl. alignment),1,1
+hot_batch_buffer,4108,kv_demo static HOT_BUF:[u8;4096] (llvm-nm size 4108),0,1
+cold_batch_buffer,4108,kv_demo static COLD_BUF:[u8;4096] (llvm-nm size 4108),0,1
+ScratchWorkspace,5720,"size_of on riscv32imc; inline field of Slate (gc/candidate record+scratch buffers, page_buf)",0,1
+SegTable,3088,size_of on riscv32imc; inline field of Slate,0,1
+EngineState,96,size_of on riscv32imc; inline field of Slate,0,1
+Index_struct_excl_arena,80,size_of on riscv32imc (slots is a &mut slice; stash+len inline),0,1
+Log_x2_excl_buffers,64,"size_of on riscv32imc, hot+cold",0,1
+Scheduler,64,size_of on riscv32imc; inline field of Slate,0,1
+Metrics,96,size_of on riscv32imc with feature metrics enabled,0,1
+RecoverWorkspace_mount_only,4672,"size_of on riscv32imc; Box::new in Db::open, live only during tail replay",0,0
+#
+# --- TABLE 2: totals ---
+total,bytes,kib,fits_64KiB,formula
+resident_as_built_kv_demo,85204,83.207,0,index_arena + checkpoint_buffer_as_built + hot + cold + ScratchWorkspace + SegTable + EngineState + Index + 2*Log + Scheduler + Metrics
+resident_minimum_required,83092,81.145,0,"same, with checkpoint_buffer_required instead of as_built"
+peak_during_mount_required,87764,85.707,0,resident_minimum_required + RecoverWorkspace
+#
+# --- TABLE 3: same arithmetic swept over table size; identifies which configurations meet a 64 KiB budget ---
+n_buckets,n_slots,keys_at_alpha0.95,arena_B,ckpt_B,resident_B,resident_KiB,resident_fits_64KiB,mount_peak_B,mount_peak_fits_64KiB
+128,512,486,2048,2180,21652,21.14,1,26324,1
+256,1024,972,4096,4228,25748,25.14,1,30420,1
+512,2048,1945,8192,8324,33940,33.14,1,38612,1
+1024,4096,3891,16384,16516,50324,49.14,1,54996,1
+2048,8192,7782,32768,32900,83092,81.14,0,87764,0
+4096,16384,15564,65536,65668,148628,145.14,0,153300,0

@@ -17,6 +17,10 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c rustfmt
       - run: cargo fmt --all --check
+      # targets/esp32 is `exclude`d from the workspace, so `--all` above does
+      # not reach it. Without this it was never format-checked.
+      - name: Format check (esp32 firmware)
+        run: cd targets/esp32 && cargo fmt --all --check
 
   clippy:
     name: Clippy
@@ -25,6 +29,23 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  clippy-esp32:
+    name: Clippy (esp32 firmware)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The firmware is outside the workspace and was therefore never linted.
+      # Its warnings surfaced only as build noise inside the QEMU and Wokwi
+      # jobs — an `unused_mut` in kv_demo.rs shipped that way. Lint it here so
+      # a warning fails fast in its own job instead of being missed.
+      - run: rustup toolchain install stable --profile minimal -c clippy --target riscv32imc-unknown-none-elf
+      - name: Clippy
+        run: |
+          cd targets/esp32
+          cargo clippy --release --target riscv32imc-unknown-none-elf \
+            --no-default-features --features chip-esp32c3,counter-flash,metrics \
+            --bins -- -D warnings
 
   test:
     name: Test
@@ -48,10 +69,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c llvm-tools
+      # Prebuilt binary: `cargo install cargo-llvm-cov` compiles from source and
+      # dominated this job's runtime.
       - name: Install cargo-llvm-cov
-        run: cargo install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
       - name: Generate coverage report
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
+        # --ignore-filename-regex keeps the measurement harnesses and study
+        # binaries out of the denominator. They are `fn main`s that run a sweep
+        # and print a CSV for docs/specification.md; `cargo test` never invokes
+        # them, so counting them made a PR that ADDED measurement tooling look
+        # like a double-digit coverage regression. codecov.yml carries the same
+        # exclusions for the report side; this flag applies them at collection
+        # so the summary printed in the job log agrees with Codecov.
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info \
+            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
+      - name: Coverage summary
+        run: |
+          cargo llvm-cov report --summary-only \
+            --ignore-filename-regex '(/examples/|/src/bin/|^fuzz/|^targets/)'
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
@@ -79,27 +117,74 @@ jobs:
       - run: cargo miri test -p slate-kv-core
 
   qemu-sim:
-    name: QEMU Crash Simulator
+    name: QEMU Crash Simulator (${{ matrix.attack }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The three attack modes are independent runs over their own fresh flash
+    # image, so they fan out instead of running back-to-back. Wall clock for
+    # the job drops to the slowest leg rather than their sum.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - attack: none
+            iters: 25
+          - attack: rollback
+            iters: 2
+          - attack: tamper
+            iters: 2
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
-      - name: Install espflash
-        run: cargo install espflash cargo-binutils
+      # Cache the cargo registry and the built firmware. The crash script
+      # rebuilds kv_demo on every qemu_run.sh invocation, so a warm target dir
+      # turns each of those into a no-op recompile check.
+      - name: Cache cargo + firmware build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            targets/esp32/target
+          key: qemu-${{ runner.os }}-${{ hashFiles('targets/esp32/Cargo.lock') }}
+          restore-keys: qemu-${{ runner.os }}-
+      # `cargo install espflash` compiles from source and was the single
+      # largest cost in this job (minutes). cargo-binutils was installed but
+      # never used by any script here. Take the prebuilt binary instead.
+      - name: Install espflash (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: espflash
       - name: Install Espressif QEMU
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20 python3-serial
-          wget https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-2.0-0 libslirp0 libglib2.0-0 libpixman-1-0 libgcrypt20 python3-serial
+          wget -q https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           tar -xf qemu-riscv32-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
           echo "$PWD/qemu/bin" >> $GITHUB_PATH
-      - name: Run QEMU Crash Suite (None)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 25 --attack none
-      - name: Run QEMU Crash Suite (Rollback)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack rollback
-      - name: Run QEMU Crash Suite (Tamper)
-        run: cd targets/esp32 && ./scripts/qemu_crash.sh --iters 2 --attack tamper
+      # Build once up front so the per-iteration `cargo build` inside
+      # qemu_run.sh is a cache hit rather than a fresh compile.
+      - name: Prebuild firmware
+        run: |
+          cd targets/esp32
+          cargo build --bin kv_demo --release --no-default-features \
+            --features chip-esp32c3,counter-efuse --target riscv32imc-unknown-none-elf
+      - name: Run QEMU crash suite
+        run: |
+          cd targets/esp32
+          ./scripts/qemu_crash.sh --iters ${{ matrix.iters }} --attack ${{ matrix.attack }}
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-logs-${{ matrix.attack }}
+          path: |
+            targets/esp32/qemu.log
+            targets/esp32/drive.log
+            targets/esp32/verify.log
+          if-no-files-found: ignore
 
   wokwi-sim:
     name: Wokwi Simulator
@@ -111,17 +196,37 @@ jobs:
         run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
       - name: Install Wokwi CLI
         run: curl -L https://wokwi.com/ci/install.sh | sh
+      # Delegate to scripts/wokwi_run.sh rather than reimplementing the
+      # invocation here. The inlined version passed a bare
+      # `--scenario kv_demo.scenario.yaml` (the file lives in wokwi/) and
+      # omitted --diagram-file and --elf, and it built different features than
+      # the script.
+      #
+      # Note this was not what made the job time out: the CI log shows the
+      # scenario loading and matching its early steps before hanging. That
+      # hang was a separate bug — the scenario waited on a "stats:" line the
+      # firmware never prints (fixed in wokwi/kv_demo.scenario.yaml). The
+      # duplication is fixed here so the two invocations cannot drift again.
       - name: Run Wokwi scenario
         run: |
-          cd targets/esp32
-          cargo build --release --no-default-features --features chip-esp32c3,counter-flash --bin kv_demo --target riscv32imc-unknown-none-elf
           if [ -z "$WOKWI_CLI_TOKEN" ]; then
             echo "WOKWI_CLI_TOKEN is empty. Skipping Wokwi simulation."
             exit 0
           fi
-          wokwi-cli --timeout 120000 --scenario kv_demo.scenario.yaml wokwi
+          cd targets/esp32 && ./scripts/wokwi_run.sh
         env:
           WOKWI_CLI_TOKEN: ${{ secrets.WOKWI_CLI_TOKEN || vars.WOKWI_CLI_TOKEN }}
+          # Must match the scenario's assertions: `metrics` is what makes the
+          # write-amplification buckets non-zero for the `stats` step.
+          FEATURES: chip-esp32c3,counter-flash,metrics
+          TIMEOUT_MS: "180000"
+      - name: Upload Wokwi serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wokwi-serial-log
+          path: targets/esp32/wokwi-serial.log
+          if-no-files-found: ignore
 
   bindings:
     name: Language Bindings
@@ -139,13 +244,90 @@ jobs:
           go-version: '1.21'
       - name: Run Go conformance tests
         run: make bind-test
-      # Non-blocking until the TinyGo + Rust staticlib link is settled (doc 017 §Risks).
-      # Flip continue-on-error to false in the same PR that settles it.
+      # This step is BLOCKING, and it is a compile gate rather than a test run.
+      # doc 017 §7 asked for "tinygo test green, or one of §7's fallbacks
+      # chosen and recorded" — fallback 3 is now chosen, so the step has a
+      # deterministic pass condition and no longer needs continue-on-error.
+      # A red X here means the cgo surface broke, which is actionable.
       - name: Set up TinyGo
         uses: acifani/setup-tinygo@v3
         with:
           tinygo-version: '0.40.1'
-      - name: Run TinyGo conformance tests
-        continue-on-error: true
-        run: cd bind/go && tinygo test ./...
+      - name: Build binding under TinyGo (compile gate)
+        run: |
+          # TinyGo's Linux target is musl (the `tinygo info` output below
+          # prints the triple). Build the archive for musl as well as glibc so
+          # the link step this gate performs resolves against a matching libc —
+          # a cross-libc link is the first thing that would fail here, and it
+          # would fail for an uninteresting reason.
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+          cargo build -p slate-kv-ffi --release --target x86_64-unknown-linux-musl
+          # The glibc copy is what `make bind-test` and any other consumer in
+          # this job use.
+          cargo build -p slate-kv-ffi --release
+          # Diagnostics first: a bare SIGSEGV says nothing about which of the
+          # doc 017 §7 failure modes fired, and the crash happens at process
+          # start (0.089 s), i.e. during runtime init, not inside a test body.
+          echo "=== tinygo version ==="
+          tinygo version
+          echo "=== tinygo default target ==="
+          tinygo info 2>/dev/null | head -20 || true
+          echo "=== staticlibs present ==="
+          ls -la target/release/libslate_kv_ffi.a
+          ls -la target/x86_64-unknown-linux-musl/release/libslate_kv_ffi.a
+          # COMPILE-ONLY BY DESIGN. This step builds the TinyGo test binary and
+          # deliberately does NOT run it. That is doc 017 §7 fallback 3,
+          # narrowed: TinyGo is a supported *compile* target for this binding,
+          # not a supported *run* target.
+          #
+          # Why running is not attempted. TinyGo's Linux runtime is musl-based
+          # with its own GC and scheduler (`tinygo info` below prints
+          # `LLVM triple: x86_64-unknown-linux-musl…`, `gc.boehm`,
+          # `scheduler.threads`). Hosting a Rust `std` static library inside it
+          # fails at process start, in the first test that merely opens and
+          # closes a database. Every fallback in doc 017 §7 has now been tried
+          # and recorded in DEVELOPMENT_STATE.md:
+          #
+          #   1. Explicit native libs on the link line       -> still SIGSEGV.
+          #   2. Link the .so instead of the .a               -> not available:
+          #      cargo warns "dropping unsupported crate type cdylib" for the
+          #      musl target, and the glibc .so crashes in glibc malloc under
+          #      musl (recorded 2026-07-25).
+          #   3. Build the archive natively for musl          -> still SIGSEGV,
+          #      so it is not a cross-libc mismatch either.
+          #   +  Raising the goroutine stack (-stack-size=1MB) -> identical
+          #      crash, so it is not stack depth (slate_open needs >=52 KiB,
+          #      measured; TinyGo was not hitting that limit).
+          #
+          # What this step still protects, and it is not nothing: the cgo
+          # surface. TinyGo's preprocessor and LLVM linker are stricter than
+          # gc's, and the regressions they catch are real ones this repo has
+          # already had — `build constraints in #cgo line`, `invalid flag`,
+          # `'slate.h' file not found`, `unable to find library -lgcc_s`. Every
+          # one of those is a compile/link failure that this step catches and
+          # plain `go test` does not.
+          #
+          # Runtime conformance (C1-C18) is covered by `make bind-test` above
+          # under standard Go, which is the supported host toolchain.
+          #
+          # doc 017 warns that a step reporting success while running nothing is
+          # worse than no step, so this one says plainly what it did.
+          cd bind/go
+          if tinygo test -c -o /tmp/slate_tinygo_test ./... ; then
+            echo "PASS: the binding COMPILES AND LINKS under TinyGo."
+            echo "      Not executed — see the comment above and doc 017 §7."
+            ls -la /tmp/slate_tinygo_test
+          else
+            echo "FAIL: the binding no longer compiles under TinyGo."
+            echo "      This is a real cgo-surface regression, not the known"
+            echo "      runtime limitation. Fix the compile error."
+            exit 1
+          fi
+        env:
+          # Point at the MUSL archive, not the glibc one — TinyGo's default
+          # Linux target is musl and mixing libcs is what crashed TestC1.
+          # Rust staticlibs also do not bundle libc/libm/pthread/dl, and
+          # TinyGo's link line is narrower than cgo's, so name them explicitly
+          CGO_LDFLAGS: "-L${{ github.workspace }}/target/x86_64-unknown-linux-musl/release -lslate_kv_ffi -lm -lpthread -ldl"
 

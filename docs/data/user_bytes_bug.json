@@ -1,0 +1,19 @@
+{
+  "bug": "user_bytes double-counted 2x on the std/sim wrapper paths",
+  "found_by": "throughput/energy measurement track, 2026-07-29; verified independently by orchestrator",
+  "root_cause": "Slate::append_hot counts (REC_OVERHEAD+klen+vlen) in slate-kv-core/src/slate.rs:244 so no_std targets measure WA too; five wrapper call sites counted the same record again (slate-kv/src/db.rs put + 2 delete paths, slate-kv-sim/src/sim_db.rs put + 2 delete paths).",
+  "measured_ratio": 2.0,
+  "relation": "WA_reported = (WA_true + 1)/2, equivalently WA_true = 2*WA_reported - 1",
+  "affected": "every WA figure derived from the std or sim path, including the pre-fix docs/porposal/data/wa_buckets.csv",
+  "not_affected": "the ESP32-C3 device log: the firmware calls append_hot directly and never goes through a wrapper, so its user_bytes (74 B/record) and WA (2.7435) were always single-counted",
+  "fix": "removed the five duplicate add_user_bytes calls; one call site remains, in the core append path",
+  "verification": {
+    "fmt": "clean",
+    "clippy": "clean (-D warnings)",
+    "tests": "63 passed, 0 failed",
+    "wa_b1_before": 3.6539,
+    "wa_b1_after": 6.3078,
+    "wa_b128_before": 1.0541,
+    "wa_b128_after": 1.1082
+  }
+}

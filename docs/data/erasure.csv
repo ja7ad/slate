@@ -1,0 +1,17 @@
+# slate RS(12,8) exhaustive erasure characterisation, GF(2^8) Cauchy, PAGE_SIZE=256
+# command: cargo run --release -p slate-kv-sim --example rs_exhaustive
+# stripe: 8 data blocks packed with 27 real AEAD-sealed SLATE records (2017 bytes of record data), 4 Cauchy parity blocks
+# mode=declared_erasure: erased blocks zeroed AND declared in the BlockSet. mode=undeclared_corruption: blocks bit-flipped but BlockSet left empty.
+# recovered_exact requires all 12 blocks byte-identical to the encoded stripe AND all 27 records re-openable under AEAD.
+# platform: pure-computation model harness (no flash device involved); host macOS 26.5.2 arm64
+mode,e,n_patterns,n_recovered_exact,n_rejected,n_wrong_bytes,n_singular_survivor_matrix,n_aead_open_failures
+declared_erasure,0,1,1,0,0,0,0
+declared_erasure,1,12,12,0,0,0,0
+declared_erasure,2,66,66,0,0,0,0
+declared_erasure,3,220,220,0,0,0,0
+declared_erasure,4,495,495,0,0,0,0
+declared_erasure,5,792,0,792,0,0,0
+undeclared_corruption,1,12,0,0,12,0,8
+undeclared_corruption,2,66,0,0,66,0,60
+# space_overhead: RS_K=8 data blocks, RS_M=4 parity blocks, RS_N=12
+# space_overhead: parity_blocks/data_blocks=0.500000  stripe_bytes/data_bytes=1.500000  parity_bytes=1024  data_bytes=2048

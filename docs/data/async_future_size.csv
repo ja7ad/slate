@@ -1,0 +1,36 @@
+# SLATE async future-size measurement (design doc 018 §5 claim: every public engine future <= MAX_FUTURE_BYTES = 2048 B).
+# Platform: macOS 26.5.2 / arm64 / 12 cores; rustc+cargo 1.97.1. Host run, NOT a device run.
+# Repo: /Users/javad/Projects/rust/slate at git HEAD 970324f (workspace v0.4.0), plus uncommitted working-tree edits to
+#   recover.rs, index.rs, slate-kv/db.rs, slate-kv/file_flash.rs, slate-kv-sim/Cargo.toml (present before this session).
+# Command: cargo run -q -p slate-kv-sim --example paper_async_future_size --release
+# Source:  crates/slate-kv-sim/examples/paper_async_future_size.rs (added this session).
+# Method:  core::mem::size_of_val on the future value actually returned by each async method, monomorphised over
+#   SimFlash / SimCounter / CryptoSealer with the ESP32 geometry (256 B page, 4096 B block) and the 8192-key index
+#   configuration (N_BUCKETS=2048, BUCKET_SLOTS=4). Release profile (opt-level=3).
+# claimed_bound_bytes = 2048 is the doc-018 figure applied as an EXTERNAL check: the constant MAX_FUTURE_BYTES does
+#   NOT exist anywhere in the source tree and no compile-time assertion enforces it (doc 018 §5 step 3 not implemented).
+# Rows prefixed 'counterfactual::' demonstrate the hoisting mechanism; rows prefixed 'struct::' are the RAM the
+#   ScratchWorkspace hoisting MOVED rather than removed, so under_bound=NO there is expected and is not a failure.
+operation,future_bytes,claimed_bound_bytes,under_bound
+Slate::get_into_async,360,2048,yes
+Slate::index_update_offset_async,520,2048,yes
+Slate::index_remove_key_async,512,2048,yes
+Slate::append_cold_async,1712,2048,yes
+Slate::append_cold_tombstone_async,1696,2048,yes
+Slate::commit_async,1656,2048,yes
+Slate::seal_epoch_now_async,520,2048,yes
+Slate::compact_async,1624,2048,yes
+gc::compact_one_async,1592,2048,yes
+Log::commit_async,1304,2048,yes
+segment::encode_parity,1424,2048,yes
+epoch::seal_epoch_async,496,2048,yes
+epoch::mount_async,616,2048,yes
+counterfactual::stack_local_1280B_across_await,1328,2048,yes
+counterfactual::borrowed_1280B_buffer,80,2048,yes
+task::YieldNow,1,2048,yes
+struct::ScratchWorkspace,5720,2048,NO
+struct::Slate<SimFlash,SimCounter,CryptoSealer>,9720,2048,NO
+struct::Slate<BlockingFlash<SimFlash>,BlockingCounter<SimCounter>,CryptoSealer>,9720,2048,NO
+struct::SimFlash,224,2048,yes
+struct::CryptoSealer,168,2048,yes
+struct::EngineState,104,2048,yes

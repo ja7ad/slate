@@ -15,12 +15,28 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Give the firmware time to boot before opening the serial port.
+#
+# This deliberately sleeps rather than polling for the banner: qemu_run.sh runs
+# QEMU with `-serial pty`, so ALL firmware output goes to the pseudo-terminal and
+# never reaches qemu.log. A grep on qemu.log can therefore never see the banner —
+# it would burn its whole timeout on every boot and then continue anyway. The
+# only reader of the banner is serial_drive.py, which already waits on the PTY.
+#
+# BOOT_WAIT is tunable so a slow CI runner can be given more headroom without
+# editing the script.
+BOOT_WAIT="${BOOT_WAIT:-1}"
+
+wait_for_boot() {
+    sleep "$BOOT_WAIT"
+}
+
 echo "Running crash campaign (iters: $ITERS, attack: $ATTACK)..."
 
 rm -f flash.img flash_old.img
 ./scripts/qemu_run.sh --fresh > qemu.log 2>&1 &
 QEMU_PID=$!
-sleep 2
+wait_for_boot qemu.log
 kill -9 $QEMU_PID || true
 wait $QEMU_PID 2>/dev/null || true
 
@@ -31,12 +47,12 @@ for i in $(seq 1 $ITERS); do
     QEMU_PID=$!
     
     PTY=""
-    for try in {1..1000}; do
+    for try in $(seq 1 600); do
         PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
         if [ -n "$PTY" ]; then
             break
         fi
-        sleep 0.1
+        sleep 0.05
     done
     
     if [ -z "$PTY" ]; then
@@ -48,7 +64,7 @@ for i in $(seq 1 $ITERS); do
     # Strip trailing whitespace/commas from PTY
     PTY=$(echo "$PTY" | tr -d ' ,\r\n')
     # Let firmware finish booting before opening serial
-    sleep 1
+    wait_for_boot qemu.log
     
     if [ "$i" -eq 1 ]; then
         # On first iteration, setup an initial valid checkpoint and save old image for rollback
@@ -62,13 +78,13 @@ for i in $(seq 1 $ITERS); do
             ./scripts/qemu_run.sh > qemu.log 2>&1 &
             QEMU_PID=$!
             PTY=""
-            for try in {1..1000}; do
+            for try in $(seq 1 600); do
                 PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
                 if [ -n "$PTY" ]; then break; fi
-                sleep 0.1
+                sleep 0.05
             done
             PTY=$(echo "$PTY" | tr -d ' ,\r\n')
-            sleep 1
+            wait_for_boot qemu.log
             if ! python3 ./scripts/serial_drive.py --port "$PTY" --cmd "put k0 v0" --expect "" --cmd "seal" --expect "OK" --cmd "put kx vx" --expect "" --cmd "seal" --expect "OK" > drive.log 2>&1; then
                 echo "Failed to seal initial checkpoint!"
                 cat drive.log
@@ -117,16 +133,16 @@ for i in $(seq 1 $ITERS); do
     QEMU_PID=$!
     
     PTY=""
-    for try in {1..1000}; do
+    for try in $(seq 1 600); do
         PTY=$(grep "char device redirected to" qemu.log | awk '{print $5}' || true)
         if [ -n "$PTY" ]; then
             break
         fi
-        sleep 0.1
+        sleep 0.05
     done
     PTY=$(echo "$PTY" | tr -d ' ,\r\n')
     # Let firmware finish booting
-    sleep 1
+    wait_for_boot qemu.log
     
     EXPECT_STATUS="OK"
     if [ "$ATTACK" == "rollback" ] && [ "$i" -eq $ITERS ]; then

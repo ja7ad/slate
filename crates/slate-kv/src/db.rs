@@ -23,6 +23,32 @@ pub enum DbError {
     InvalidArg(String),
 }
 
+impl std::fmt::Display for DbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            // The core error types are `no_std` and carry no Display impl, so
+            // format them with Debug rather than duplicating their variants
+            // here — a mirrored list would drift the moment core gains one.
+            DbError::Core(e) => write!(f, "engine error: {e:?}"),
+            DbError::Mount(e) => write!(f, "mount failed: {e:?}"),
+            DbError::Io(e) => write!(f, "i/o error: {e}"),
+            DbError::Config(m) => write!(f, "configuration error: {m}"),
+            DbError::InvalidArg(m) => write!(f, "invalid argument: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for DbError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Only `Io` wraps a type that itself implements `Error`; the core
+        // variants are `no_std` enums with no such impl to chain to.
+        match self {
+            DbError::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
 impl From<slate_kv_core::error::Error> for DbError {
     fn from(e: slate_kv_core::error::Error) -> Self {
         DbError::Core(e)
@@ -96,16 +122,113 @@ pub struct ScrubReport {
     pub errors_fixed: u32,
 }
 
+/// What one [`Db::open`] actually cost.
+///
+/// Mount is claimed to be an O(1) freshness check plus O(Θ) tail replay, and
+/// wall-clock alone cannot distinguish those two terms from a full-volume scan
+/// that happens to be fast. These fields separate them: `replay_from` is where
+/// the checkpoint said the tail begins, `records_replayed` is how many committed
+/// records the tail scan actually AEAD-opened, and the flash counters are read at
+/// the HAL boundary, so they include the checkpoint read as well as the scan.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MountReport {
+    /// Whether a checkpoint was found (false = volume was formatted by this open).
+    pub had_checkpoint: bool,
+    /// First log byte the tail scan started from.
+    pub replay_from: u32,
+    /// Log head after replay.
+    pub head_pos: u32,
+    /// Bytes of log the tail scan walked.
+    pub scan_bytes: u32,
+    /// Committed records replayed into the index.
+    pub records_replayed: u64,
+    /// Serialized index bytes loaded from the checkpoint (0 if none).
+    pub ckpt_index_bytes: usize,
+    /// Live keys in the index once mount finished.
+    pub keys: usize,
+    /// Flash reads/programs/erases performed during this mount.
+    pub flash: crate::file_flash::FlashCounters,
+    /// Index slots the arena was sized to.
+    pub index_slots: usize,
+    /// Checkpoint slots that read back and verified (bounded by `CKPT_SLOTS`).
+    pub ckpt_slots_verified: u8,
+    /// Flash counters as of just after the checkpoint load, before tail replay.
+    ///
+    /// Subtracting this from [`Self::flash`] splits mount's read cost into its
+    /// O(1) checkpoint term and its O(tail) replay term, which is the whole point
+    /// of the claim being tested.
+    pub flash_after_ckpt: crate::file_flash::FlashCounters,
+    /// Full-key verification reads replay issued to resolve fingerprint
+    /// collisions while rebuilding the index.
+    ///
+    /// Replay must AEAD-open a candidate record to compare the exact key before
+    /// overwriting its slot, so this term grows with how many keys are already
+    /// live — not with the volume of the log. Reported separately so it is not
+    /// mistaken for either.
+    pub key_verify_calls: u64,
+}
+
 // Opaque stats struct for passing metrics
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Debug)]
 pub struct Stats {
     pub commits: u64,
     pub wakes: u64,
+    /// Record bytes the application asked to store (framing + key + value).
     pub user_bytes: u64,
+    /// Record bytes rewritten by GC relocation.
     pub gc_bytes: u64,
+    /// Parity pages programmed.
     pub parity_bytes: u64,
+    /// Commit-marker pages programmed.
+    pub marker_bytes: u64,
+    /// Checkpoint pages programmed by epoch seals.
     pub ckpt_bytes: u64,
     pub erases: u64,
+    /// Segments in the table (`0` when unmanaged).
+    pub segments: u32,
+    /// Segments currently reclaimable-by-GC (`Sealed`).
+    pub segments_sealed: u32,
+    /// Segments currently free.
+    pub segments_free: u32,
+    /// Reclaim watermark: a sealed segment is eligible when its allocation
+    /// number is below this.
+    pub ckpt_seg_seq: u64,
+    /// Newest segment allocation number handed out.
+    pub cur_seg_seq: u64,
+    /// Records visited by compaction scans.
+    pub gc_scanned: u64,
+    /// Records compaction found live and relocated.
+    pub gc_relocated: u64,
+    /// Records compaction could not decrypt (data loss if nonzero).
+    pub gc_open_failed: u64,
+    /// Segments reclaimed.
+    pub gc_segments_freed: u64,
+    /// Hot log head offset.
+    pub hot_head: u32,
+    /// Cold log head offset.
+    pub cold_head: u32,
+    /// First offset past the last segment.
+    pub seg_end: u32,
+}
+
+impl Stats {
+    /// Total bytes programmed to flash across every bucket.
+    pub fn flash_bytes(&self) -> u64 {
+        self.user_bytes + self.gc_bytes + self.parity_bytes + self.marker_bytes + self.ckpt_bytes
+    }
+
+    /// Write amplification: flash bytes programmed per byte of user data.
+    ///
+    /// `None` when nothing has been written yet. A workload that has not been
+    /// measured and one with no overhead are different claims, so this must not
+    /// silently report 1.0 for the former.
+    pub fn write_amplification(&self) -> Option<f64> {
+        if self.user_bytes == 0 {
+            None
+        } else {
+            Some(self.flash_bytes() as f64 / self.user_bytes as f64)
+        }
+    }
 }
 
 // Box pointers to free on drop
@@ -133,7 +256,12 @@ impl Drop for Buffers {
 }
 
 struct OwnedEngine {
-    slate: Slate<'static, FileFlash, FileCounter, CryptoSealer>,
+    slate: slate_kv_core::slate::Slate<
+        'static,
+        slate_kv_hal::BlockingFlash<FileFlash>,
+        slate_kv_hal::BlockingCounter<FileCounter>,
+        CryptoSealer,
+    >,
     #[allow(dead_code)]
     bufs: Buffers, // Dropped after slate because of declaration order
 }
@@ -143,6 +271,7 @@ unsafe impl Send for OwnedEngine {}
 
 pub struct Db {
     inner: Mutex<OwnedEngine>,
+    mount: MountReport,
 }
 
 impl Drop for Db {
@@ -266,15 +395,21 @@ impl Db {
         // volume. Everything below it is already captured in the checkpointed
         // index.
         let data_base = slate_kv_core::config::data_base_offset(4096);
+        let mut had_checkpoint = true;
+        let mut ckpt_slots_verified = 0u8;
         let (engine_state, plain_len, replay_from, ckpt_seg_seq) =
             match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, ckpt_slice) {
-                Ok(mi) => (
-                    mi.state,
-                    mi.plain_len,
-                    mi.ckpt_write_offset.max(data_base),
-                    mi.ckpt_seg_seq,
-                ),
+                Ok(mi) => {
+                    ckpt_slots_verified = mi.ckpt_slots_verified;
+                    (
+                        mi.state,
+                        mi.plain_len,
+                        mi.ckpt_write_offset.max(data_base),
+                        mi.ckpt_seg_seq,
+                    )
+                }
                 Err(MountError::FormatError) => {
+                    had_checkpoint = false;
                     // Formatting new
                     let mut st = EngineState {
                         epoch: 1,
@@ -290,6 +425,7 @@ impl Db {
                     // where the log actually begins. Recording 0 here would make
                     // the next mount replay the reserved checkpoint region as if
                     // it were log data.
+                    let mut page_buf = [0u8; 512];
                     slate_kv_core::epoch::seal_epoch(
                         &mut st,
                         &mut flash,
@@ -300,12 +436,14 @@ impl Db {
                         0,
                         ckpt_slice,
                         0,
+                        &mut page_buf,
                     )?;
                     (st, 0, data_base, 1)
                 }
                 Err(e) => return Err(e.into()),
             };
 
+        let flash_after_ckpt = flash.counters();
         sealer.roll_epoch(engine_state.epoch);
 
         let hot_ptr = Box::into_raw(hot_box);
@@ -364,14 +502,17 @@ impl Db {
 
         let rng_seed = engine_state.epoch.max(1) ^ 42;
         let mut slate = Slate {
-            flash,
-            counter,
+            flash: slate_kv_hal::BlockingFlash(flash),
+            counter: slate_kv_hal::BlockingCounter(counter),
             sealer,
             engine: engine_state,
             log_hot,
             log_cold,
             index: Index::new(index_slice, index_len / 4),
-            segs: SegTable::new(128),
+            segs: SegTable::with_base(
+                data_base,
+                slate_kv_core::gc::segments_in(data_base, opts.capacity),
+            ),
             // Seeded from the checkpoint so GC's reclaim watermark survives a
             // remount; starting at 0 would block victim selection until the
             // next epoch seal.
@@ -380,6 +521,7 @@ impl Db {
             metrics: Metrics::default(),
             ckpt_buf: ckpt_slice,
             rng: slate_kv_core::index::XorShift64::new(rng_seed),
+            scratch_buf: slate_kv_core::slate::ScratchWorkspace::new(),
         };
 
         if plain_len > 0 {
@@ -390,6 +532,7 @@ impl Db {
         }
 
         let mut index_upsert_error = false;
+        let mut key_verify_calls: u64 = 0;
         let mut rng = slate_kv_core::index::XorShift64::new(42);
         let mut workspace = Box::new(slate_kv_core::recover::RecoverWorkspace::new());
         // Replay only the tail: records written after the newest checkpoint.
@@ -410,6 +553,7 @@ impl Db {
                 // rather than filling the table with superseded entries.
                 if op == slate_kv_core::config::OP_PUT {
                     let res = slate.index.upsert(key, off, &mut rng, |cand_off| {
+                        key_verify_calls += 1;
                         slate_kv_core::recover::record_key_eq(flash, sealer, cand_off, key)
                     });
                     if res.is_err() {
@@ -417,6 +561,7 @@ impl Db {
                     }
                 } else if op == slate_kv_core::config::OP_DEL {
                     slate.index.remove(key, |cand_off| {
+                        key_verify_calls += 1;
                         slate_kv_core::recover::record_key_eq(flash, sealer, cand_off, key)
                     });
                 }
@@ -442,9 +587,34 @@ impl Db {
             return Err("Index capacity exceeded during recovery".into());
         }
 
+        let mount = MountReport {
+            had_checkpoint,
+            replay_from,
+            head_pos: rec_info.head_pos,
+            scan_bytes: rec_info.scan_bytes,
+            records_replayed: rec_info.records_applied,
+            ckpt_index_bytes: plain_len,
+            keys: slate.index.len(),
+            flash: slate.flash.0.counters(),
+            index_slots: index_len,
+            ckpt_slots_verified,
+            flash_after_ckpt,
+            key_verify_calls,
+        };
+
         Ok(Db {
             inner: Mutex::new(OwnedEngine { slate, bufs }),
+            mount,
         })
+    }
+
+    /// What the [`Db::open`] that produced this handle cost.
+    ///
+    /// Captured at open time rather than recomputed: the counters it reports are
+    /// cumulative on the flash handle, so reading them later would fold in every
+    /// put and commit since.
+    pub fn mount_report(&self) -> MountReport {
+        self.mount
     }
 
     pub fn put(&self, key: &[u8], val: &[u8]) -> Result<(), DbError> {
@@ -462,9 +632,10 @@ impl Db {
 
         let offset = slate.append_hot(OP_PUT, key, val)?;
         slate.index_update_offset(key, offset)?;
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len() + val.len()) as u64);
+        // User bytes are counted inside `Slate::append_hot` so the no_std targets
+        // measure write amplification too. Counting them again here double-counted
+        // every record on this path, which understated WA as
+        // `WA_reported = (WA_true + 1) / 2`.
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }
@@ -596,27 +767,22 @@ impl Db {
         Ok(best_val)
     }
 
+    /// Append a tombstone and make it durable before returning.
+    ///
+    /// Mirrors [`Db::put_durable`]: the tombstone is acknowledged when its
+    /// commit marker is on flash, so a power failure after this call returns
+    /// cannot resurrect the key.
+    ///
+    /// This body was previously byte-for-byte identical to [`Db::delete`] —
+    /// it committed only when the scheduler happened to fire, so the
+    /// `_durable` suffix promised a guarantee the method did not provide and
+    /// a delete could be lost across a crash.
     pub fn delete_durable(&self, key: &[u8]) -> Result<(), DbError> {
         if key.len() > slate_kv_core::config::MAX_KEY_LEN {
             return Err(DbError::InvalidArg("key too large".into()));
         }
-        let mut inner = self.inner.lock().unwrap();
-        let OwnedEngine { slate, .. } = &mut *inner;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-
-        let _ = slate.append_hot(OP_DEL, key, &[])?;
-
-        slate.index_remove_key(key);
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len()) as u64);
-        if slate.sched.on_append(now_ms) {
-            slate.commit()?;
-        }
-        Ok(())
+        self.delete(key)?;
+        self.commit()
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<(), DbError> {
@@ -633,9 +799,8 @@ impl Db {
         let _ = slate.append_hot(OP_DEL, key, &[])?;
 
         slate.index_remove_key(key);
-        slate
-            .metrics
-            .add_user_bytes((slate_kv_core::config::REC_OVERHEAD + key.len()) as u64);
+        // Counted inside `Slate::append_hot` (see the note in `put`); counting it
+        // again here double-counted every record on this path.
         if slate.sched.on_append(now_ms) {
             slate.commit()?;
         }
@@ -651,6 +816,19 @@ impl Db {
     pub fn compact(&self) -> Result<(), DbError> {
         let mut inner = self.inner.lock().unwrap();
         inner.slate.compact()?;
+        Ok(())
+    }
+
+    /// Seals the current epoch now, writing a checkpoint.
+    ///
+    /// Normally this happens on its own every `THETA` records. Exposing it lets a
+    /// caller place a checkpoint at a known point in the log, which is what makes
+    /// the length of the replay tail a controllable independent variable rather
+    /// than whatever Θ happened to leave behind.
+    pub fn seal_epoch(&self) -> Result<(), DbError> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.slate.commit()?;
+        inner.slate.seal_epoch_now()?;
         Ok(())
     }
 
@@ -695,8 +873,24 @@ impl Db {
             user_bytes: m.user_bytes,
             gc_bytes: m.gc_bytes,
             parity_bytes: m.parity_bytes,
+            marker_bytes: m.marker_bytes,
             ckpt_bytes: m.ckpt_bytes,
             erases: m.erases,
+            segments: inner.slate.segs.num_segments,
+            segments_sealed: inner
+                .slate
+                .segs
+                .count_in_state(slate_kv_core::gc::SegState::Sealed),
+            segments_free: inner.slate.segs.free_count(),
+            ckpt_seg_seq: inner.slate.ckpt_seg_seq,
+            cur_seg_seq: inner.slate.segs.current_seg_seq(),
+            gc_scanned: m.gc_scanned,
+            gc_relocated: m.gc_relocated,
+            gc_open_failed: m.gc_open_failed,
+            gc_segments_freed: m.gc_segments_freed,
+            hot_head: inner.slate.log_hot.head.write_offset,
+            cold_head: inner.slate.log_cold.head.write_offset,
+            seg_end: inner.slate.segs.end_addr(),
         }
     }
 }

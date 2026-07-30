@@ -42,6 +42,11 @@ pub const MAX_INDEX_SLOTS: usize = 65_536;
 /// chosen independently, so the two can never drift apart.
 pub const MAX_CKPT_LEN: u32 = ckpt_len_for_slots(MAX_INDEX_SLOTS) as u32;
 pub const MAX_SEGS: usize = 256;
+/// Yield cadence inside the tail-replay scan (§4.5)
+pub const RECOVER_YIELD_EVERY_PAGES: usize = 32;
+
+/// Yield cadence inside the compact_one scan loop (§4.4)
+pub const GC_YIELD_EVERY_RECORDS: u16 = 8;
 
 // Index constants (ESP32 default 8 k-key config)
 pub const BUCKET_SLOTS: usize = 4;

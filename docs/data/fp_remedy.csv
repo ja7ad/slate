@@ -1,0 +1,34 @@
+# file: fp_remedy.csv  probe: does mixing before fingerprinting repair the
+#   sequential-key collision spike reported by paper_index?
+# command: cargo run --release -p slate-kv-core --example paper_fp_remedy
+# source: crates/slate-kv-core/examples/paper_fp_remedy.rs
+# platform=host os=macos arch=aarch64 (pure in-RAM computation, no flash)
+# scheme=shipped is index::fingerprint (top byte of raw FNV-1a); scheme=finalized passes the hash through a SplitMix64 avalanche finalizer first.
+# Both schemes use the SAME keys (tag|seed|little-endian ordinal, sequential ordinals) and the SAME bucket arithmetic (index::bucket1 / index::alt_bucket), so the fingerprint function is the only difference.
+# NOTE: this reimplements the index's candidate selection over the public index:: surface because Index has no hook to substitute the fingerprint function. It is therefore a MODEL of the remedy, not a measurement of a modified engine. bound 2b*2^-f = 0.03125
+# n_store = floor(0.95 * n_buckets * BUCKET_SLOTS); absent lookups = 50000
+scheme,n_buckets,seed,n_store,fp_distinct_stored,hits,lookups,rate,ci_lo,ci_hi,bound,over_bound
+shipped,256,1,972,202,1457,50000,0.029140,0.027701,0.030651,0.03125,0.9325
+finalized,256,1,972,246,1473,50000,0.029460,0.028014,0.030979,0.03125,0.9427
+shipped,256,2,972,204,1515,50000,0.030300,0.028833,0.031839,0.03125,0.9696
+finalized,256,2,972,251,1439,50000,0.028780,0.027350,0.030282,0.03125,0.9210
+shipped,256,3,972,204,1550,50000,0.031000,0.029516,0.032556,0.03125,0.9920
+finalized,256,3,972,250,1389,50000,0.027780,0.026375,0.029257,0.03125,0.8890
+shipped,1024,1,3891,249,759,50000,0.015180,0.014145,0.016290,0.03125,0.4858
+finalized,1024,1,3891,255,1446,50000,0.028920,0.027487,0.030425,0.03125,0.9254
+shipped,1024,2,3891,245,2285,50000,0.045700,0.043904,0.047566,0.03125,1.4624
+finalized,1024,2,3891,255,1424,50000,0.028480,0.027058,0.029975,0.03125,0.9114
+shipped,1024,3,3891,246,2371,50000,0.047420,0.045592,0.049318,0.03125,1.5174
+finalized,1024,3,3891,255,1469,50000,0.029380,0.027936,0.030897,0.03125,0.9402
+shipped,4096,1,15564,255,719,50000,0.014380,0.013373,0.015461,0.03125,0.4602
+finalized,4096,1,15564,255,1457,50000,0.029140,0.027701,0.030651,0.03125,0.9325
+shipped,4096,2,15564,255,735,50000,0.014700,0.013682,0.015793,0.03125,0.4704
+finalized,4096,2,15564,255,1406,50000,0.028120,0.026707,0.029606,0.03125,0.8998
+shipped,4096,3,15564,255,694,50000,0.013880,0.012891,0.014943,0.03125,0.4442
+finalized,4096,3,15564,255,1433,50000,0.028660,0.027233,0.030159,0.03125,0.9171
+shipped,16384,1,62259,255,645,50000,0.012900,0.011948,0.013927,0.03125,0.4128
+finalized,16384,1,62259,255,1318,50000,0.026360,0.024992,0.027801,0.03125,0.8435
+shipped,16384,2,62259,255,685,50000,0.013700,0.012718,0.014757,0.03125,0.4384
+finalized,16384,2,62259,255,1433,50000,0.028660,0.027233,0.030159,0.03125,0.9171
+shipped,16384,3,62259,255,661,50000,0.013220,0.012256,0.014259,0.03125,0.4230
+finalized,16384,3,62259,255,1393,50000,0.027860,0.026453,0.029339,0.03125,0.8915

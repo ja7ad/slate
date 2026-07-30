@@ -266,6 +266,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-storage"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a21dea9854beb860f3062d10228ce9b976da520a73474aed3171ec276bc0c032"
+
+[[package]]
+name = "embedded-storage-async"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1763775e2323b7d5f0aa6090657f5e21cfa02ede71f5dc40eead06d64dcd15cc"
+dependencies = [
+ "embedded-storage",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -731,7 +746,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "slate-fuzz"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libfuzzer-sys",
  "slate-kv-core",
@@ -739,7 +754,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "hmac",
  "libc",
@@ -751,14 +766,14 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-cli"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "slate-kv",
 ]
 
 [[package]]
 name = "slate-kv-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "heapless",
  "sha2",
@@ -768,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-crypto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
@@ -780,11 +795,11 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-erasure"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "slate-kv-ffi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cbindgen",
  "slate-kv",
@@ -793,15 +808,20 @@ dependencies = [
 
 [[package]]
 name = "slate-kv-hal"
-version = "0.4.0"
+version = "0.5.0"
+dependencies = [
+ "embedded-storage-async",
+]
 
 [[package]]
 name = "slate-kv-sim"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
+ "libc",
  "proptest",
  "rand 0.8.7",
  "serde",
+ "slate-kv",
  "slate-kv-core",
  "slate-kv-crypto",
  "slate-kv-erasure",

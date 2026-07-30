@@ -23,6 +23,9 @@ sha2 = { version = "0.11.0", default-features = false }
 heapless = "0.8.0"
 
 [features]
+default = ["blocking"]
+blocking = []                                 # sync façade via block_on — today's API
+async = ["slate-kv-hal/async"]
 # Off by default so the bare-metal build pays nothing: enables the `metrics`
 # counters (commits, wakes, bytes programmed, erases) used by the energy model.
 metrics = []

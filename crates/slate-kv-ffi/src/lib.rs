@@ -1,7 +1,6 @@
 #![allow(non_camel_case_types)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 use slate_kv::{Db, KeySource, Options, Profile};
-use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::panic::catch_unwind;
@@ -39,14 +38,31 @@ pub struct slate_options {
     pub profile: u8, // 0 = Pi, 1 = Esp32
 }
 
-thread_local! {
-    static LAST_OPEN_ERROR: RefCell<String> = const { RefCell::new(String::new()) };
-}
+/// Message from the most recent failed [`slate_open`].
+///
+/// A failed open returns no handle, so this is the only channel through which
+/// the reason can reach the caller. It is a process-wide `Mutex`, not a
+/// `thread_local!`, for two reasons:
+///
+///  * **Correctness across threads.** A C caller may open on one thread and
+///    read the message on another; with thread-local storage that caller
+///    silently got an empty string. Nothing in the C ABI promises thread
+///    affinity, so the storage must not assume it.
+///  * **Portability.** `thread_local!` lowers to a `#[thread_local]` static,
+///    whose TLS model is fixed by the libc the static library was built
+///    against. Linking a glibc-built `staticlib` into a musl-based host (as
+///    TinyGo does) then faults on the first access — and `slate_open` clears
+///    this on its *success* path, so even open-then-close crashed.
+///
+/// Concurrent failing opens on different threads can overwrite each other's
+/// message. SLATE is single-writer by design, so that is accepted rather than
+/// paid for with per-thread storage.
+static LAST_OPEN_ERROR: Mutex<String> = Mutex::new(String::new());
 
 fn set_open_error(msg: String) {
-    LAST_OPEN_ERROR.with(|e| {
-        *e.borrow_mut() = msg;
-    });
+    if let Ok(mut e) = LAST_OPEN_ERROR.lock() {
+        *e = msg;
+    }
 }
 
 pub struct slate_db {
@@ -319,7 +335,10 @@ pub extern "C" fn slate_last_error_message(
     }
     let msg = match catch_unwind(|| {
         if db.is_null() {
-            LAST_OPEN_ERROR.with(|e| e.borrow().clone())
+            LAST_OPEN_ERROR
+                .lock()
+                .map(|e| e.clone())
+                .unwrap_or_default()
         } else {
             unsafe {
                 if let Ok(lock) = (*db).last_error.lock() {

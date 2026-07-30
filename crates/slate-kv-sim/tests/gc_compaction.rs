@@ -119,6 +119,7 @@ fn create_slate<'a>(
         metrics: slate_kv_core::metrics::Metrics::default(),
         ckpt_buf,
         rng: slate_kv_core::index::XorShift64::new(42),
+        scratch_buf: slate_kv_core::slate::ScratchWorkspace::new(),
     }
 }
 

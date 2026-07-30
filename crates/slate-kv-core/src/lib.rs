@@ -20,3 +20,4 @@ pub mod repair;
 pub mod sched;
 pub mod segment;
 pub mod slate;
+pub mod task;

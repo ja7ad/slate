@@ -1,0 +1,57 @@
+# Codecov configuration for SLATE.
+#
+# Without this file Codecov measured every Rust file in the workspace as
+# product code, including the measurement harnesses. Those are executables that
+# run a study and print a CSV; they are never linked into a library, never
+# executed by `cargo test`, and exist to produce the numbers in
+# docs/specification.md. Counting them made a PR that ADDED measurement
+# tooling look like a 12.51% coverage regression, which is exactly backwards as
+# a review signal.
+#
+# The rule applied here: a path is excluded only if it cannot be exercised by
+# the test suite by construction (a `main` that drives a study, or a binary
+# whose whole purpose is I/O to stdout). Everything reachable from a library
+# API stays in the denominator, including the simulator's own `SimFlash` and
+# `sim_db`, which tests can and should drive.
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...95"
+
+  status:
+    project:
+      default:
+        # Small movements are noise from which tests happen to inline what.
+        threshold: 1%
+        if_ci_failed: error
+    patch:
+      default:
+        # New library code should arrive tested; the target is deliberately
+        # below 100% so that a patch touching an untestable path (a `main`, a
+        # panic-only branch) does not block the PR outright.
+        target: 75%
+        threshold: 5%
+
+ignore:
+  # Measurement and study harnesses. Each is a `fn main` that runs a sweep and
+  # writes a CSV consumed by docs/specification.md. They are reproducibility
+  # artefacts, not product code, and `cargo test` never invokes them.
+  - "crates/slate-kv-sim/src/bin/**"
+  - "crates/*/examples/**"
+
+  # The fuzz target: driven by cargo-fuzz, never by the test suite.
+  - "fuzz/**"
+
+  # Out-of-workspace bare-metal firmware. It cannot be built or run on the
+  # coverage host (riscv32imc, no_std), so it can only ever report 0%.
+  - "targets/esp32/**"
+
+  # Language bindings: covered by their own conformance suites (`make
+  # bind-test`, `tinygo test`), which do not emit LLVM coverage for Rust.
+  - "bind/**"
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: true

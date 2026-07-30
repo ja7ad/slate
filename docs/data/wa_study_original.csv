@@ -1,0 +1,45 @@
+# ORIGINAL harness, verbatim, for comparison. Command: cargo run --release -p slate-kv-sim --bin wa_study
+# Params (hardcoded in wa_study.rs): n_keys=2000 n_ops=40000 seg_recs=64 seed=4242 (single seed); cap_segs=max(8,ceil(n_keys/(u*seg_recs))), +2 for hot_cold
+# meas_u here is NOT measured: it is n_keys/cap_records, a closed form of u_target -> identical across all skews.
+# Platform: macOS 26.5.2 arm64, 12 cores, 24 GiB. Pure in-process GC model (no flash backend, no SLATE engine).
+u,s,gc_type,wa,meas_u
+0.50,0.0,single,1.25,0.496
+0.50,0.0,hot_cold,1.22,0.481
+0.60,0.0,single,1.48,0.590
+0.60,0.0,hot_cold,1.42,0.568
+0.70,0.0,single,1.99,0.694
+0.70,0.0,hot_cold,1.82,0.665
+0.80,0.0,single,2.97,0.781
+0.80,0.0,hot_cold,2.47,0.744
+0.90,0.0,single,10.85,0.893
+0.90,0.0,hot_cold,5.20,0.845
+0.50,0.6,single,1.35,0.496
+0.50,0.6,hot_cold,1.31,0.481
+0.60,0.6,single,1.59,0.590
+0.60,0.6,hot_cold,1.51,0.568
+0.70,0.6,single,2.12,0.694
+0.70,0.6,hot_cold,1.92,0.665
+0.80,0.6,single,3.12,0.781
+0.80,0.6,hot_cold,2.59,0.744
+0.90,0.6,single,11.07,0.893
+0.90,0.6,hot_cold,5.25,0.845
+0.50,0.9,single,1.43,0.496
+0.50,0.9,hot_cold,1.35,0.481
+0.60,0.9,single,1.66,0.590
+0.60,0.9,hot_cold,1.56,0.568
+0.70,0.9,single,2.24,0.694
+0.70,0.9,hot_cold,1.97,0.665
+0.80,0.9,single,3.14,0.781
+0.80,0.9,hot_cold,2.61,0.744
+0.90,0.9,single,9.77,0.893
+0.90,0.9,hot_cold,4.76,0.845
+0.50,1.2,single,1.42,0.496
+0.50,1.2,hot_cold,1.31,0.481
+0.60,1.2,single,1.63,0.590
+0.60,1.2,hot_cold,1.52,0.568
+0.70,1.2,single,2.30,0.694
+0.70,1.2,hot_cold,1.79,0.665
+0.80,1.2,single,3.17,0.781
+0.80,1.2,hot_cold,2.15,0.744
+0.90,1.2,single,6.77,0.893
+0.90,1.2,hot_cold,3.48,0.845

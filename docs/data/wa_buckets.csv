@@ -1,0 +1,17 @@
+# SLATE paper measurement: write-amplification byte buckets (real engine, all counters wired)
+# command: cargo run --release -p slate-kv --example paper_wa_buckets
+# platform: macOS 26.5.2 arm64, slate-kv FileFlash file-backed flash emulation, Durability::Full
+# geometry: ESP32-C3 (capacity=2097152 page=256 block=4096), val_len=100, key="sensor_%06d" (13 B), n_distinct_keys=256, n_ops=6000, explicit compact() at end
+# NOTE: regenerated after fixing a 2x user_bytes double-count (five duplicate add_user_bytes call sites in
+#   slate-kv/src/db.rs and slate-kv-sim/src/sim_db.rs; user bytes are counted in Slate::append_hot). The
+#   pre-fix figures satisfied WA_reported = (WA_true + 1)/2, i.e. b_commit=1 read 3.6539 instead of 6.3078.
+b_commit,ops_accepted,acked_seq,live_keys,commits,wakes,user_bytes,gc_bytes,parity_bytes,marker_bytes,ckpt_bytes,total_bytes,erases,gc_scanned,gc_relocated,gc_open_failed,gc_segments_freed,segments,segments_sealed,segments_free,hot_head,cold_head,seg_end,wa
+1,1464,1497,256,1522,1522,230005,5338,383232,766464,65792,1450831,317,1284,34,0,25,31,5,25,2040832,2097152,2064384,6.3078
+2,2433,2432,256,1281,1281,382138,0,311296,622592,65792,1381818,41,154,0,0,2,31,28,1,2097152,540672,2064384,3.6160
+4,3955,4040,256,1039,1039,621092,13973,258560,517120,65792,1476537,365,3856,89,0,29,31,1,29,2059776,2096640,2064384,2.3773
+8,6000,6024,256,784,784,942000,3768,192768,385536,65792,1589864,377,5760,24,0,30,31,0,29,2076672,546816,2064384,1.6878
+16,6000,6000,256,377,377,942000,0,96000,192000,65792,1295792,29,240,0,0,1,31,24,5,1788672,1818624,2064384,1.3756
+27,6000,6000,256,224,224,942000,0,57088,114176,65792,1179056,29,263,0,0,1,31,22,7,1679104,1720320,2064384,1.2517
+32,6000,6000,256,189,189,942000,0,48128,96256,65792,1152176,29,270,0,0,1,31,21,8,1645056,1671168,2064384,1.2231
+64,6000,6000,256,95,95,942000,0,24064,48128,65792,1079984,29,289,0,0,1,31,20,9,1572864,1622016,2064384,1.1465
+128,6000,6000,256,48,48,942000,0,12032,24064,65792,1043888,29,302,0,0,1,31,19,10,1524736,1572864,2064384,1.1082

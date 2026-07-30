@@ -1,0 +1,19 @@
+# SLATE paper measurement: ESP32-C3 firmware static footprint + engine RAM working set
+# cmd(build)=cd targets/esp32 && cargo build --release --target riscv32imc-unknown-none-elf --features chip-esp32c3,counter-flash,metrics
+# cmd(size)=$(find ~/.rustup/toolchains -name llvm-size | head -1) -A <elf>   [llvm-size LLVM 22.1.6-rust-1.97.1-stable]
+# cmd(symbols)=$(find ~/.rustup/toolchains -name llvm-nm | head -1) --print-size --radix=d <elf>
+# cmd(struct sizes)=cargo build --release --target riscv32imc-unknown-none-elf in .paper_sizes/ (off-workspace probe crate exporting size_of::<..>() into .rodata), read back with llvm-objdump --full-contents
+# target=riscv32imc-unknown-none-elf chip=esp32c3 profile=release features=chip-esp32c3,counter-flash,metrics
+# toolchain=cargo 1.97.1 / rustc stable-aarch64-apple-darwin; build host=macOS 26.5.2 arm64 12-core 24GiB
+# workspace=v0.4.0 git HEAD 970324f plus this session's instrumentation (index probe accessors, FlashCounters, MountReport)
+# NOTE: sizes are STATIC, from the ELF. No ESP32-C3 hardware was available in this session, so nothing here is a
+#       runtime measurement on-device: heap/stack high-water marks were NOT measured and are reported as null.
+# NOTE: binary 'bench' links NO SLATE engine code (links_slate_engine=0) -- it is a bare esp-hal boot stub that
+#       prints and spins. Its small .data is therefore NOT evidence of a lean SLATE configuration.
+# section semantics: .data here is initialised RAM and holds the demos' four static SLATE buffers; .stack is the
+#       linker's stack RESERVATION for the region, not measured stack usage. flash_resident=.text+.rodata+.data.
+binary,links_slate_engine,text_bytes,rodata_bytes,data_bytes,bss_bytes,stack_reserve_bytes,rwtext_bytes,trap_bytes,flash_appdesc_bytes,flash_resident_bytes,ram_static_bytes,slate_static_bufs_bytes,slate_HOT_BUF,slate_COLD_BUF,slate_INDEX_SLOTS,slate_CKPT_BUF,data_bytes_excl_slate_bufs,llvm_size_total
+kv_demo,1,100898,15648,77756,456,238444,2564,1292,256,194302,78212,76008,4108,4108,32780,35012,1748,509542
+embassy_demo,1,91530,14076,77696,456,238504,2564,1292,256,183302,78152,76008,4108,4108,32780,35012,1688,498582
+slate_node,1,91538,13972,77580,456,238620,2564,1292,256,183090,78036,76008,4108,4108,32780,35012,1572,498486
+bench,0,24204,7452,532,396,316192,2100,1292,256,32188,928,0,0,0,0,0,532,423724

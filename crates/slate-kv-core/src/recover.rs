@@ -8,11 +8,21 @@ use crate::record::RecordHeader;
 use slate_kv_hal::Flash;
 
 /// Information about recovery result.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RecoverInfo {
     /// Max committed sequence up to.
     pub committed_upto: u64,
     /// Position of head after truncate.
     pub head_pos: u32,
+    /// Committed records the tail scan AEAD-opened and handed to `apply`.
+    ///
+    /// This is the Θ in the "O(1) tip check plus O(Θ) replay" mount claim, so it
+    /// is reported rather than inferred: without it a reader cannot tell a mount
+    /// that replayed nothing from one that replayed a full epoch, and the two
+    /// have very different costs.
+    pub records_applied: u64,
+    /// Bytes of log the tail scan walked, i.e. `head_pos - start_off`.
+    pub scan_bytes: u32,
 }
 
 /// A batch of pending record sequence numbers.
@@ -102,10 +112,17 @@ pub fn record_key_eq<F: Flash, S: Sealer>(
     &scratch[..hdr.klen as usize] == key
 }
 
-fn finish_truncate(off: u32, committed_upto: u64) -> RecoverInfo {
+fn finish_truncate(
+    off: u32,
+    committed_upto: u64,
+    start_off: u32,
+    records_applied: u64,
+) -> RecoverInfo {
     RecoverInfo {
         committed_upto,
         head_pos: off,
+        records_applied,
+        scan_bytes: off.saturating_sub(start_off),
     }
 }
 
@@ -186,6 +203,7 @@ pub fn recover<F: Flash, S: Sealer>(
     mut apply: impl FnMut(&mut F, &mut S, u64, u32, u8, &[u8]),
 ) -> Result<RecoverInfo, Error> {
     let mut committed_upto = 0;
+    let mut records_applied: u64 = 0;
     workspace.pending.count = 0;
     workspace.pending.last_seq = 0;
     let mut scratch_chain = chain.clone();
@@ -267,6 +285,7 @@ pub fn recover<F: Flash, S: Sealer>(
                                                         hdr.op,
                                                         &workspace.scratch[..hdr.klen as usize],
                                                     );
+                                                    records_applied += 1;
                                                 }
                                                 // If open_record fails here despite
                                                 // the commit marker's chain hash
@@ -282,11 +301,21 @@ pub fn recover<F: Flash, S: Sealer>(
                                 }
                                 committed_upto = f.seq_max;
                             } else {
-                                return Ok(finish_truncate(off, committed_upto));
+                                return Ok(finish_truncate(
+                                    off,
+                                    committed_upto,
+                                    start_off,
+                                    records_applied,
+                                ));
                             }
                         }
                         Err(_) => {
-                            return Ok(finish_truncate(off, committed_upto));
+                            return Ok(finish_truncate(
+                                off,
+                                committed_upto,
+                                start_off,
+                                records_applied,
+                            ));
                         }
                     }
                     off += page_size * 2;
@@ -303,7 +332,12 @@ pub fn recover<F: Flash, S: Sealer>(
                     if buf[0] == MAGIC_REC {
                         let mut hdr_bytes = [0u8; REC_HDR_LEN];
                         if flash.read(off, &mut hdr_bytes).is_err() {
-                            return Ok(finish_truncate(off, committed_upto));
+                            return Ok(finish_truncate(
+                                off,
+                                committed_upto,
+                                start_off,
+                                records_applied,
+                            ));
                         }
                         if let Ok(hdr) = RecordHeader::decode(&hdr_bytes) {
                             let total_len =
@@ -312,7 +346,12 @@ pub fn recover<F: Flash, S: Sealer>(
                                 .read(off, &mut workspace.rec_bytes[..total_len])
                                 .is_err()
                             {
-                                return Ok(finish_truncate(off, committed_upto));
+                                return Ok(finish_truncate(
+                                    off,
+                                    committed_upto,
+                                    start_off,
+                                    records_applied,
+                                ));
                             }
 
                             match s.open_record(
@@ -323,7 +362,12 @@ pub fn recover<F: Flash, S: Sealer>(
                                 Ok(()) => {
                                     scratch_chain.fold(&workspace.rec_bytes[..total_len]);
                                     if workspace.pending.push(hdr.seq, off).is_err() {
-                                        return Ok(finish_truncate(off, committed_upto));
+                                        return Ok(finish_truncate(
+                                            off,
+                                            committed_upto,
+                                            start_off,
+                                            records_applied,
+                                        ));
                                     }
                                     off += total_len as u32;
                                     continue;
@@ -333,11 +377,21 @@ pub fn recover<F: Flash, S: Sealer>(
                         }
                     }
 
-                    return Ok(finish_truncate(off, committed_upto));
+                    return Ok(finish_truncate(
+                        off,
+                        committed_upto,
+                        start_off,
+                        records_applied,
+                    ));
                 }
             }
         }
     }
 
-    Ok(finish_truncate(off, committed_upto))
+    Ok(finish_truncate(
+        off,
+        committed_upto,
+        start_off,
+        records_applied,
+    ))
 }

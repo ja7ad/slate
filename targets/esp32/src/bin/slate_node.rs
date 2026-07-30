@@ -13,8 +13,8 @@ use slate_kv_core::metrics::Metrics;
 use slate_kv_core::sched::Scheduler;
 use slate_kv_core::slate::Slate;
 
-use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
+use slate_kv_crypto::sealer::CryptoSealer;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -28,7 +28,11 @@ fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
 
-    let mut flash = EspFlash::new(0x100000, 4096 * 128, peripherals.FLASH);
+    let mut flash = EspFlash::new(
+        slate_esp32::SLATE_FLASH_BASE,
+        slate_esp32::SLATE_FLASH_LEN,
+        peripherals.FLASH,
+    );
     let mut counter = EspCounter::new();
 
     let dev_key = slate_kv_crypto::keys::DeviceKey([0x53u8; 32]); // Node master key
@@ -64,10 +68,14 @@ fn main() -> ! {
         b_commit: 8,
     };
 
+    // First byte the append log may use; `block_idx` must track it (540 672 /
+    // 4096 = block 132), not stay at 0.
+    let data_base = slate_kv_core::config::data_base_offset(4096);
+
     let rng_seed = engine_state.epoch.max(1) ^ 42;
     let mut slate = Slate {
-        flash,
-        counter,
+        flash: slate_kv_hal::BlockingFlash(flash),
+        counter: slate_kv_hal::BlockingCounter(counter),
         sealer,
         engine: engine_state,
         log_hot: slate_kv_core::log::Log::new(
@@ -76,25 +84,38 @@ fn main() -> ! {
                 seg_seq: 0,
                 // Start the append log above the checkpoint region so commits
                 // never program the live checkpoint pages.
-                write_offset: slate_kv_core::config::data_base_offset(4096),
-                block_idx: 0,
+                write_offset: data_base,
+                block_idx: data_base / 4096,
             },
         ),
         log_cold: slate_kv_core::log::Log::new(
             COLD_BUF.take(),
             HeadState {
-                seg_seq: 0,
-                write_offset: 0,
-                block_idx: 0,
+                seg_seq: 1,
+                // Committed unconditionally alongside the hot log, so it must
+                // also start above the reserved checkpoint region — and in a
+                // DIFFERENT segment from the hot log, since reclaim erases a
+                // whole segment and would otherwise take the other log's
+                // records with it.
+                write_offset: data_base + slate_kv_core::config::SEG_BYTES as u32,
+                block_idx: (data_base + slate_kv_core::config::SEG_BYTES as u32) / 4096,
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),
-        segs: SegTable::new(128),
+        // `with_base`, not `new`: segments tile the log area ABOVE the reserved
+        // superblock/checkpoint region. With base 0, segment 0's address range
+        // covers the live checkpoint slots and a reclaim erase would destroy
+        // them.
+        segs: SegTable::with_base(
+            data_base,
+            slate_esp32::slate_segment_capacity(slate_esp32::SLATE_FLASH_LEN),
+        ),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
         ckpt_buf,
         rng: slate_kv_core::index::XorShift64::new(rng_seed),
+        scratch_buf: slate_kv_core::slate::ScratchWorkspace::new(),
     };
 
     println!("[SLATE ESP32 Storage Node Online]");
@@ -126,8 +147,8 @@ fn main() -> ! {
 
 fn process_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str)
 where
-    F: slate_kv_hal::Flash,
-    C: slate_kv_hal::MonotonicCounter,
+    F: slate_kv_hal::AsyncFlash,
+    C: slate_kv_hal::AsyncMonotonicCounter,
     S: slate_kv_core::log::Sealer,
 {
     let parts: Vec<&str, 4> = parse_words(cmd);
@@ -137,7 +158,7 @@ where
 
     match parts[0] {
         "put" => {
-            if parts.len() < 3 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 3 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
@@ -168,7 +189,7 @@ where
             }
         }
         "get" => {
-            if parts.len() < 2 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 2 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
@@ -182,21 +203,25 @@ where
             }
         }
         "del" => {
-            if parts.len() < 2 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 2 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
             let key = parts[1].as_bytes();
             let seq = slate.engine.next_seq;
-            if let Ok(_) = slate.log_hot.append(
-                seq,
-                slate.engine.epoch,
-                OP_DEL,
-                key,
-                &[],
-                &mut slate.sealer,
-                &mut slate.engine.chain,
-            ) {
+            if slate
+                .log_hot
+                .append(
+                    seq,
+                    slate.engine.epoch,
+                    OP_DEL,
+                    key,
+                    &[],
+                    &mut slate.sealer,
+                    &mut slate.engine.chain,
+                )
+                .is_ok()
+            {
                 slate.engine.next_seq += 1;
                 slate.index_remove_key(key);
                 println!("OK seq={}", seq);
@@ -249,7 +274,7 @@ impl<T: Copy, const N: usize> core::ops::Index<usize> for Vec<T, N> {
     }
 }
 
-fn parse_words<'a, const N: usize>(s: &'a str) -> Vec<&'a str, N> {
+fn parse_words<const N: usize>(s: &str) -> Vec<&str, N> {
     let mut res = Vec::new();
     for word in s.split_whitespace() {
         res.push(word);

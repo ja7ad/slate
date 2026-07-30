@@ -27,6 +27,7 @@ pub struct PowerReport {
     pub label: &'static str,
 }
 
+#[derive(Default, Clone)]
 pub struct Stats {
     pub commits: u64,
     pub wakes: u64,

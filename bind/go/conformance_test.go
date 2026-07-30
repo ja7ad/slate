@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -341,5 +342,177 @@ func TestC13(t *testing.T) {
 	defer db.Close()
 	if slate.AbiVersionMajor != 1 {
 		t.Fatalf("expected AbiVersionMajor == 1, got %d", slate.AbiVersionMajor)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Environmental cases (C14-C18). See bind/CONFORMANCE.md.
+//
+// C1-C13 assume the library loaded and linked correctly. These five test that
+// assumption, and each exists because a real failure slipped past the
+// behavioural cases.
+// ---------------------------------------------------------------------------
+
+// C14: the engine must survive being called from the runtime's smallest unit
+// of concurrency, not just the main thread.
+//
+// slate_open needs >= 52 KiB of stack (measured: SIGSEGV at 48 KiB, clean at
+// 52 KiB). Go grows goroutine stacks on demand so this is free here, but
+// TinyGo and other runtimes give a fixed, much smaller stack -- and the
+// failure mode is a bare SIGSEGV on the first engine call with no other
+// symptom. Running it explicitly on a goroutine makes that a named test
+// failure instead of a mystery crash in whichever case happens to run first.
+func TestC14(t *testing.T) {
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		db, err := slate.Open(dir, rootKey(), &slate.Options{
+			CapacityBytes: 1024 * 1024,
+			MaxKeys:       100,
+			BCommit:       1,
+			Theta:         0,
+			Profile:       slate.ProfilePi,
+		})
+		if err != nil {
+			done <- err
+			return
+		}
+		if err := db.PutDurable([]byte("k"), []byte("v")); err != nil {
+			done <- err
+			return
+		}
+		done <- db.Close()
+	}()
+	if err := <-done; err != nil {
+		t.Fatalf("engine call on a goroutine failed: %v", err)
+	}
+}
+
+// C15: a failed open's message must be readable from a DIFFERENT thread than
+// the one that failed.
+//
+// Nothing in the C ABI promises thread affinity. This fails against a
+// thread-local error slot, which returns an empty string to the reader --
+// which is why the FFI uses a process-wide mutex for it.
+func TestC15(t *testing.T) {
+	dir := t.TempDir()
+
+	// Fail an open on a dedicated goroutine, locked to its own OS thread so
+	// the failure and the read genuinely happen on different threads.
+	failed := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		defer runtime.UnlockOSThread()
+		_, err := slate.Open(dir, rootKey(), &slate.Options{
+			CapacityBytes: 0xFFFFFFFF + 10, // rejected by slate_open
+			MaxKeys:       100,
+			BCommit:       1,
+			Theta:         0,
+			Profile:       slate.ProfilePi,
+		})
+		failed <- err
+	}()
+	err := <-failed
+	if err == nil {
+		t.Fatal("expected the oversized-capacity open to fail")
+	}
+	// The message must have survived the thread hop.
+	if !strings.Contains(err.Error(), "capacity_bytes") {
+		t.Fatalf("error did not carry the native message across threads: %v", err)
+	}
+}
+
+// C16: the three-step buffer protocol -- size query, short buffer, exact fit.
+func TestC16(t *testing.T) {
+	dir := t.TempDir()
+	db := openFresh(t, dir)
+	defer db.Close()
+
+	val := bytes.Repeat([]byte{0xAB}, 300)
+	if err := db.PutDurable([]byte("bufkey"), val); err != nil {
+		t.Fatalf("PutDurable failed: %v", err)
+	}
+
+	// Zero-capacity: a pure size query.
+	n, err := db.GetInto([]byte("bufkey"), nil)
+	if err == nil {
+		t.Fatal("expected buffer-too-small for a zero-capacity read")
+	}
+	if !errors.Is(err, slate.ErrBufferTooSmall) {
+		t.Fatalf("expected ErrBufferTooSmall, got %v", err)
+	}
+	if n != len(val) {
+		t.Fatalf("size query reported %d, want %d", n, len(val))
+	}
+
+	// One byte short: must refuse and must not scribble past the buffer.
+	short := make([]byte, len(val)-1)
+	for i := range short {
+		short[i] = 0x5A
+	}
+	if _, err := db.GetInto([]byte("bufkey"), short); !errors.Is(err, slate.ErrBufferTooSmall) {
+		t.Fatalf("expected ErrBufferTooSmall for a short buffer, got %v", err)
+	}
+	for i, b := range short {
+		if b != 0x5A {
+			t.Fatalf("short buffer was modified at index %d (0x%02X)", i, b)
+		}
+	}
+
+	// Exact fit: succeeds.
+	exact := make([]byte, len(val))
+	got, err := db.GetInto([]byte("bufkey"), exact)
+	if err != nil {
+		t.Fatalf("exact-size GetInto failed: %v", err)
+	}
+	if got != len(val) || !bytes.Equal(exact, val) {
+		t.Fatalf("exact-size read returned %d bytes, mismatch=%v", got, !bytes.Equal(exact, val))
+	}
+}
+
+// C17: binary (non-UTF-8) values and a long key must round-trip byte-for-byte.
+// Catches bindings that treat values as text or truncate at an embedded NUL.
+func TestC17(t *testing.T) {
+	dir := t.TempDir()
+	db := openFresh(t, dir)
+	defer db.Close()
+
+	// Every byte value, including 0x00, four times over.
+	binary := make([]byte, 0, 1024)
+	for i := 0; i < 4; i++ {
+		for b := 0; b < 256; b++ {
+			binary = append(binary, byte(b))
+		}
+	}
+	if err := db.PutDurable([]byte("binary"), binary); err != nil {
+		t.Fatalf("PutDurable(binary) failed: %v", err)
+	}
+	got, err := db.Get([]byte("binary"))
+	if err != nil {
+		t.Fatalf("Get(binary) failed: %v", err)
+	}
+	if !bytes.Equal(got, binary) {
+		t.Fatalf("binary value did not round-trip: got %d bytes, want %d", len(got), len(binary))
+	}
+
+	longKey := bytes.Repeat([]byte("k"), 64)
+	if err := db.PutDurable(longKey, []byte("lk")); err != nil {
+		t.Fatalf("PutDurable(long key) failed: %v", err)
+	}
+	if got, err := db.Get(longKey); err != nil || !bytes.Equal(got, []byte("lk")) {
+		t.Fatalf("long key did not round-trip: %v / %q", err, got)
+	}
+}
+
+// C18: the profile constants must match slate.h.
+//
+// Swapping them does not error -- it silently selects the wrong flash
+// geometry, which is the worst kind of bug to find in production.
+func TestC18(t *testing.T) {
+	if slate.ProfilePi != 0 {
+		t.Fatalf("ProfilePi must be 0 per slate.h, got %d", slate.ProfilePi)
+	}
+	if slate.ProfileEsp32 != 1 {
+		t.Fatalf("ProfileEsp32 must be 1 per slate.h, got %d", slate.ProfileEsp32)
 	}
 }

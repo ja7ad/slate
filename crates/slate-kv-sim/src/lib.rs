@@ -4,6 +4,7 @@
 #![allow(clippy::collapsible_if)]
 
 pub mod power;
+pub mod sim_db;
 
 use slate_kv_hal::{CounterKind, Flash, MonotonicCounter};
 use std::collections::BTreeSet;
@@ -30,6 +31,13 @@ pub struct PowerModel {
     pub crash: Crash,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Op {
+    Read { addr: u32, len: u32 },
+    Program { addr: u32, len: u32 },
+    Erase { block_addr: u32 },
+}
+
 #[derive(Debug)]
 pub enum SimFlashError {
     PowerLoss,
@@ -39,15 +47,20 @@ pub enum SimFlashError {
     BadBlock,
 }
 
+#[derive(Clone, Debug)]
 pub struct SimFlash {
     pub mem: Vec<u8>,
     pub programmed: Vec<bool>,
     pub bad_blocks: BTreeSet<u32>,
     pub power: PowerModel,
     pub stats: Stats,
+    pub op_log: Vec<Op>,
     pub is_gc_write: bool,
     page_size: usize,
     block_size: usize,
+    pub read_lat_ms: u64,
+    pub prog_lat_ms: u64,
+    pub erase_lat_ms: u64,
 }
 
 impl SimFlash {
@@ -62,9 +75,13 @@ impl SimFlash {
                 crash: Crash::None,
             },
             stats: Stats::default(),
+            op_log: Vec::new(),
             is_gc_write: false,
             page_size,
             block_size,
+            read_lat_ms: 0,
+            prog_lat_ms: 0,
+            erase_lat_ms: 0,
         }
     }
 }
@@ -92,6 +109,10 @@ impl Flash for SimFlash {
             return Err(SimFlashError::BadBlock);
         }
         buf.copy_from_slice(&self.mem[addr..addr + buf.len()]);
+        self.op_log.push(Op::Read {
+            addr: addr as u32,
+            len: buf.len() as u32,
+        });
         Ok(())
     }
 
@@ -145,6 +166,11 @@ impl Flash for SimFlash {
             self.programmed[start_page + i] = true;
         }
 
+        self.op_log.push(Op::Program {
+            addr: addr as u32,
+            len: bytes_to_write as u32,
+        });
+
         Ok(())
     }
 
@@ -185,6 +211,10 @@ impl Flash for SimFlash {
             self.programmed[start_page + i] = false;
         }
 
+        self.op_log.push(Op::Erase {
+            block_addr: block_addr as u32,
+        });
+
         Ok(())
     }
 }
@@ -195,6 +225,7 @@ pub enum SimCounterError {
     Exhausted,
 }
 
+#[derive(Clone, Debug)]
 pub struct SimCounter {
     pub val: u64,
     pub budget: u64,
@@ -242,6 +273,41 @@ impl MonotonicCounter for SimCounter {
         self.budget -= 1;
         self.val += 1;
         Ok(self.val)
+    }
+}
+
+impl slate_kv_hal::AsyncFlash for SimFlash {
+    type Error = SimFlashError;
+    fn page_size(&self) -> usize {
+        Flash::page_size(self)
+    }
+    fn block_size(&self) -> usize {
+        Flash::block_size(self)
+    }
+    fn capacity(&self) -> u32 {
+        Flash::capacity(self)
+    }
+    async fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
+        Flash::read(self, addr, buf)
+    }
+    async fn program(&mut self, addr: u32, buf: &[u8]) -> Result<(), Self::Error> {
+        Flash::program(self, addr, buf)
+    }
+    async fn erase(&mut self, block_addr: u32) -> Result<(), Self::Error> {
+        Flash::erase(self, block_addr)
+    }
+}
+
+impl slate_kv_hal::AsyncMonotonicCounter for SimCounter {
+    type Error = SimCounterError;
+    fn kind(&self) -> slate_kv_hal::CounterKind {
+        MonotonicCounter::kind(self)
+    }
+    async fn read(&mut self) -> Result<u64, Self::Error> {
+        MonotonicCounter::read(self)
+    }
+    async fn increment(&mut self) -> Result<u64, Self::Error> {
+        MonotonicCounter::increment(self)
     }
 }
 

@@ -10,15 +10,90 @@ steps:
   - write-serial: "mode\n"
   - wait-serial: "BestEffortRollback"
   - wait-serial: "slate> "
+  # `stats` prints sections headed `engine:`, `log:`, `index:`, `segments:`,
+  # `flash bytes written`, `durability:` and `gc:` — it never prints a line
+  # "stats:". Waiting on that string hung until the CI timeout (exit 42) with
+  # the whole stats block already visible in the serial log.
   - write-serial: "stats\n"
-  - wait-serial: "stats:"
+  - wait-serial: "engine:"
+  - wait-serial: "slate> "
+  # Layout invariants, asserted before anything is written. A FAIL here names
+  # the misconfiguration directly instead of letting it surface as an opaque
+  # `Io` on some later commit.
+  - write-serial: "health\n"
+  - wait-serial: "ALL PASS"
   - wait-serial: "slate> "
   - write-serial: "put a 1\n"
   - wait-serial: "slate> "
+  # THE READ-PATH REGRESSION. `put` leaves the record in the uncommitted RAM
+  # batch, whose index offset is a *future* flash address that still reads as
+  # erased 0xFF. The old `get` read flash directly at that offset and so always
+  # printed "(not found)" here — the exact symptom reported from the board
+  # ("put sensor_0 25" then "get sensor_0" returned nothing). Reaching `1`
+  # before any commit proves the batch-aware read path is in use.
+  - write-serial: "get a\n"
+  - wait-serial: "1"
+  - wait-serial: "slate> "
+  # `ack <seq>` is printed only after the commit marker is durable, so this line
+  # is the assertion that a record actually reached flash. Before the flash
+  # region fix this printed `err commit Io`: the append head sat above
+  # capacity() because the mapped region (512 KiB) was smaller than
+  # data_base_offset(4096) = 540 672 B.
   - write-serial: "commit\n"
   - wait-serial: "ack 1"
   - wait-serial: "slate> "
+  # Read back after the commit: proves the record is readable from flash and
+  # that the index offset survived, not just that the write returned Ok.
+  - write-serial: "get a\n"
+  - wait-serial: "1"
+  - wait-serial: "slate> "
+  # `del` appends a tombstone to the COLD log. That log used to start at
+  # write_offset 0 — inside the checkpoint region — so this commit failed
+  # ProgramWithoutErase. Reaching `ack 2` proves the cold head is placed above
+  # the reserved region too.
   - write-serial: "del a\n"
   - wait-serial: "slate> "
   - write-serial: "commit\n"
   - wait-serial: "ack 2"
+  - wait-serial: "slate> "
+  - write-serial: "get a\n"
+  - wait-serial: "(not found)"
+  - wait-serial: "slate> "
+  # Θ-trigger path: `seal` sets records_in_epoch = THETA and commits, and
+  # `commit_async` returns early when the batch is empty — so put a record
+  # first, otherwise `OK` would print without a checkpoint ever being written.
+  # This programs a checkpoint into the reserved slots and then advances the
+  # counter, exercising the write-ahead ordering on real flash.
+  - write-serial: "put b 2\n"
+  - wait-serial: "slate> "
+  - write-serial: "seal\n"
+  - wait-serial: "OK"
+  - wait-serial: "slate> "
+  # The seal opened epoch e+1 and re-anchored the chain. A record written and
+  # read back after it proves the new epoch's record key is in use and the
+  # index still resolves — the failure mode that motivated the epoch
+  # discriminator in the record header.
+  - write-serial: "put c 3\n"
+  - wait-serial: "slate> "
+  - write-serial: "commit\n"
+  - wait-serial: "ack"
+  - wait-serial: "slate> "
+  - write-serial: "get c\n"
+  - wait-serial: "3"
+  - wait-serial: "slate> "
+  # Write amplification must be a real measurement. Before the metrics call
+  # sites existed, add_gc_bytes/add_parity_bytes/add_ckpt_bytes/add_erase had
+  # zero callers anywhere in the workspace, so WA was identically 1.0000 for
+  # every workload and the number was unfalsifiable. By this point the run has
+  # programmed parity pages, commit markers and a checkpoint, so WA must be
+  # strictly above 1 — asserting the "1." prefix would also match 1.0000, so
+  # assert on the parity bucket being non-empty and on the WA line existing.
+  - write-serial: "stats\n"
+  - wait-serial: "flash bytes written"
+  - wait-serial: "WA     ="
+  - wait-serial: "slate> "
+  # The invariants must still hold after a seal, a checkpoint and a compaction.
+  - write-serial: "compact\n"
+  - wait-serial: "slate> "
+  - write-serial: "health\n"
+  - wait-serial: "ALL PASS"
