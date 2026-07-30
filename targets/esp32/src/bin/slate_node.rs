@@ -13,8 +13,8 @@ use slate_kv_core::metrics::Metrics;
 use slate_kv_core::sched::Scheduler;
 use slate_kv_core::slate::Slate;
 
-use slate_kv_crypto::sealer::CryptoSealer;
 use slate_esp32::{EspCounter, EspFlash, SyncBuffer};
+use slate_kv_crypto::sealer::CryptoSealer;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -155,7 +155,7 @@ where
 
     match parts[0] {
         "put" => {
-            if parts.len() < 3 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 3 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
@@ -186,7 +186,7 @@ where
             }
         }
         "get" => {
-            if parts.len() < 2 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 2 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
@@ -200,21 +200,25 @@ where
             }
         }
         "del" => {
-            if parts.len() < 2 || parts[1].as_bytes().is_empty() {
+            if parts.len() < 2 || parts[1].is_empty() {
                 println!("ERR invalid_args");
                 return;
             }
             let key = parts[1].as_bytes();
             let seq = slate.engine.next_seq;
-            if let Ok(_) = slate.log_hot.append(
-                seq,
-                slate.engine.epoch,
-                OP_DEL,
-                key,
-                &[],
-                &mut slate.sealer,
-                &mut slate.engine.chain,
-            ) {
+            if slate
+                .log_hot
+                .append(
+                    seq,
+                    slate.engine.epoch,
+                    OP_DEL,
+                    key,
+                    &[],
+                    &mut slate.sealer,
+                    &mut slate.engine.chain,
+                )
+                .is_ok()
+            {
                 slate.engine.next_seq += 1;
                 slate.index_remove_key(key);
                 println!("OK seq={}", seq);
@@ -267,7 +271,7 @@ impl<T: Copy, const N: usize> core::ops::Index<usize> for Vec<T, N> {
     }
 }
 
-fn parse_words<'a, const N: usize>(s: &'a str) -> Vec<&'a str, N> {
+fn parse_words<const N: usize>(s: &str) -> Vec<&str, N> {
     let mut res = Vec::new();
     for word in s.split_whitespace() {
         res.push(word);

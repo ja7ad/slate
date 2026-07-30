@@ -26,7 +26,7 @@
 //! overwrite. The absolute numbers characterise this host; only the *shape*
 //! of the curve versus `b_commit` transfers to a device.
 //!
-//! `cargo run --release -p slate-kv --example paper_throughput`
+//! `cargo run --release -p slate-kv --example slate_throughput`
 
 use slate_kv::file_flash::Durability;
 use slate_kv::{Db, KeySource, Options, Profile};
@@ -96,7 +96,7 @@ fn lat_fields(l: &Option<Lat>) -> String {
 }
 
 fn main() {
-    let root = std::env::temp_dir().join(format!("slate_paper_thr_{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("slate_thr_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
 
     // Keys are built before the timed region so that neither the format! nor

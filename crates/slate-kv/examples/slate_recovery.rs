@@ -24,7 +24,7 @@
 //! cold OS page cache and the rest do not, so a median alone would understate
 //! the cost on a device that has just booted.
 //!
-//! `cargo run --release -p slate-kv --example paper_recovery`
+//! `cargo run --release -p slate-kv --example slate_recovery`
 //!
 //! Platform: this measures `FileFlash`, a file-backed flash emulation on the
 //! host filesystem. It is NOT an ESP32 or a Raspberry Pi; the flash-read counts
@@ -197,7 +197,7 @@ fn emit(
 
 fn main() {
     let root: PathBuf = std::env::temp_dir().join(format!(
-        "slate_paper_recovery_{}_{}",
+        "slate_recovery_{}_{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -208,7 +208,7 @@ fn main() {
     assert_capacity_mountable();
     println!("# SLATE paper measurement: mount (recovery) cost");
     println!(
-        "# cmd=cargo run --release -p slate-kv --example paper_recovery \
+        "# cmd=cargo run --release -p slate-kv --example slate_recovery \
          backend=FileFlash(file-backed emulation) capacity={CAPACITY} page=256 block=4096 \
          durability=OsCache b_commit=8 auto_b=false n_keys={N_KEYS_OPT} \
          key_len={KEY_LEN} val_len={VAL_LEN} n_distinct_keys={N_DISTINCT} \

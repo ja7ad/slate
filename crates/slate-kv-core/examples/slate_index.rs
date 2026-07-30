@@ -16,7 +16,7 @@
 //! "this candidate offset does not belong to the queried key" is decidable
 //! exactly, with no flash access and no reliance on the surrounding engine.
 //!
-//! `cargo run --release -p slate-kv-core --example paper_index`
+//! `cargo run --release -p slate-kv-core --example slate_index`
 //!
 //! Pure computation: no flash, no clock, no I/O — the numbers are independent of
 //! the host machine except for the arena byte counts, which are `u32`-slot
@@ -249,7 +249,7 @@ fn measure_at_load(fam: KeyFamily, n_buckets: usize, seed: u64, target: usize) -
 fn main() {
     println!("# SLATE paper measurement: partial-key cuckoo index cost");
     println!(
-        "# cmd=cargo run --release -p slate-kv-core --example paper_index \
+        "# cmd=cargo run --release -p slate-kv-core --example slate_index \
          BUCKET_SLOTS={BUCKET_SLOTS} STASH_SIZE={STASH_SIZE} FP_BITS=8 OFF_BITS=24 \
          MAX_KICKS=500 default_N_BUCKETS={N_BUCKETS} MAX_INDEX_SLOTS={MAX_INDEX_SLOTS} \
          key_len=17B absent_lookups_per_row={ABSENT_LOOKUPS} \

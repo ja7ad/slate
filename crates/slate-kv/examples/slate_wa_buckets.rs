@@ -7,7 +7,7 @@
 //! composition figure are both generated from this one file, so they cannot
 //! disagree.
 //!
-//! `cargo run --release -p slate-kv --example paper_wa_buckets`
+//! `cargo run --release -p slate-kv --example slate_wa_buckets`
 
 use slate_kv::{Db, KeySource, Options, Profile};
 
@@ -17,7 +17,7 @@ const N_DISTINCT: usize = 256;
 const N_OPS: usize = 6000;
 
 fn main() {
-    let root = std::env::temp_dir().join(format!("slate_paper_wa_{}", std::process::id()));
+    let root = std::env::temp_dir().join(format!("slate_wa_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
 
     println!("# SLATE paper measurement: write-amplification byte buckets");

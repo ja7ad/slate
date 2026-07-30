@@ -1,7 +1,7 @@
 //! Paper measurement: cost of a single `FileFlash::program` under each
 //! `Durability` mode, measured at the HAL level with no engine above it.
 //!
-//! Why this exists. In `paper_throughput.rs` the two `Durability` modes come
+//! Why this exists. In `slate_throughput.rs` the two `Durability` modes come
 //! out indistinguishable, which contradicts the expectation that `OsCache`
 //! (documented as benchmark-only, i.e. cheaper) should be much faster than
 //! `Full` (`F_FULLFSYNC`). Rather than explain that away, this isolates one
@@ -16,7 +16,7 @@
 //!
 //! PLATFORM: file-backed emulation on this host's filesystem. Not NOR flash.
 //!
-//! `cargo run --release -p slate-kv --example paper_flash_calib`
+//! `cargo run --release -p slate-kv --example slate_flash_calib`
 
 use slate_kv::file_flash::{Durability, FileFlash};
 use slate_kv_hal::Flash;

@@ -24,7 +24,7 @@
 //! `SimFlash`'s ground-truth `bytes_programmed`, which counts every page the
 //! engine actually programmed, markers included).
 //!
-//! `cargo run --release -p slate-kv-sim --bin paper_energy_batch`
+//! `cargo run --release -p slate-kv-sim --bin slate_energy_batch`
 
 use slate_kv_core::sched::b_star;
 use slate_kv_sim::power::{report, PowerModel};
