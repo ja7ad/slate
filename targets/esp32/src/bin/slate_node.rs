@@ -86,7 +86,7 @@ fn main() -> ! {
                 // never program the live checkpoint pages.
                 write_offset: data_base,
                 block_idx: data_base / 4096,
-            ..Default::default()
+                ..Default::default()
             },
         ),
         log_cold: slate_kv_core::log::Log::new(
@@ -100,7 +100,7 @@ fn main() -> ! {
                 // records with it.
                 write_offset: data_base + slate_kv_core::config::SEG_BYTES as u32,
                 block_idx: (data_base + slate_kv_core::config::SEG_BYTES as u32) / 4096,
-            ..Default::default()
+                ..Default::default()
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),

@@ -100,7 +100,7 @@ fn main() -> ! {
         seg_seq: 0,
         write_offset: 0,
         block_idx: 0,
-            ..Default::default()
+        ..Default::default()
     };
 
     let ckpt_buf = CKPT_BUF.take();
@@ -185,7 +185,7 @@ fn main() -> ! {
                 // records with it.
                 write_offset: cold_write_offset + slate_kv_core::config::SEG_BYTES as u32,
                 block_idx: cold_block_idx,
-            ..Default::default()
+                ..Default::default()
             },
         ),
         index: Index::new(index_slots, 2048),
