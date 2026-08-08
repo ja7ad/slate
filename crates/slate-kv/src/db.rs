@@ -1,7 +1,7 @@
 use slate_kv_core::config::{SchedCfg, OP_DEL, OP_PUT};
 use slate_kv_core::epoch::{EngineState, MountError, SecurityMode};
-use slate_kv_core::gc::SegTable;
 use slate_kv_core::gc::SegState;
+use slate_kv_core::gc::SegTable;
 use slate_kv_core::index::Index;
 use slate_kv_core::log::{HeadState, Log};
 use slate_kv_core::metrics::Metrics;
@@ -474,7 +474,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
-            ..Default::default()
+                ..Default::default()
             },
         );
         let log_cold = Log::new(
@@ -483,7 +483,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
-            ..Default::default()
+                ..Default::default()
             },
         );
 
@@ -551,15 +551,22 @@ impl Db {
         if segments_in_use > 0 {
             let page = slate_kv_hal::Flash::page_size(&slate.flash.0) as u32;
 
-            // Anchor replay to the checkpoint's offset ONLY if the segment it
-            // points into is still live. A checkpoint records `write_offset` at
-            // the moment it was taken; reclaim can erase that segment
-            // afterwards and hand it back to the allocator, at which point the
-            // recorded offset addresses erased flash — or worse, records the
-            // index no longer refers to. Replaying from there recovered nothing
-            // and then walked *backwards* through older segments, losing every
-            // key. Fall back to the oldest live segment when that happens: it
-            // costs a longer scan, never correctness.
+            // Anchor replay at the checkpoint's recorded offset whenever that
+            // offset lies inside some segment's data area — including a segment
+            // the table calls `Free`.
+            //
+            // "Free" here means "carries no on-flash header", which is true of a
+            // reclaimed segment but equally true of the genesis segment: at
+            // first mount the heads are placed directly at `data_base` without
+            // going through `open_segment_async`, so segment 0 holds real
+            // records and no header. An earlier version of this filter rejected
+            // any non-live segment and skipped that segment entirely, losing
+            // every record written before the first roll.
+            //
+            // Anchoring inside a genuinely reclaimed segment is harmless: the
+            // scan stops at the first erased byte, and the span walk below
+            // proceeds in allocation order, so it can no longer wander backwards
+            // into superseded history the way an address-ordered walk did.
             // Replay covers the TAIL only: records written after the checkpoint
             // was taken. The checkpointed index already accounts for everything
             // at or below `ckpt_seg_seq`, and those older segments hold
@@ -570,11 +577,7 @@ impl Db {
             let anchor = slate
                 .segs
                 .seg_of(replay_from)
-                .filter(|&id| {
-                    let e = &slate.segs.entries[id as usize];
-                    e.state != slate_kv_core::gc::SegState::Free
-                        && replay_from < slate.segs.seg_data_end(id)
-                })
+                .filter(|&id| replay_from < slate.segs.seg_data_end(id))
                 .map(|id| (id, replay_from))
                 .or_else(|| {
                     // The checkpoint's own segment has been reclaimed since.

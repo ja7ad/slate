@@ -348,38 +348,35 @@ pub fn recover_spans<F: Flash, S: Sealer>(
                                             let total_len = crate::config::REC_OVERHEAD
                                                 + hdr.klen as usize
                                                 + hdr.vlen as usize;
+                                            // If open_record fails here despite the
+                                            // commit marker's chain hash matching
+                                            // (which cryptographically binds every
+                                            // record in the batch), the read was
+                                            // transiently corrupt. Skip the record
+                                            // rather than panicking: boot must never
+                                            // abort the device with an unwind.
                                             if flash
                                                 .read(
                                                     apply_off,
                                                     &mut workspace.rec_bytes[..total_len],
                                                 )
                                                 .is_ok()
-                                            {
-                                                if s.open_record(
+                                                && s.open_record(
                                                     &hdr_bytes,
                                                     &workspace.rec_bytes[REC_HDR_LEN..total_len],
                                                     &mut workspace.scratch,
                                                 )
                                                 .is_ok()
-                                                {
-                                                    apply(
-                                                        flash,
-                                                        s,
-                                                        seq,
-                                                        apply_off,
-                                                        hdr.op,
-                                                        &workspace.scratch[..hdr.klen as usize],
-                                                    );
-                                                    records_applied += 1;
-                                                }
-                                                // If open_record fails here despite
-                                                // the commit marker's chain hash
-                                                // matching (which cryptographically
-                                                // binds every record in the batch),
-                                                // the read was transiently corrupt.
-                                                // Skip the record rather than
-                                                // panicking: boot must never abort
-                                                // the device with an unwind.
+                                            {
+                                                apply(
+                                                    flash,
+                                                    s,
+                                                    seq,
+                                                    apply_off,
+                                                    hdr.op,
+                                                    &workspace.scratch[..hdr.klen as usize],
+                                                );
+                                                records_applied += 1;
                                             }
                                         }
                                     }
@@ -439,25 +436,27 @@ pub fn recover_spans<F: Flash, S: Sealer>(
                                 ));
                             }
 
-                            match s.open_record(
+                            // A record that fails to open is not fatal here: it is
+                            // uncommitted tail, and the fall-through below treats
+                            // it as the end of replayable data.
+                            if s.open_record(
                                 &hdr_bytes,
                                 &workspace.rec_bytes[REC_HDR_LEN..total_len],
                                 &mut workspace.scratch,
-                            ) {
-                                Ok(()) => {
-                                    scratch_chain.fold(&workspace.rec_bytes[..total_len]);
-                                    if workspace.pending.push(hdr.seq, off).is_err() {
-                                        return Ok(finish_truncate(
-                                            off,
-                                            committed_upto,
-                                            start_off,
-                                            records_applied,
-                                        ));
-                                    }
-                                    off += total_len as u32;
-                                    continue;
+                            )
+                            .is_ok()
+                            {
+                                scratch_chain.fold(&workspace.rec_bytes[..total_len]);
+                                if workspace.pending.push(hdr.seq, off).is_err() {
+                                    return Ok(finish_truncate(
+                                        off,
+                                        committed_upto,
+                                        start_off,
+                                        records_applied,
+                                    ));
                                 }
-                                Err(_) => {}
+                                off += total_len as u32;
+                                continue;
                             }
                         }
                     }

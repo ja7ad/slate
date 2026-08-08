@@ -17,7 +17,7 @@ fn main() {
         seg_seq: 0,
         write_offset: 256,
         block_idx: 0,
-            ..Default::default()
+        ..Default::default()
     };
     let mut chain = Chain::default();
     let mut log = Log::new(&mut buf, head);

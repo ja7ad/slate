@@ -31,7 +31,9 @@ const TARGET_OPS: u32 = 20_000;
 
 fn main() {
     // Label the run so the before/after pair is self-describing on disk.
-    let label = std::env::args().nth(1).unwrap_or_else(|| "wrap".to_string());
+    let label = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "wrap".to_string());
     let path = std::path::Path::new("./target/wrap_probe_db");
     let _ = std::fs::remove_dir_all(path);
     std::fs::create_dir_all(path).unwrap();
@@ -103,7 +105,10 @@ fn main() {
         if halted_at.is_some() { "true" } else { "false" }
     );
     println!("  \"halt_error\": \"{halt_error}\",");
-    println!("  \"approx_region_passes\": {:.2},", pct_capacity_used / 100.0);
+    println!(
+        "  \"approx_region_passes\": {:.2},",
+        pct_capacity_used / 100.0
+    );
     println!("  \"segments_total\": {},", st.segments);
     println!("  \"segments_free_at_halt\": {},", st.segments_free);
     println!("  \"segments_sealed_at_halt\": {},", st.segments_sealed);

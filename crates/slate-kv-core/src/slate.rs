@@ -804,48 +804,11 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         !self.segs.fits_in_segment(off, need)
     }
 
-    /// Moves the cold head to a segment where it can actually program: a free
-    /// segment if one exists, otherwise the erased flash just past the hot head.
-    async fn relocate_cold_head_async(&mut self, need: u32) -> Result<(), Error> {
-        let hot_seg = self.segs.seg_of(self.log_hot.head.write_offset);
-
-        // Prefer a free segment that the hot head does not occupy.
-        let mut candidate = None;
-        for i in 0..self.segs.num_segments {
-            let e = &self.segs.entries[i as usize];
-            if e.state == SegState::Free && Some(e.id) != hot_seg {
-                candidate = Some(self.segs.seg_base(e.id));
-                break;
-            }
-        }
-
-        // Otherwise fall back to the next segment boundary above the hot head,
-        // which is erased if the hot log has not reached it yet.
-        if candidate.is_none() {
-            if let Some(id) = hot_seg {
-                let next = self.segs.seg_base(id + 1);
-                if next + need <= self.flash.capacity() {
-                    candidate = Some(next);
-                }
-            }
-        }
-
-        let dst = match candidate {
-            Some(d) => d,
-            None => return Err(Error::FlashFull),
-        };
-        if !self.is_erased_at(dst, need).await {
-            return Err(Error::FlashFull);
-        }
-
-        self.log_cold.head.write_offset = dst;
-        self.log_cold.head.block_idx = dst / self.flash.block_size() as u32;
-        self.log_cold.head.seg_seq += 1;
-        let seq = self.log_cold.head.seg_seq;
-        let acked = self.engine.acked_seq;
-        self.segs.open_at(dst, seq, acked, SegState::OpenCold);
-        Ok(())
-    }
+    // `relocate_cold_head_async` was removed when the log became circular. It
+    // moved the cold head to a free segment (or to erased flash past the hot
+    // head) without writing a segment header, which the wrapped log now
+    // requires to order itself by allocation number. `roll_head_async` handles
+    // both heads through `open_segment_async` and supersedes it entirely.
 
     /// Programs any buffered records whose offsets a head roll would
     /// invalidate.
@@ -880,7 +843,34 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     /// reachable from inside it.
     async fn flush_pending_batches_async(&mut self) -> Result<(), Error> {
         let epoch = self.engine.epoch;
-        let seq_max = self.engine.acked_seq;
+        // The marker must cover the records being programmed, so the high-water
+        // mark is the sequence of the LAST appended record — `next_seq - 1` —
+        // exactly as `commit_inner_async` computes it. Using `acked_seq` here
+        // stamps the marker with the *previous* commit's sequence: recovery then
+        // sees a marker that does not cover the batch beneath it and drops the
+        // tail. That cost 512 records in `reopen_after_epoch_roll_preserves_data`.
+        let seq_max = self.engine.next_seq.saturating_sub(1);
+
+        // Roll before programming, exactly as `commit_inner_async` does: a batch
+        // must not run past its segment's data area into the parity blocks, and
+        // must not straddle a segment boundary. Omitting this let a checkpoint
+        // record a head that had already overrun its segment.
+        if self.segs.num_segments > 0 {
+            let hot_need = self.pending_hot_bytes();
+            if hot_need > 0 && self.head_needs_roll(true, hot_need) {
+                let in_use = self.live_segments();
+                if let Some(id) = self.segs.pick_free_excluding(&in_use) {
+                    self.open_segment_async(id, true).await?;
+                }
+            }
+            let cold_need = self.pending_cold_bytes();
+            if cold_need > 0 && self.head_needs_roll(false, cold_need) {
+                let in_use = self.live_segments();
+                if let Some(id) = self.segs.pick_free_excluding(&in_use) {
+                    self.open_segment_async(id, false).await?;
+                }
+            }
+        }
 
         if !self.log_hot.batch.is_empty() {
             let bytes = self
@@ -916,6 +906,11 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
                 .add_padding_bytes(bytes.data_bytes.saturating_sub(bytes.payload_bytes));
             self.metrics.add_commit();
         }
+        // These records are now covered by a durable commit marker, so they are
+        // acknowledged — the same bookkeeping `commit_inner_async` performs.
+        // Leaving `acked_seq` behind would make a following checkpoint record a
+        // stale watermark and re-replay records that are already durable.
+        self.engine.acked_seq = seq_max;
         Ok(())
     }
 
@@ -970,7 +965,13 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
             self.metrics.add_erase();
         }
 
-        self.ckpt_seg_seq = self.segs.current_seg_seq() + 1;
+        // The watermark is the segment the checkpoint's own head sits in, NOT
+        // one past it. `pick_victim` reclaims `seg_seq < ckpt_seg_seq`, so
+        // `+ 1` made the checkpoint's own segment eligible — and that segment
+        // is exactly where `replay_from` points. Reclaim then erased it, and a
+        // later mount anchored its replay in erased flash, recovered nothing,
+        // and returned `None` for every key the checkpoint had just restored.
+        self.ckpt_seg_seq = self.segs.current_seg_seq();
         Ok(())
     }
 
@@ -1022,7 +1023,13 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         // using it left the watermark pinned at 0 and `pick_victim`'s
         // `seg_seq < ckpt_seg_seq` test permanently false. The segment table's
         // allocation counter is the real ordering.
-        self.ckpt_seg_seq = self.segs.current_seg_seq() + 1;
+        // The watermark is the segment the checkpoint's own head sits in, NOT
+        // one past it. `pick_victim` reclaims `seg_seq < ckpt_seg_seq`, so
+        // `+ 1` made the checkpoint's own segment eligible — and that segment
+        // is exactly where `replay_from` points. Reclaim then erased it, and a
+        // later mount anchored its replay in erased flash, recovered nothing,
+        // and returned `None` for every key the checkpoint had just restored.
+        self.ckpt_seg_seq = self.segs.current_seg_seq();
         Ok(())
     }
 

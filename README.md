@@ -21,7 +21,7 @@ Three properties hold simultaneously, each with a proof and an empirical check:
 
 - **Prefix durability.** After an arbitrary number of power failures at arbitrary instants, recovery returns exactly the state produced by some prefix of the acknowledged write sequence, containing every write acknowledged before the last crash. Verified across 20,000 power-loss trials with the cut at a uniformly random byte — zero violations.
 - **Rollback resistance.** An at-rest adversary who replaces the flash with an older authentic image is detected: making recovery accept a stale epoch requires a MAC forgery. Protection is **per epoch** — a rollback *within* the current epoch is not distinguished, and the window is bounded by Θ. Verified across 5,000 splice attacks — all rejected.
-- **Erasure tolerance.** Segment parity is maximum-distance-separable, so any `n-k` *declared* block erasures reconstruct exactly. Verified exhaustively: all 794 patterns within RS(12,8)'s distance recover byte-exactly, all 792 beyond it are refused, zero wrong bytes across 1,586 patterns.
+- **Erasure tolerance.** Segment parity is maximum-distance-separable, so any `n-k` *declared* block erasures reconstruct exactly. Verified exhaustively: all 794 patterns within RS(12,8)'s distance recover byte-exactly, all 792 beyond it are refused, zero wrong bytes across 1,586 patterns. This is a property of the coder, verified against it directly — the shipped write path does not yet encode parity per sealed segment (see *Known limitations*).
 
 Alongside these, closed forms govern deployment: constant-time index lookup, recovery linear in the post-checkpoint tail and independent of stored volume, steady-state write amplification `1/(1-u)`, and an optimal commit batch size `B* = sqrt(2·λ·A/c)` that landed within 5.35% of the measured optimum.
 
@@ -36,7 +36,8 @@ Alongside these, closed forms govern deployment: constant-time index lookup, rec
 
 These are measured, not hypothetical. [`docs/specification.md`](docs/specification.md) records each one with the command and data file behind it:
 
-- **Reclaimed space is not reusable.** The log head cannot yet wrap into freed segments, so a device halts with most of its segments free. This is a format-level gap and the most consequential item of remaining work.
+- **Reclaimed space is reusable as of 0.6.0.** Earlier releases could not wrap the log head into freed segments, so a device halted with most of its segments free; see [`CHANGELOG.md`](CHANGELOG.md). This costs an on-flash format break — a 0.5.x volume is rejected at mount rather than mis-replayed, and there is no in-place migration.
+- **Segment parity is not encoded on the data path.** The RS(12,8) erasure tolerance below is verified in simulation, but `segment::encode_parity` has no production caller, so the shipped write path does not exercise it. The parity blocks are reserved by the 0.6.0 format, so closing this needs no further format break.
 - **RAM exceeds the documented budget.** The shipped ESP32 configuration needs ~81 KiB resident (~86 KiB at mount peak) against a 64 KiB target, dominated by a checkpoint buffer that must hold the entire serialised index. The largest configuration that fits 64 KiB is `n_buckets = 1024`.
 - **Mount replay does not yield.** The recovery path is still on the blocking flash trait, so replaying 8,192 records is one uninterruptible span of ~4.6 s.
 - **Sequential keys defeat the fingerprint.** Keys like `sensor_000123` drive the index collision rate to ~5.7× its theoretical bound; well-mixed keys stay below it.
@@ -48,7 +49,7 @@ These are measured, not hypothetical. [`docs/specification.md`](docs/specificati
 
 ```toml
 [dependencies]
-slate-kv = "0.5"
+slate-kv = "0.6"
 ```
 
 ```rust,ignore

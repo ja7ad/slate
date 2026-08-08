@@ -60,14 +60,30 @@ fn main() {
     println!("readable before close : {before_readable}/{KEYS}");
     println!("readable after remount: {after_readable}/{KEYS}");
     println!();
-    println!("BEFORE  hot_head={} cold_head={} seg_end={} segments={} sealed={} free={}",
-        st_before.hot_head, st_before.cold_head, st_before.seg_end,
-        st_before.segments, st_before.segments_sealed, st_before.segments_free);
-    println!("        ckpt_seg_seq={} cur_seg_seq={} ckpt_bytes={}",
-        st_before.ckpt_seg_seq, st_before.cur_seg_seq, st_before.ckpt_bytes);
-    println!("AFTER   hot_head={} cold_head={} seg_end={} segments={} sealed={} free={}",
-        st_after.hot_head, st_after.cold_head, st_after.seg_end,
-        st_after.segments, st_after.segments_sealed, st_after.segments_free);
-    println!("        ckpt_seg_seq={} cur_seg_seq={}",
-        st_after.ckpt_seg_seq, st_after.cur_seg_seq);
+    println!(
+        "BEFORE  hot_head={} cold_head={} seg_end={} segments={} sealed={} free={}",
+        st_before.hot_head,
+        st_before.cold_head,
+        st_before.seg_end,
+        st_before.segments,
+        st_before.segments_sealed,
+        st_before.segments_free
+    );
+    println!(
+        "        ckpt_seg_seq={} cur_seg_seq={} ckpt_bytes={}",
+        st_before.ckpt_seg_seq, st_before.cur_seg_seq, st_before.ckpt_bytes
+    );
+    println!(
+        "AFTER   hot_head={} cold_head={} seg_end={} segments={} sealed={} free={}",
+        st_after.hot_head,
+        st_after.cold_head,
+        st_after.seg_end,
+        st_after.segments,
+        st_after.segments_sealed,
+        st_after.segments_free
+    );
+    println!(
+        "        ckpt_seg_seq={} cur_seg_seq={}",
+        st_after.ckpt_seg_seq, st_after.cur_seg_seq
+    );
 }

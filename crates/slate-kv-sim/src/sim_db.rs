@@ -286,7 +286,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
-            ..Default::default()
+                ..Default::default()
             },
         );
         let log_cold = Log::new(
@@ -295,7 +295,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
-            ..Default::default()
+                ..Default::default()
             },
         );
 

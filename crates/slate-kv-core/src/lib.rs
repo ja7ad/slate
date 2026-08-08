@@ -8,7 +8,6 @@
 #[cfg(feature = "dbgtrace")]
 extern crate std;
 
-
 pub mod chain;
 pub mod checkpoint;
 pub mod config;

@@ -262,10 +262,7 @@ impl SegTable {
     /// the reclaim watermark keeps its meaning.
     ///
     /// Returns the number of segments found to be in use.
-    pub async fn rebuild_from_flash<F: slate_kv_hal::AsyncFlash>(
-        &mut self,
-        flash: &mut F,
-    ) -> u32 {
+    pub async fn rebuild_from_flash<F: slate_kv_hal::AsyncFlash>(&mut self, flash: &mut F) -> u32 {
         let mut max_seq = 0u64;
         let mut newest: Option<u32> = None;
         let mut in_use = 0u32;

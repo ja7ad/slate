@@ -284,21 +284,21 @@ fn space_reuse_after_reclaim() {
     assert_eq!(db.get(b"key00000").unwrap().as_deref(), Some(&val[..]));
 }
 
-/// The long multi-cycle wrap tests live in `slate-kv-sim`, not here.
-///
-/// `wrap_survives_many_capacity_cycles` and its companions drive hundreds of
-/// thousands of commits. Through `FileFlash` each of those commits pays a
-/// durability barrier — ~8 ms on macOS, where `Durability::Full` and
-/// `OsCache` are indistinguishable because Rust's `sync_data()` maps onto the
-/// same `F_FULLFSYNC`, and far worse on a Raspberry Pi's SD card, where one
-/// such run held a core for over 24 minutes without finishing. What those
-/// tests assert — segment allocation, reclaim, reuse, index correctness — does
-/// not involve the filesystem at all, so they run against the in-memory
-/// `SimFlash` in `slate-kv-sim/tests/log_wrap.rs` and complete in well under a
-/// second.
-///
-/// What stays here is the part that genuinely needs a real file: that a
-/// wrapped log survives being closed and reopened from bytes on disk.
+// The long multi-cycle wrap tests live in `slate-kv-sim`, not here.
+//
+// `wrap_survives_many_capacity_cycles` and its companions drive hundreds of
+// thousands of commits. Through `FileFlash` each of those commits pays a
+// durability barrier — ~8 ms on macOS, where `Durability::Full` and
+// `OsCache` are indistinguishable because Rust's `sync_data()` maps onto the
+// same `F_FULLFSYNC`, and far worse on a Raspberry Pi's SD card, where one
+// such run held a core for over 24 minutes without finishing. What those
+// tests assert — segment allocation, reclaim, reuse, index correctness — does
+// not involve the filesystem at all, so they run against the in-memory
+// `SimFlash` in `slate-kv-sim/tests/log_wrap.rs` and complete in well under a
+// second.
+//
+// What stays here is the part that genuinely needs a real file: that a
+// wrapped log survives being closed and reopened from bytes on disk.
 
 /// Data written before a wrap must survive a remount.
 ///

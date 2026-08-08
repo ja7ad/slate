@@ -245,7 +245,7 @@ where
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: data_base / BLOCK as u32,
-            ..Default::default()
+                ..Default::default()
             },
         ),
         log_cold: Log::new(
@@ -254,7 +254,7 @@ where
                 seg_seq: 2,
                 write_offset: data_base,
                 block_idx: data_base / BLOCK as u32,
-            ..Default::default()
+                ..Default::default()
             },
         ),
         index: Index::new(slots, N_BUCKETS),

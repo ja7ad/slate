@@ -27,7 +27,7 @@ fn test_crash_monte_carlo() {
                 seg_seq: 1,
                 write_offset: 0,
                 block_idx: 0,
-            ..Default::default()
+                ..Default::default()
             },
         );
 
