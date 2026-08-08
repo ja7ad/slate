@@ -60,6 +60,28 @@ multi-process access (out of scope by construction, see
 [Section 1.3](#13-system-model)), or wear-levelling policy beyond the segment
 reclamation described in [Section 3.8](#38-garbage-collection).
 
+**Host hardware.** The specification is written against a device class, not a
+part number. A conforming host provides raw NOR-style flash meeting
+[Section 2.1](#21-requirements-on-the-flash-driver) and enough RAM for the
+working set of [Section 4.4](#44-ram-working-set). Two requirements do the work
+of excluding hardware, and both are measured rather than asserted:
+
+- a program granularity of at least `CM_LEN` = 83 bytes, which admits external
+  SPI/QSPI NOR (256 B pages) and excludes word-programmed internal flash unless
+  a page-buffering driver shim is interposed;
+- 83,092 B resident for the shipped configuration
+  ([Section 4.4](#44-ram-working-set)). Tuning alone does not move this far:
+  `n_keys` is clamped to a floor of 2,048 buckets, so the smallest legal index
+  still costs 32,768 B and its checkpoint buffer 32,900 B, giving a
+  configuration floor of about 74.8 KB. Reaching a materially smaller footprint
+  requires changing *format* constants (`MAX_KEY_LEN`, `MAX_VAL_LEN`,
+  `MAX_SEGS`, `MAX_INDEX_SLOTS`), not options. Either way AVR-class parts are
+  excluded by two orders of magnitude — an ATmega328P has 2 KB of SRAM, and
+  EEPROM rather than NOR.
+
+The engine is built and exercised on nine ESP32 chips across three
+architectures and on the RP2040.
+
 ### 1.2 Normative language
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT** and **MAY** are
@@ -157,6 +179,26 @@ A conforming `Flash` or `AsyncFlash` implementation:
 
 - **MUST** report a `page_size()` that is the true program granularity, a
   `block_size()` that is an integer multiple of it, and a `capacity()` in bytes.
+- **MUST** report a `page_size()` in the closed range
+  $[\texttt{CM\_LEN}, \texttt{MAX\_PAGE\_SIZE}] = [83, 512]$ bytes. The lower
+  bound is normative and is the single hardest portability constraint in this
+  specification: a commit marker is written by one `program` call
+  ([Section 2.6](#26-commit-marker)), so a device whose program granularity is
+  below `CM_LEN` cannot hold a marker in one page and the volume can never be
+  replayed. This excludes every part that programs in words — STM32 internal
+  flash programs 4 to 32 bytes per operation — from hosting the engine
+  *directly*; such a device requires a driver-side shim that buffers a whole
+  page in RAM and flushes it as a word sequence, so that the `Flash`
+  implementation the engine sees still reports a page of at least 83 bytes.
+  `Db::open` and `Slate::mount` reject an out-of-range `page_size` before
+  touching the volume.
+- **MUST** report a `block_size()` no larger than the largest erase granularity
+  the geometry arithmetic of [Section 4.3](#43-derived-sizes) accommodates.
+  Every layout offset is computed from the *runtime* block size, so external
+  SPI/QSPI NOR (4 KiB sectors), 256 B sub-sector parts, and 64 KiB
+  large-sector parts are all conforming; nothing in the format fixes the erase
+  size at 4 KiB. See [Section 6.16](#616-flash-geometry-sweep-host) for the
+  measured range.
 - **MUST** reject (or fail) a `program` whose target page has been programmed
   since its last `erase`. The engine relies on this to detect a torn tail; a
   driver that silently permits re-programming converts a detectable tear into
@@ -218,6 +260,13 @@ The log region is divided into fixed-size segments. A segment is 12 erase
 blocks: 8 data blocks and 4 parity blocks, giving RS(12,8).
 
 $$\texttt{SEG\_BYTES} = (\texttt{RS\_K} + \texttt{RS\_M}) \cdot B_{blk} = 12 \cdot 4096 = 49{,}152 \text{ B}$$
+
+The segment is *twelve blocks*; the byte figure follows from the block size of
+the device. $B_{blk} = 4096$ throughout this section because that is the
+shipped SPI NOR geometry, not because the format requires it — a 256 B
+sub-sector part gives $\texttt{SEG\_BYTES} = 3{,}072$ and a 64 KiB part gives
+$786{,}432$, and both are conforming. What the format does fix is the block
+*count* and its 8:4 split.
 
 The number of whole segments in a region, capped at `MAX_SEGMENTS = 128`:
 
@@ -333,7 +382,16 @@ logical size, and two copies are written, the marker cost per commit is
 
 $$M = 2 \cdot \left\lceil \frac{\texttt{CM\_LEN}}{P} \right\rceil \cdot P = 2P \text{ bytes for } P \ge 83$$
 
-which is 512 B at $P = 256$. The measured marker bytes per commit in
+which is 512 B at $P = 256$. The condition $P \ge \texttt{CM\_LEN}$ is not a
+simplifying assumption; it is the driver requirement of
+[Section 2.1](#21-requirements-on-the-flash-driver). A marker **MUST** be
+written by a single `program` call, and an implementation **MUST NOT** write a
+short prefix when the payload exceeds the page: doing so produces a marker that
+authenticates nothing, while `program` returns success. The failure is silent
+until the next power cycle, at which point every record the marker acknowledged
+becomes unreplayable. `Log::program_page` returns `Error::FormatError` rather
+than truncating, and `Db::open` rejects the geometry up front so the condition
+is unreachable from a conforming configuration. The measured marker bytes per commit in
 `wa_buckets.csv` range from 486 to 509 B across the sweep, the shortfall being
 the trailing partial batch that is never flushed. This fixed cost, divided by
 the batch size, is the dominant term in write amplification at small batches
@@ -547,7 +605,7 @@ recovered chain is bound to the checkpoint it came from:
 
 $$\chi_0^{(e)} = H\bigl(\texttt{"slate/epoch"} \parallel \mathrm{le64}(e) \parallel D_{ckpt}(e)\bigr), \qquad \chi \leftarrow H(\chi \parallel r)$$
 
-with $H = $ SHA-256 and $r$ the framed record bytes. The fold is $O(1)$ per
+with $H = \text{SHA-256}$ and $r$ the framed record bytes. The fold is $O(1)$ per
 record.
 
 A seal is triggered automatically after `THETA` $= 16{,}384$ records in an
@@ -1229,6 +1287,8 @@ pub struct Options {
     pub n_keys: usize,
     pub profile: Profile,          // Esp32 | Pi
     pub durability: Durability,    // Full | OsCache
+    pub page_size: usize,          // program granularity; MUST be in 83..=512
+    pub block_size: usize,         // erase granularity; MUST be a multiple of page_size
 }
 
 impl Default for Options {
@@ -1241,12 +1301,23 @@ impl Default for Options {
             n_keys: 8192,
             profile: Profile::Pi,
             durability: Durability::Full,
+            page_size: 256,
+            block_size: 4096,
         }
     }
 }
 
 pub enum KeySource { Bytes(/* [u8; 32] */), File(/* PathBuf */), Env(/* String */) }
 ```
+
+`page_size` and `block_size` describe the device, and `block_size` is a
+*layout* parameter: it feeds `data_base_offset` ([Section 4.3](#43-derived-sizes)),
+so a volume created under one value cannot be reopened under another — the log
+base moves and the reserved checkpoint region no longer lines up. The defaults
+are the SPI NOR geometry every existing volume was created with, so a caller
+that does not set them is unaffected. `Db::open` validates both before touching
+the volume, rejecting a `page_size` outside $[83, 512]$ and a `block_size` that
+is not a non-zero multiple of it.
 
 ```rust
 impl Db {
@@ -1419,6 +1490,29 @@ still carry the old ones and will not run as written.
 | Firmware build             | ok, 4 binaries                                                      |
 | `cargo test`               | 63 passed, 0 failed, 1 ignored                                      |
 
+The table above is the provenance of Sections 6.3 through 6.15 and is left as
+recorded: those measurements were taken at that revision and are not restated
+here. Sections [6.16](#616-flash-geometry-sweep-host) and
+[6.17](#617-multi-mcu-port-build-and-emulated-device) were measured later,
+against the multi-MCU port, and have their own provenance:
+
+| Item                       | Value                                                                                              |
+|----------------------------|-----------------------------------------------------------------------------------------------------|
+| Workspace version          | 0.6.1                                                                                              |
+| Format version             | `FORMAT_VERSION` 2 (unchanged from 0.6.0; volumes mount without migration)                         |
+| Host                       | macOS, arm64, 12 cores, 24 GiB                                                                     |
+| Embedded targets           | `riscv32imc`, `riscv32imac`, `xtensa-esp32{,s2,s3}-none-elf`, `thumbv6m-none-eabi`                  |
+| Xtensa toolchain           | `espup` fork; needs `-Z build-std=core,alloc` (no precompiled `core` for the Xtensa targets)        |
+| Emulated device            | Wokwi, six ESP32 boards, driven from a Raspberry Pi runner                                         |
+| `cargo test`               | 43 suites, 0 failed, 0 ignored                                                                     |
+| `cargo clippy -D warnings` | clean, workspace and both firmware trees                                                           |
+
+A caveat that applies to every simulation-derived figure in this document:
+until the fix recorded in [Section 7.5](#75-standing-gaps) gap (f), the
+`sim_db` harness under-recovered on remount past one segment. Results in
+Sections 6.3 through 6.14 that cross a segment boundary should be treated as
+unverified until re-run against the corrected harness.
+
 Source: `docs/data/provenance.json`,
 `docs/data/testsuite.json`.
 
@@ -1467,6 +1561,9 @@ suites `kv_roundtrip` 5, `epoch_lifecycle` 4, `esp32_defects` 4 (+1 ignored),
 | `async_blocking_cost.csv`                             | `cargo run -q --release -p slate-kv-sim --example slate_async_blocking_cost`                                                                                           | host                                |
 | `async_facade.json`                                   | source reads, `grep`, `cargo tree`, `llvm-nm`, probe-crate compile matrix                                                                                              | static analysis                     |
 | `device_c3.csv`, `device_c3_analysis.json`            | ESP32-C3 serial log, `embassy_demo` firmware, 9 checkpoint reports                                                                                                     | **device**                          |
+| `geometry_probe.csv`       | 44 (block, page) geometry trials through the real engine: mount, commit, remount, compact          | host                               | [6.16](#616-flash-geometry-sweep-host), [7.5](#75-standing-gaps)                                        |
+| `mcu_matrix.csv`           | 21-chip catalogue from vendored crate metadata: arch, target triple, SRAM, flash geometry, verdict | static analysis                    | [1.1](#11-scope), [6.17](#617-multi-mcu-port-build-and-emulated-device)                                 |
+| `wokwi_matrix.csv`         | Per-board build and emulated-device results with the evidence line for each                        | build + emulated device            | [6.17](#617-multi-mcu-port-build-and-emulated-device)                                                   |
 | `user_bytes_bug.json`                                 | ratio check plus post-fix regeneration of `wa_buckets.csv`                                                                                                             | host + simulated                    |
 
 ### 6.3 Crash injection (simulated)
@@ -2382,6 +2479,90 @@ deviation from this specification; see [Section 7.5](#75-standing-gaps).
 
 ![Fault tolerance](proposal/figures/fig1_fault_tolerance.png)
 
+### 6.16 Flash geometry sweep (host)
+
+**Platform:** host, real engine driven through `sim_db::Db` over `SimFlash` at
+synthetic geometries. Each trial opens a volume, writes and commits records,
+reads them back, remounts, re-reads, and compacts; the stage at which it first
+fails is recorded.
+**Data:** `docs/data/geometry_probe.csv` (44 rows).
+**Command:** `cargo run -p slate-kv-sim --bin geometry_probe --release`.
+
+This sweep exists to settle, by measurement, which of the two geometry
+dimensions actually constrains the port. The answer is not the one the format
+constants suggest.
+
+**Erase-block size does not constrain the format.** Every block size from 256 B
+to 128 KiB completes the full sequence at $P = 256$:
+
+$$B_{blk} \in \{256,\ 512,\ 1024,\ 2048,\ 4096,\ 8192,\ 16{,}384,\ 65{,}536,\ 131{,}072\}$$
+
+The `SEG_DATA_BYTES` constant is defined as a multiple of 4096 and
+[Section 3.8](#38-garbage-collection) erases a block count derived from the
+device, so the two agree only at $B_{blk} = 4096$ — but the disagreement is not
+reachable during normal operation. It surfaces only in compaction at the two
+largest geometries: $B_{blk} \in \{65{,}536,\ 131{,}072\}$ with $P = 512$ fail
+at the `compact` stage with `Core(Io)`. Both are recorded as a standing gap in
+[Section 7.5](#75-standing-gaps) rather than as a format restriction.
+
+**Program-page size is the real constraint.** Every trial at
+$P \in \{1, 4, 8\}$ is rejected at `open` — 27 of the 44 rows — by the
+validation of [Section 2.1](#21-requirements-on-the-flash-driver). These are
+precisely the granularities of word-programmed internal flash. Before that
+validation existed the same geometries opened successfully and silently
+truncated the commit marker ([Section 2.6](#26-commit-marker)); the rejection
+is the fix, not a new limitation.
+
+A methodological caveat that invalidated the first run of this sweep is
+recorded in [Section 7.5](#75-standing-gaps): the `sim_db` harness used flat
+recovery rather than the segment-aware span replay of
+[Section 3.7](#37-tail-replay), which capped remount recovery at one segment's
+worth of data and produced geometry results that were measuring the harness.
+The engine itself was correct throughout. The harness now uses the same replay
+path as `slate_kv::Db`.
+
+### 6.17 Multi-MCU port (build and emulated device)
+
+**Platform:** cross-builds on the host for every supported chip; emulated
+hardware via the Wokwi simulator for the boards it models, driven from a
+Raspberry Pi runner.
+**Data:** `docs/data/wokwi_matrix.csv`, `docs/data/mcu_matrix.csv`.
+**Command:** `targets/esp32/scripts/build_matrix.sh`, then
+`targets/esp32/scripts/wokwi_matrix.sh`.
+
+All nine ESP32 chips — the intersection of `esp-hal` and `esp-storage` support,
+since the engine needs the flash backend and not only the HAL — build the
+`kv_demo` firmware, across three architectures and five target triples. The
+RP2040 builds for `thumbv6m-none-eabi`.
+
+| Chip | Arch | Build | Emulated device |
+|---|---|---|---|
+| esp32-c3, c6, h2 | RISC-V | pass | **pass** |
+| esp32-s2, s3 | Xtensa | pass | **pass** |
+| esp32 | Xtensa | pass | fail — board image, see below |
+| esp32-c2, c5, c61 | RISC-V | pass | no board modelled |
+| RP2040 | ARM Cortex-M0+ | pass | not modelled here |
+
+Each passing board runs an identical sequence: `put` and `commit`
+acknowledging sequence 1, a tombstone committed from the cold log acknowledging
+2, a `get` on the deleted key returning not-found, a re-put and epoch seal
+acknowledging 4, all seven health invariants passing, and a measured write
+amplification of 202.84 at the demo's single-record batches.
+
+The classic ESP32 failure is a property of the emulated board image, not of the
+engine or the port. `esp-storage` derives flash capacity at runtime from the
+flash image header and maps an unrecognised size field to zero; its own bounds
+check then rejects every write at any offset, and there is no public override.
+The firmware reports this at mount rather than surfacing it as an I/O error at
+the first commit.
+
+That diagnosis produced a portability requirement worth stating generally:
+**flash capacity is a property of the board, not of the chip.** A firmware that
+hardcodes a region base and length is correct only for the module it was sized
+for. The ESP32 port now derives the region from the detected capacity, trimmed
+to a whole number of segments, and refuses to mount when the region would not
+fit.
+
 ---
 
 ## 7. Known deviations from this specification
@@ -2501,10 +2682,6 @@ The study reported passing all its assertions. That report was not evidence.
 
 ### 7.3 Defect 3: unimplemented claims in the async design document
 
-**Status:** the code is as measured; the design document (`docs/design/018`)
-asserts machinery that does not exist. **Data:** `async_facade.json`,
-`async_future_size.csv`, `async_yield.csv`.
-
 Constants the document tabulates as enforcement mechanisms:
 
 | Claimed                                                         | Reality at `970324f`                                                                                                                                                                                                                                              |
@@ -2580,27 +2757,34 @@ on remount.
 
 ### 7.5 Standing gaps
 
-Beyond the four defects, five gaps bound what this specification's requirements
-actually deliver at `970324f`.
+Beyond the four defects, these gaps bound what this specification's
+requirements actually deliver at `970324f`.
 
-**(a) Reclaimed space is not reusable — the most consequential gap.** A device
-halts with `FlashFull` while 29 of 31 segments are free and erased
-([Section 6.15](#615-device-run-esp32-c3)). GC works; the hot log head simply
-cannot wrap into the freed space. It advanced to 512 B short of the region end
-and stopped. Two format-level causes, both pre-existing:
+**(a) Reclaimed space is not reusable — CLOSED in 0.6.0.** As measured at
+`970324f`, a device halted with `FlashFull` while 29 of 31 segments were free
+and erased ([Section 6.15](#615-device-run-esp32-c3)): GC worked, but the hot
+log head could not wrap into the freed space, advancing to 512 B short of the
+region end and stopping. The two causes were that records straddled segment
+boundaries ([Section 2.4](#24-record-encoding)), and that recovery replayed
+forward to the first erased page ([Section 3.7](#37-tail-replay)), which would
+leave a wrapped tail unreplayable.
 
-1. records straddle segment boundaries, because the writer runs the head straight
-   through parity blocks and segment boundaries
-   ([Section 2.4](#24-record-encoding));
-2. recovery replays forward from the checkpoint head to the first erased page
-   ([Section 3.7](#37-tail-replay)), so a wrapped head would make the tail
-   unreplayable.
+Version 0.6.0 closed this with a segment-aware circular log, at the cost of a
+format break (`FORMAT_VERSION` 1 → 2, no in-place migration). Segment headers
+are now written — `segment::write_header` is called on every head roll — so the
+`seg_seq` ordering scan of [Section 2.9](#29-segment-header) has real data to
+sort, and replay walks allocation-ordered spans rather than one flat forward
+scan. The property is asserted by `wrapped_log_survives_remount`,
+`wrap_survives_many_capacity_cycles` and
+`wrapping_does_not_thrash_write_amplification`; all three pass, and the suite
+no longer carries an ignored test.
 
-The ordering mechanism a circular log needs already exists — a segment-header
-scan sorted by `seg_seq`, `recover::scan_segment_headers` — but **nothing ever
-writes those headers** ([Section 2.9](#29-segment-header)). Closing this gap is a
-format change requiring reformat. The test that asserts the property is the
-suite's one ignored test.
+Two consequences of that change are load-bearing for anyone reading the older
+text: the claim that "nothing ever writes those headers" no longer holds, and
+the flat `recover()` entry point is retained only for volumes with no segment
+headers. A harness that calls it on a segmented volume will stop at the first
+erased parity block and silently under-recover — which is exactly the defect
+described in gap (f).
 
 **(b) The RAM budget is exceeded.** 83,092 B resident and 87,764 B at the mount
 peak, against a documented 64 KiB — over by 26.8% and 33.9%
@@ -2628,6 +2812,33 @@ per record on the device workload, is attributed to no metrics bucket, so
 reported WA understates the padding-inclusive figure by 10.8%
 ([Section 6.15](#615-device-run-esp32-c3)). A lifetime calculation must use the
 padding-inclusive number.
+
+**(f) Simulation results spanning more than one segment were measuring the
+harness — FIXED.** The `sim_db` harness called the flat `recover()` and never
+rebuilt segment state from flash, while `slate_kv::Db` called the segment-aware
+`recover_spans()`. Because the log is confined to each segment's 8 data blocks,
+the 4 parity blocks above them read as erased, and a flat forward scan stops
+there — capping recovery at exactly `SEG_DATA_BYTES`. Measured: 16 of 48
+records surviving a remount at $P = 512$, and 32 of 96 at $P = 256$, the
+ceiling tracking $\texttt{SEG\_DATA\_BYTES} / (4P)$ at every page size. The
+engine was correct throughout — the same workload through `slate_kv::Db`
+recovered 96 of 96 — but any harness-derived result crossing a segment boundary
+was invalid. The harness now performs the same `rebuild_from_flash` and span
+construction as the real engine. Study numbers in this document that predate
+the fix and span more than one segment should be treated as unverified until
+re-run.
+
+**(g) Compaction fails at the two largest erase geometries.**
+`SEG_DATA_BYTES` is defined as a multiple of 4096 while
+[Section 3.8](#38-garbage-collection) erases a block count taken from the
+device, so the two disagree whenever $B_{blk} \ne 4096$. The disagreement is
+unreachable in normal operation — open, commit, read, remount and re-read all
+succeed at every block size from 256 B to 128 KiB — but compaction fails with
+`Core(Io)` at $B_{blk} \in \{65{,}536,\ 131{,}072\}$ with $P = 512$
+([Section 6.16](#616-flash-geometry-sweep-host)). No shipped configuration is
+affected; both the ESP32 family and the RP2040 use 4 KiB sectors. Closing it
+means deriving the segment stride from the runtime block size in the erase
+path, which is a format-visible change and is therefore deferred.
 
 Two further limitations bound the *evidence*, not the engine.
 
@@ -2869,7 +3080,7 @@ claim ([Section 6.8](#68-host-flash-barrier-calibration)).
 
 ## 9. Appendix A: data file inventory
 
-All paths relative to `docs/data/`. Twenty-seven files.
+All paths relative to `docs/data/`. Thirty files.
 
 | File                       | Contents                                                                                           | Platform                           | Cited in                                                                                                |
 |----------------------------|----------------------------------------------------------------------------------------------------|------------------------------------|---------------------------------------------------------------------------------------------------------|
