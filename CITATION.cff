@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: "Rajabzadeh"
+    given-names: "Javad"
+    orcid: "https://orcid.org/0009-0006-3487-5229"
+title: "slate"
+version: "v0.6.1"
+date-released: 2026-08-08
+repository-code: "https://github.com/ja7ad/slate"
