@@ -24,6 +24,7 @@ fn test_reed_solomon_database_recovery() {
             seg_seq: 1,
             write_offset: 0,
             block_idx: 0,
+            ..Default::default()
         },
     );
 

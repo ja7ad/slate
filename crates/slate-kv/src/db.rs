@@ -1,6 +1,7 @@
 use slate_kv_core::config::{SchedCfg, OP_DEL, OP_PUT};
 use slate_kv_core::epoch::{EngineState, MountError, SecurityMode};
 use slate_kv_core::gc::SegTable;
+use slate_kv_core::gc::SegState;
 use slate_kv_core::index::Index;
 use slate_kv_core::log::{HeadState, Log};
 use slate_kv_core::metrics::Metrics;
@@ -473,6 +474,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
+            ..Default::default()
             },
         );
         let log_cold = Log::new(
@@ -481,6 +483,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
+            ..Default::default()
             },
         );
 
@@ -531,6 +534,77 @@ impl Db {
             );
         }
 
+        // Reconstruct segment state from the on-flash headers before anything
+        // else touches the table. A freshly built table calls every segment
+        // `Free`, so on a volume that already holds data the allocator's first
+        // head roll would hand out a segment full of live records and erase it.
+        let segments_in_use =
+            slate_kv_core::task::block_on(slate.segs.rebuild_from_flash(&mut slate.flash));
+
+        // Replay in allocation order, not address order. Once the head wraps,
+        // the segment holding the newest records can sit at a lower address
+        // than the one holding the oldest; replaying by address would rebuild
+        // the index from superseded records and silently roll the database
+        // back. The spans below start at the segment that carries the
+        // checkpoint head and follow `seg_seq` from there.
+        let mut spans: Vec<(u32, u32)> = Vec::new();
+        if segments_in_use > 0 {
+            let page = slate_kv_hal::Flash::page_size(&slate.flash.0) as u32;
+
+            // Anchor replay to the checkpoint's offset ONLY if the segment it
+            // points into is still live. A checkpoint records `write_offset` at
+            // the moment it was taken; reclaim can erase that segment
+            // afterwards and hand it back to the allocator, at which point the
+            // recorded offset addresses erased flash — or worse, records the
+            // index no longer refers to. Replaying from there recovered nothing
+            // and then walked *backwards* through older segments, losing every
+            // key. Fall back to the oldest live segment when that happens: it
+            // costs a longer scan, never correctness.
+            // Replay covers the TAIL only: records written after the checkpoint
+            // was taken. The checkpointed index already accounts for everything
+            // at or below `ckpt_seg_seq`, and those older segments hold
+            // superseded versions of the same keys — replaying them overwrites
+            // current index entries with stale offsets. That is not a lost-tail
+            // bug but an actively wrong index: the probe showed all 16 keys
+            // restored correctly from the checkpoint, then destroyed by replay.
+            let anchor = slate
+                .segs
+                .seg_of(replay_from)
+                .filter(|&id| {
+                    let e = &slate.segs.entries[id as usize];
+                    e.state != slate_kv_core::gc::SegState::Free
+                        && replay_from < slate.segs.seg_data_end(id)
+                })
+                .map(|id| (id, replay_from))
+                .or_else(|| {
+                    // The checkpoint's own segment has been reclaimed since.
+                    // Resume at the oldest segment allocated AFTER it rather
+                    // than at the oldest live segment, which would drag in
+                    // pre-checkpoint history.
+                    slate
+                        .segs
+                        .next_in_seq_order(ckpt_seg_seq.saturating_sub(1))
+                        .map(|id| (id, slate.segs.seg_base(id) + page))
+                });
+
+            if let Some((start_seg, start_off)) = anchor {
+                // Remainder of the segment replay starts in.
+                spans.push((start_off, slate.segs.seg_data_end(start_seg)));
+                let mut seq = slate.segs.entries[start_seg as usize].seg_seq;
+                // Then every later-allocated segment, in allocation order.
+                while let Some(next) = slate.segs.next_in_seq_order(seq) {
+                    let base = slate.segs.seg_base(next);
+                    spans.push((base + page, slate.segs.seg_data_end(next)));
+                    seq = slate.segs.entries[next as usize].seg_seq;
+                }
+            }
+        }
+        if spans.is_empty() {
+            // No segment headers (a fresh volume, or one written by an older
+            // build): fall back to the flat forward scan.
+            spans.push((replay_from, opts.capacity));
+        }
+
         let mut index_upsert_error = false;
         let mut key_verify_calls: u64 = 0;
         let mut rng = slate_kv_core::index::XorShift64::new(42);
@@ -540,12 +614,13 @@ impl Db {
         // `replay_from`, so rescanning from the base of the log would both cost
         // O(log length) and fail to validate — those older batches' commit
         // markers belong to earlier epochs.
-        let rec_info = slate_kv_core::recover::recover(
+        let rec_info = slate_kv_core::recover::recover_spans(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
             slate.engine.epoch,
             replay_from,
+            &spans,
             &mut workspace,
             |flash, sealer, _seq, off, op, key| {
                 // Replay in seq order, deduplicating by the full key so repeated
@@ -571,9 +646,39 @@ impl Db {
 
         // Never let the head land below where the checkpoint said the log
         // already reached: an empty tail returns `head_pos == replay_from`, and
-        // anything lower would overwrite durable records.
-        slate.log_hot.head.write_offset = rec_info.head_pos.max(replay_from);
-        slate.log_cold.head.write_offset = slate.log_hot.head.write_offset;
+        // anything lower would overwrite durable records.        // Place the head where the log actually ends.
+        //
+        // `head_pos.max(replay_from)` was right for a linear log, where "later"
+        // and "higher address" mean the same thing. Once the log wraps they do
+        // not: the newest segment can sit at a LOWER address than the
+        // checkpoint's, so `max` picks the older position. Mount then left the
+        // head in the wrong segment entirely — the probe showed a head at
+        // 541,696 (segment 0) while the live records were at ~913,500 in
+        // segment 7 — and every `get` read the wrong region, returning None for
+        // keys that were present and correctly indexed.
+        //
+        // Trust replay's own end position when it walked anything; otherwise
+        // fall back to the checkpoint's recorded offset, and only then to the
+        // end of the newest allocated segment.
+        let head = if rec_info.scan_bytes > 0 {
+            rec_info.head_pos
+        } else if slate
+            .segs
+            .seg_of(replay_from)
+            .is_some_and(|id| slate.segs.entries[id as usize].state != SegState::Free)
+        {
+            replay_from
+        } else {
+            rec_info.head_pos
+        };
+        slate.log_hot.head.write_offset = head;
+        slate.log_cold.head.write_offset = head;
+        slate.log_hot.head.seg_seq = slate
+            .segs
+            .seg_of(head)
+            .map(|id| slate.segs.entries[id as usize].seg_seq)
+            .unwrap_or(ckpt_seg_seq);
+        slate.log_cold.head.seg_seq = slate.log_hot.head.seg_seq;
         // `mount` seeded next_seq from the checkpoint (= ckpt.seq). Never let the
         // tail replay regress the sequence counter below it — a crash immediately
         // after a checkpoint leaves committed_upto == 0 with a non-trivial

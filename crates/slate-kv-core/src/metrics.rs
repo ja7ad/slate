@@ -16,6 +16,15 @@ pub struct Metrics {
     pub marker_bytes: u64,
     /// Checkpoint pages programmed by epoch seals.
     pub ckpt_bytes: u64,
+    /// Page padding: bytes programmed inside data pages that carry no record.
+    ///
+    /// NOR programming is page-granular, so a batch of 592 B occupies three
+    /// 256 B pages and 176 B of the last page is filler. That filler consumes
+    /// endurance exactly like payload does, but it appeared in no bucket, so
+    /// reported write amplification understated the physical figure — by 9.8%
+    /// on the ESP32-C3 trace (2.7435 reported against 3.0409 actual). Reviewer
+    /// 2 asked for the accounting identity to close; this is the missing term.
+    pub padding_bytes: u64,
     pub erases: u64,
     /// Records visited by a compaction scan.
     pub gc_scanned: u64,
@@ -36,6 +45,9 @@ impl Metrics {
     }
     pub fn add_gc_bytes(&mut self, b: u64) {
         self.gc_bytes += b;
+    }
+    pub fn add_padding_bytes(&mut self, b: u64) {
+        self.padding_bytes += b;
     }
     pub fn add_parity_bytes(&mut self, b: u64) {
         self.parity_bytes += b;
@@ -70,7 +82,12 @@ impl Metrics {
 
     /// Total bytes programmed to flash, across every bucket.
     pub fn flash_bytes(&self) -> u64 {
-        self.user_bytes + self.gc_bytes + self.parity_bytes + self.marker_bytes + self.ckpt_bytes
+        self.user_bytes
+            + self.gc_bytes
+            + self.parity_bytes
+            + self.marker_bytes
+            + self.ckpt_bytes
+            + self.padding_bytes
     }
 
     /// Write amplification: bytes actually programmed per byte of user data.
@@ -98,6 +115,8 @@ impl Metrics {
     pub fn add_user_bytes(&mut self, _b: u64) {}
     #[inline(always)]
     pub fn add_gc_bytes(&mut self, _b: u64) {}
+    #[inline(always)]
+    pub fn add_padding_bytes(&mut self, _b: u64) {}
     #[inline(always)]
     pub fn add_parity_bytes(&mut self, _b: u64) {}
     #[inline(always)]

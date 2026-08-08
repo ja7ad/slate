@@ -58,6 +58,68 @@ impl SegmentHeader {
     }
 }
 
+/// Programs the header that opens a segment, and returns the first offset the
+/// log may append to.
+///
+/// The header occupies the segment's first page. Everything above it up to
+/// `SEG_DATA_BYTES` is log data; the parity blocks above that are written by
+/// [`encode_parity`] at seal time.
+///
+/// **This is what makes a circular log replayable.** Recovery cannot order a
+/// wrapped log by address — after a wrap the oldest live segment sits at a
+/// *higher* address than the newest. It orders by `seg_seq` instead, which only
+/// works if the ordering is durable on flash. `recover::scan_segment_headers`
+/// has always been written to do exactly this; nothing ever wrote the headers
+/// it reads, so the log was implicitly address-ordered and could only ever grow
+/// upward until it hit the end of the region.
+///
+/// The `sealed` byte is written as `0xFF` (open) and never rewritten. NOR
+/// programming cannot clear a byte in a page that has already been programmed
+/// without erasing the whole block, and the block holds live records. Seal
+/// state is derived from ordering instead: every segment except the one holding
+/// the largest `seg_seq` is sealed.
+pub async fn write_header<F: AsyncFlash>(
+    flash: &mut F,
+    seg_base: u32,
+    seg_seq: u64,
+    epoch: u64,
+    minseq: u64,
+    hdr_mac: [u8; 32],
+) -> Result<u32, Error> {
+    let page_size = flash.page_size();
+    let hdr = SegmentHeader {
+        magic: MAGIC_SEG,
+        format_version: crate::config::FORMAT_VERSION,
+        seg_seq,
+        epoch,
+        minseq,
+        sealed: 0xFF,
+        hdr_mac,
+    };
+
+    let mut hdr_bytes = [0u8; SegmentHeader::LEN];
+    hdr.encode(&mut hdr_bytes);
+
+    let mut page = [ERASED_BYTE; MAX_PAGE_SIZE];
+    page[..SegmentHeader::LEN].copy_from_slice(&hdr_bytes);
+    flash
+        .program(seg_base, &page[..page_size])
+        .await
+        .map_err(|_| Error::Io)?;
+
+    Ok(seg_base + page_size as u32)
+}
+
+/// Reads the header at `seg_base`, or `None` if the segment has never been
+/// opened (erased) or holds something that is not a valid header.
+pub async fn read_header<F: AsyncFlash>(flash: &mut F, seg_base: u32) -> Option<SegmentHeader> {
+    let mut buf = [0u8; SegmentHeader::LEN];
+    if flash.read(seg_base, &mut buf).await.is_err() {
+        return None;
+    }
+    SegmentHeader::decode(&buf).ok()
+}
+
 /// Represents a 12-block segment on flash.
 pub struct Segment {
     /// Start address of the segment.

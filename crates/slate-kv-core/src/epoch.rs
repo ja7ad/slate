@@ -120,6 +120,80 @@ pub struct CkptCost {
     pub erases: u64,
 }
 
+/// Writes a checkpoint at the CURRENT epoch, without advancing the epoch or
+/// the hardware monotonic counter.
+///
+/// Garbage collection needs a durable checkpoint to advance its reclaim
+/// watermark — a sealed segment is only eligible once a checkpoint records the
+/// index that supersedes it. It does not need a new epoch. Routing GC through
+/// `seal_epoch_async` made every reclaim burn one hardware counter increment,
+/// which on an eFuse-backed part is a few-thousand-increment lifetime budget
+/// spent on storage housekeeping. That is the mechanism behind the epoch 8 → 10
+/// jump visible in the ESP32-C3 trace: one seal from the workload, one from GC.
+///
+/// **This does not widen the rollback window.** Freshness is guaranteed at
+/// epoch granularity (Theorem 16), and this writes within the current epoch, so
+/// the exposure is the same Θ-record window the epoch already had. What it
+/// changes is only how fast the counter budget is consumed.
+#[allow(clippy::too_many_arguments)]
+pub async fn checkpoint_only_async<F: AsyncFlash>(
+    st: &mut EngineState,
+    flash: &mut F,
+    s: &mut impl Sealer,
+    seg_seq: u64,
+    write_offset: u32,
+    n_keys: u16,
+    ckpt_buf: &mut [u8],
+    index_len: usize,
+    page_buf: &mut [u8],
+) -> Result<CkptCost, Error> {
+    let e = st.epoch;
+    let slot = st.next_ckpt_slot();
+
+    let hdr = CheckpointHeader {
+        magic: crate::config::MAGIC_CKPT,
+        format_version: 1,
+        epoch: e,
+        seq: st.next_seq,
+        seg_seq,
+        write_offset,
+        n_keys,
+        ct_len: index_len as u32 + 16,
+        chi: st.chain.chi,
+        mc: e,
+    };
+
+    let total_len = CKPT_HDR_LEN + index_len + 16;
+    if ckpt_buf.len() < total_len {
+        return Err(Error::FormatError);
+    }
+
+    let mut hdr_bytes = [0u8; CKPT_HDR_LEN];
+    hdr.encode(&mut hdr_bytes);
+    ckpt_buf[..CKPT_HDR_LEN].copy_from_slice(&hdr_bytes);
+
+    let tag = s.seal_checkpoint(
+        e,
+        slot,
+        &hdr_bytes,
+        &mut ckpt_buf[CKPT_HDR_LEN..CKPT_HDR_LEN + index_len],
+    );
+    ckpt_buf[CKPT_HDR_LEN + index_len..total_len].copy_from_slice(&tag);
+
+    let (ckpt_bytes, ckpt_erases) =
+        program_checkpoint(flash, slot, &ckpt_buf[..total_len], page_buf).await?;
+
+    // `d_ckpt` is NOT updated and the chain is NOT re-anchored: both belong to
+    // the epoch boundary. Re-anchoring mid-epoch would invalidate every commit
+    // marker already written in this epoch, and replay would discard the tail.
+    st.active_ckpt_slot = slot;
+
+    Ok(CkptCost {
+        bytes: ckpt_bytes,
+        erases: ckpt_erases,
+    })
+}
+
 /// EPOCH SEAL — the write-ahead protocol.
 #[allow(clippy::too_many_arguments)]
 pub async fn seal_epoch_async<F: AsyncFlash, C: AsyncMonotonicCounter>(
@@ -301,8 +375,19 @@ async fn load_best_checkpoint_async<F: AsyncFlash>(
             .is_ok()
             {
                 *slots_verified += 1;
+                // Order by (epoch, seq), not epoch alone. Reclaim checkpoints
+                // (`checkpoint_only_async`) are written at the *current* epoch
+                // precisely so they do not consume a hardware counter
+                // increment, so two valid checkpoints can share an epoch. With
+                // an epoch-only test the older of the two wins whenever it
+                // happens to sit in the lower-numbered slot, and mount then
+                // replays from a stale head — silently discarding every record
+                // written since. `seq` advances monotonically with writes and
+                // breaks the tie correctly.
                 let is_better = match &best {
-                    Some((best_hdr, _, _, _)) => hdr.epoch > best_hdr.epoch,
+                    Some((best_hdr, _, _, _)) => {
+                        (hdr.epoch, hdr.seq) > (best_hdr.epoch, best_hdr.seq)
+                    }
                     None => true,
                 };
                 if is_better {

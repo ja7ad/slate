@@ -29,6 +29,7 @@ async = ["slate-kv-hal/async"]
 # Off by default so the bare-metal build pays nothing: enables the `metrics`
 # counters (commits, wakes, bytes programmed, erases) used by the energy model.
 metrics = []
+dbgtrace = []   # TEMPORARY: host-only allocator tracing; pulls in std
 
 [package.metadata.docs.rs]
 all-features = true

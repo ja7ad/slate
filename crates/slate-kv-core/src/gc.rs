@@ -61,6 +61,15 @@ pub fn segments_in(base: u32, capacity: u32) -> u32 {
 pub struct SegTable {
     pub entries: [SegEntry; MAX_SEGMENTS],
     pub num_segments: u32,
+    /// Records walked by the most recent compaction.
+    ///
+    /// Kept here rather than in `Metrics` because `Metrics` is behind an
+    /// off-by-default feature, and this feeds a correctness guard: when
+    /// compaction relocates nearly everything it reads, the live set no longer
+    /// fits and the engine must report `FlashFull` instead of copying forever.
+    pub last_gc_scanned: u32,
+    /// Records the most recent compaction found still live and had to relocate.
+    pub last_gc_relocated: u32,
     /// Next segment allocation number to hand out.
     ///
     /// `seg_seq` is an *allocation* number, not a segment index: victim
@@ -102,6 +111,8 @@ impl SegTable {
             num_segments: n as u32,
             next_seg_seq: 1,
             base_addr,
+            last_gc_scanned: 0,
+            last_gc_relocated: 0,
         }
     }
 
@@ -157,6 +168,26 @@ impl SegTable {
         self.entries[..self.num_segments as usize]
             .iter()
             .find(|s| s.state == SegState::Free)
+            .map(|s| s.id)
+    }
+
+    /// A free segment that no log head currently occupies.
+    ///
+    /// This is the allocator's supply for the circular log. [`Self::pick_free`]
+    /// alone is not sufficient: a head sitting in a segment that the table still
+    /// calls `Free` (which happens for the cold head before its first write)
+    /// would be handed out to the other log, and the two would then interleave
+    /// records in one segment that reclaim erases as a unit.
+    ///
+    /// Selection is by lowest id rather than lowest erase count. Wear levelling
+    /// comes from the reclaim cycle visiting every segment, not from allocation
+    /// order — the log sweeps the whole region before returning to any segment,
+    /// so erase counts stay within one of each other regardless of which free
+    /// segment is chosen first.
+    pub fn pick_free_excluding(&self, in_use: &[u32]) -> Option<u32> {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .find(|s| s.state == SegState::Free && !in_use.contains(&s.id))
             .map(|s| s.id)
     }
 
@@ -216,13 +247,105 @@ impl SegTable {
         self.next_seg_seq.saturating_sub(1)
     }
 
-    /// True if `need` bytes written at `off` stay inside `off`'s own segment.
+    /// Reconstructs segment state by reading the on-flash headers.
+    ///
+    /// **Mount must call this before the allocator runs.** A freshly
+    /// constructed table marks every segment `Free`, so on a volume that
+    /// already holds data the first head roll would hand out a segment full of
+    /// live records and erase it. The headers are the durable record of which
+    /// segments are in use and in what order they were allocated.
+    ///
+    /// The segment holding the largest `seg_seq` is the one the log was writing
+    /// when it stopped, so it is reopened as `OpenHot`; every other segment
+    /// carrying a header is `Sealed`. `next_seg_seq` resumes above the highest
+    /// number seen, so allocation numbers stay monotone across a remount and
+    /// the reclaim watermark keeps its meaning.
+    ///
+    /// Returns the number of segments found to be in use.
+    pub async fn rebuild_from_flash<F: slate_kv_hal::AsyncFlash>(
+        &mut self,
+        flash: &mut F,
+    ) -> u32 {
+        let mut max_seq = 0u64;
+        let mut newest: Option<u32> = None;
+        let mut in_use = 0u32;
+
+        for i in 0..self.num_segments {
+            let base = self.seg_base(i);
+            let e = &mut self.entries[i as usize];
+            match crate::segment::read_header(flash, base).await {
+                Some(hdr) => {
+                    e.state = SegState::Sealed;
+                    e.seg_seq = hdr.seg_seq;
+                    e.minseq = hdr.minseq;
+                    in_use += 1;
+                    if hdr.seg_seq >= max_seq {
+                        max_seq = hdr.seg_seq;
+                        newest = Some(i);
+                    }
+                }
+                None => e.reset_to_free(),
+            }
+            crate::task::yield_now().await;
+        }
+
+        if let Some(id) = newest {
+            self.entries[id as usize].state = SegState::OpenHot;
+        }
+        self.next_seg_seq = max_seq + 1;
+        in_use
+    }
+
+    /// The live segment with the lowest allocation number.
+    ///
+    /// This is where the log begins. Recovery falls back to it when the
+    /// checkpoint's recorded head has since been reclaimed — replaying from a
+    /// stale offset inside a freed segment reconstructs nothing and then walks
+    /// backwards through older segments, which loses the whole index.
+    pub fn oldest_live_segment(&self) -> Option<u32> {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .filter(|s| s.state != SegState::Free)
+            .min_by_key(|s| s.seg_seq)
+            .map(|s| s.id)
+    }
+
+    /// The segment that follows `after_seq` in allocation order, if any.
+    ///
+    /// Recovery walks the log in allocation order rather than address order.
+    /// Once the head can wrap, the two differ: the segment holding the newest
+    /// records may sit at a lower address than the one holding the oldest, so
+    /// an address-ordered replay reads the log backwards and reconstructs an
+    /// index from superseded records.
+    pub fn next_in_seq_order(&self, after_seq: u64) -> Option<u32> {
+        self.entries[..self.num_segments as usize]
+            .iter()
+            .filter(|s| s.state != SegState::Free && s.seg_seq > after_seq)
+            .min_by_key(|s| s.seg_seq)
+            .map(|s| s.id)
+    }
+
+    /// First offset past the writable area of segment `id`.
+    ///
+    /// The log may only use the 8 data blocks; the 4 parity blocks above them
+    /// belong to `segment::encode_parity` at seal time. Writing past this into
+    /// the parity blocks is what made RS(12,8) unencodable in practice.
+    #[inline]
+    pub fn seg_data_end(&self, id: u32) -> u32 {
+        self.seg_base(id) + crate::config::SEG_DATA_BYTES as u32
+    }
+
+    /// True if `need` bytes written at `off` stay inside the *data* area of
+    /// `off`'s own segment.
     ///
     /// A commit must not straddle a segment boundary: GC reclaims whole
-    /// segments, so a record spanning two could be left half-erased.
+    /// segments, so a record spanning two could be left half-erased — and the
+    /// compaction scan, which starts at a segment base and stops at the first
+    /// erased byte, cannot walk a segment whose first byte is mid-ciphertext.
+    /// That was the second of the two format-level causes of the wrap failure.
     pub fn fits_in_segment(&self, off: u32, need: u32) -> bool {
         match self.seg_of(off) {
-            Some(id) => off + need <= self.seg_base(id + 1),
+            Some(id) => off.saturating_add(need) <= self.seg_data_end(id),
             None => false,
         }
     }
@@ -333,17 +456,31 @@ pub async fn compact_one_async<
     // at the superblock/checkpoint slots for low ids.
     let seg_base = st.segs.seg_base(victim);
     let page_size = st.flash.page_size() as u32;
-    // Scan from the first byte of the segment. The segment model is not
-    // materialized on flash — nothing ever programs a `MAGIC_SEG` header (see
-    // recover.rs) — so skipping a header page here would skip a live record and
-    // silently drop it during reclaim.
-    let mut off = seg_base;
+
+    // Segments now carry an on-flash header in their first page, so records
+    // start one page in. Scanning from `seg_base` would decode the header's
+    // magic as a record and abort the walk at the first byte, leaving every
+    // live record in the segment unrelocated — and then erased.
+    let has_header = crate::segment::read_header(&mut st.flash, seg_base)
+        .await
+        .is_some();
+    let mut off = if has_header {
+        seg_base + page_size
+    } else {
+        seg_base
+    };
 
     let mut buf = [0u8; 1];
     let mut since_yield = 0u16;
     let mut scanned = 0u32;
+    let mut relocated = 0u32;
 
-    while off < seg_base + crate::config::SEG_BYTES as u32 {
+    // Stop at the end of the DATA area, not the end of the 12-block stride: the
+    // parity blocks above it hold RS symbols, not records, and decoding them as
+    // records would at best abort the scan and at worst relocate garbage.
+    let scan_end = seg_base + crate::config::SEG_DATA_BYTES as u32;
+
+    while off < scan_end {
         if since_yield >= crate::config::GC_YIELD_EVERY_RECORDS {
             crate::task::yield_now().await;
             since_yield = 0;
@@ -426,6 +563,7 @@ pub async fn compact_one_async<
                                     // amplification differ from 1.0.
                                     st.metrics.add_gc_bytes(total_len as u64);
                                     st.metrics.add_gc_relocated();
+                                    relocated += 1;
                                     if need_commit {
                                         st.commit_inner_async().await?;
                                     }
@@ -475,18 +613,23 @@ pub async fn compact_one_async<
 
     st.commit_inner_async().await?;
 
-    // Guard: the scan starts at `seg_base` and stops at the first erased byte,
-    // so a segment that is genuinely empty and one whose first page was written
-    // by the *other* log both yield `scanned == 0`. Erasing on that basis
-    // destroyed live records. Only reclaim when the first byte of the segment is
-    // erased (nothing was ever written here) or the scan actually walked
-    // records.
-    let mut first = [0u8; 1];
-    let first_is_erased =
-        st.flash.read(seg_base, &mut first).await.is_ok() && first[0] == crate::config::ERASED_BYTE;
-    if scanned == 0 && !first_is_erased {
-        // Not provably reclaimable: leave it sealed rather than risk data loss.
-        return Ok(());
+    // Guard against erasing a segment whose contents were never walked.
+    //
+    // The scan stops at the first erased byte, so before segments carried
+    // headers a genuinely empty segment and one whose first page belonged to
+    // the *other* log both yielded `scanned == 0` — and reclaiming on that
+    // basis destroyed live records. A valid header removes the ambiguity: it
+    // proves this segment is one this engine opened, that records begin exactly
+    // one page in, and therefore that the scan walked the whole of it. Absent a
+    // header, fall back to the old conservative test.
+    if !has_header {
+        let mut first = [0u8; 1];
+        let first_is_erased = st.flash.read(seg_base, &mut first).await.is_ok()
+            && first[0] == crate::config::ERASED_BYTE;
+        if scanned == 0 && !first_is_erased {
+            // Not provably reclaimable: leave it sealed rather than risk data loss.
+            return Ok(());
+        }
     }
 
     for b in 0..(crate::config::SEG_BLOCKS_DATA + crate::config::SEG_BLOCKS_PARITY) {
@@ -497,6 +640,12 @@ pub async fn compact_one_async<
         st.metrics.add_erase();
         crate::task::yield_now().await;
     }
+    // Publish this compaction's live ratio so `refill_free_segments_async` can
+    // tell productive reclaim from futile copying. Recorded after the erase, so
+    // it always reflects a completed pass.
+    st.segs.last_gc_scanned = scanned;
+    st.segs.last_gc_relocated = relocated;
+
     st.segs.entries[victim as usize].reset_to_free();
     st.metrics.add_gc_segment_freed();
     Ok(())

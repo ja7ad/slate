@@ -200,6 +200,46 @@ pub fn recover<F: Flash, S: Sealer>(
     epoch: u64,
     start_off: u32,
     workspace: &mut RecoverWorkspace,
+    apply: impl FnMut(&mut F, &mut S, u64, u32, u8, &[u8]),
+) -> Result<RecoverInfo, Error> {
+    // One flat span from the replay point to the end of the region: the
+    // pre-wrap behaviour, kept for callers that have no segment table.
+    let cap = flash.capacity();
+    recover_spans(
+        flash,
+        s,
+        chain,
+        epoch,
+        start_off,
+        &[(start_off, cap)],
+        workspace,
+        apply,
+    )
+}
+
+/// Tail replay across an explicit list of address spans, walked in the order
+/// given.
+///
+/// Once the log head can wrap, "forward in the log" stops being the same as
+/// "ascending address": the segment holding the newest records may sit at a
+/// lower address than the one holding the oldest. Replaying by address then
+/// reconstructs the index from superseded records and silently rolls the
+/// database back. The caller passes spans in `seg_seq` order — the durable
+/// allocation order recorded in the on-flash segment headers — so replay
+/// follows the log rather than the address space.
+///
+/// Each span is `(start, end)` and is walked until its end or its first erased
+/// page, whichever comes first; the scan then moves to the next span. Replay
+/// finishes at the end of the last span.
+#[allow(clippy::too_many_arguments)]
+pub fn recover_spans<F: Flash, S: Sealer>(
+    flash: &mut F,
+    s: &mut S,
+    chain: &mut Chain,
+    epoch: u64,
+    start_off: u32,
+    spans: &[(u32, u32)],
+    workspace: &mut RecoverWorkspace,
     mut apply: impl FnMut(&mut F, &mut S, u64, u32, u8, &[u8]),
 ) -> Result<RecoverInfo, Error> {
     let mut committed_upto = 0;
@@ -213,18 +253,54 @@ pub fn recover<F: Flash, S: Sealer>(
     // ever written), so the log is one flat append region [start_off, capacity).
     // `start_off` is the first byte above the checkpoint region (see
     // `config::data_base_offset`); scanning stops at the first erased page.
-    let mut off = start_off;
+    if spans.is_empty() {
+        return Ok(finish_truncate(
+            start_off,
+            committed_upto,
+            start_off,
+            records_applied,
+        ));
+    }
+
+    let mut span_idx = 0usize;
+    let mut off = spans[0].0;
+    let mut span_end = spans[0].1;
+
+    // Where the log actually ends, as distinct from where the span walk
+    // finishes. These differ: the walk runs to the end of the last span, but
+    // the append head belongs at the first erased byte of the newest span that
+    // holds data. Returning the span end instead would park the head past the
+    // end of the region and every later commit would report `FlashFull`.
+    let mut head_pos = off;
 
     {
         let mut buf = [0u8; 1];
 
         loop {
+            // Move to the next span when this one is exhausted. Spans are in
+            // allocation order, so this follows the log across a wrap rather
+            // than across the address space.
+            let mut exhausted = false;
+            while off >= span_end {
+                span_idx += 1;
+                if span_idx >= spans.len() {
+                    exhausted = true;
+                    break;
+                }
+                off = spans[span_idx].0;
+                span_end = spans[span_idx].1;
+            }
+            if exhausted {
+                break;
+            }
+
             if off >= flash.capacity() {
                 break;
             }
             if flash.read(off, &mut buf).is_err() {
                 break;
             }
+            head_pos = off;
 
             match buf[0] {
                 ERASED_BYTE => {
@@ -232,7 +308,16 @@ pub fn recover<F: Flash, S: Sealer>(
                     if rem != 0 {
                         off += page_size - rem;
                     } else {
-                        break;
+                        // An erased page at a page boundary ends this span's
+                        // data. The append head belongs HERE — at the first
+                        // erased byte of the newest span holding data — not at
+                        // the end of the span walk. Continue with the next
+                        // span: on a wrapped log the segment written after this
+                        // one lives elsewhere, and stopping here would truncate
+                        // the tail.
+                        head_pos = off;
+                        off = span_end;
+                        continue;
                     }
                 }
                 MAGIC_CM => {
@@ -389,7 +474,7 @@ pub fn recover<F: Flash, S: Sealer>(
     }
 
     Ok(finish_truncate(
-        off,
+        head_pos,
         committed_upto,
         start_off,
         records_applied,

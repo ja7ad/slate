@@ -16,7 +16,31 @@ pub const TAG_LEN: usize = 16;
 pub const REC_OVERHEAD: usize = REC_HDR_LEN + TAG_LEN;
 pub const SEG_BLOCKS_DATA: usize = 8;
 pub const SEG_BLOCKS_PARITY: usize = 4;
+/// Allocation stride of one segment: all 12 erase blocks, data plus parity.
+///
+/// This is the spacing between segment base addresses, NOT the space the log
+/// may write into. Use [`SEG_DATA_BYTES`] for that.
 pub const SEG_BYTES: usize = 49_152;
+
+/// Bytes of a segment the append log may actually use: the 8 data blocks only.
+///
+/// The remaining `SEG_BLOCKS_PARITY` blocks hold the RS(12,8) parity written by
+/// `segment::encode_parity` when the segment is sealed. The writer used to run
+/// the head straight through all twelve, which had two consequences: parity
+/// could never be encoded without overwriting live records (so it never was,
+/// and `encode_parity` had no callers at all), and records straddled the
+/// segment boundary — leaving a reclaimed segment's first byte mid-ciphertext,
+/// which the compaction scan cannot walk. Both are why reclaimed space could
+/// not be reused.
+pub const SEG_DATA_BYTES: usize = SEG_BLOCKS_DATA * 4096;
+
+/// On-flash format version stamped into every segment header.
+///
+/// Bumped when the segment header became mandatory and the log was confined to
+/// the data blocks. A volume written by an older build has no segment headers,
+/// so its log cannot be ordered by allocation number and must not be replayed
+/// by address; mount rejects it rather than mis-reconstructing the index.
+pub const FORMAT_VERSION: u8 = 2;
 pub const CM_LEN: usize = 83;
 pub const ERASED_BYTE: u8 = 0xFF;
 pub const MAX_KEY_LEN: usize = 256;

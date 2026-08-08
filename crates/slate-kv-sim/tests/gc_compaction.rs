@@ -85,6 +85,7 @@ fn create_slate<'a>(
             seg_seq: 1,
             write_offset: 0,
             block_idx: 0,
+            ..Default::default()
         },
     );
 
@@ -94,6 +95,7 @@ fn create_slate<'a>(
             seg_seq: 2,
             write_offset: 4096 * 12, // seg 1
             block_idx: 12,
+            ..Default::default()
         },
     );
 

@@ -59,6 +59,7 @@ pub trait Sealer {
 }
 
 /// Head state for the append log.
+#[derive(Default)]
 pub struct HeadState {
     /// Segment allocation number.
     pub seg_seq: u64,
@@ -66,6 +67,16 @@ pub struct HeadState {
     pub write_offset: u32,
     /// Open segment id.
     pub block_idx: u32,
+    /// Largest physical record this head has appended, in bytes.
+    ///
+    /// Sizes the reserve the allocator keeps before rolling to a new segment.
+    /// The alternative — assuming `MAX_KEY_LEN + MAX_VAL_LEN` — reserves for a
+    /// 1,324 B record that most workloads never write, leaving a third of every
+    /// segment erased and inflating the erase count per record by ~50%.
+    ///
+    /// A high-water mark rather than a mean: the reserve has to cover the
+    /// largest record that might arrive next, and it may only grow.
+    pub max_record_bytes: u32,
 }
 
 /// Buffer for batches.
@@ -120,6 +131,9 @@ impl<'a> BatchBuf<'a> {
 pub struct CommitBytes {
     /// Pages holding record data (framing + sealed payload).
     pub data_bytes: u64,
+    /// Record bytes actually inside those pages; `data_bytes - payload_bytes`
+    /// is page padding, which consumes endurance but carries nothing.
+    pub payload_bytes: u64,
     /// The XOR parity page written after the data pages.
     pub parity_bytes: u64,
     /// The two redundant commit-marker pages.
@@ -172,6 +186,10 @@ impl<'a, F> Log<'a, F> {
     ) -> Result<(u64, u32), Error> {
         if key.len() > MAX_KEY_LEN || val.len() > MAX_VAL_LEN {
             return Err(Error::FormatError);
+        }
+        let rec_bytes = (REC_OVERHEAD + key.len() + val.len()) as u32;
+        if rec_bytes > self.head.max_record_bytes {
+            self.head.max_record_bytes = rec_bytes;
         }
         if epoch > crate::record::MAX_REC_EPOCH {
             return Err(Error::FormatError);
@@ -303,7 +321,9 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
             return Ok(CommitBytes::default());
         }
         let page_size = flash.page_size() as u64;
-        let data_pages = self.batch.data().len().div_ceil(page_size as usize) as u64;
+        // Read before `self.batch.clear()` below, which resets the length.
+        let batch_len = self.batch.data().len() as u64;
+        let data_pages = (batch_len as usize).div_ceil(page_size as usize) as u64;
 
         self.program_batch_pages(flash).await?;
         let xor_pages = self.program_xor_parity(flash).await?;
@@ -313,6 +333,7 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
         self.batch.clear();
         Ok(CommitBytes {
             data_bytes: data_pages * page_size,
+            payload_bytes: batch_len,
             parity_bytes: page_size,
             marker_bytes: 2 * page_size,
         })

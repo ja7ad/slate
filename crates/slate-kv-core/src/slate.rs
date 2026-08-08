@@ -64,6 +64,17 @@ pub struct Slate<'a, F, C, S> {
     pub scratch_buf: ScratchWorkspace,
 }
 
+/// Share of scanned records that compaction may relocate before it gives up.
+///
+/// Above this the engine reports `FlashFull` rather than continuing to copy
+/// live data it has nowhere to put. Set well clear of ordinary operation:
+/// Theorem 19 puts GC amplification at 1/(1-u), so a segment utilization of
+/// u = 0.90 already costs 10x and u = 0.95 costs 20x — expensive, but a
+/// deliberate choice for someone who sized their volume that tightly. What this
+/// stops is the runaway past u = 1, where the live set does not fit at all and
+/// each pass copies everything while freeing nothing.
+pub const GC_FUTILE_RELOCATION_PCT: u32 = 97;
+
 impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S: Sealer>
     Slate<'a, F, C, S>
 {
@@ -340,6 +351,21 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
             return Err(Error::FlashFull);
         }
 
+        // A batch must also stay inside its segment's DATA area. Running past
+        // it would write into the 4 parity blocks that `encode_parity` owns,
+        // and would straddle the segment boundary — leaving a reclaimed
+        // segment's first byte mid-ciphertext, which the compaction scan
+        // cannot walk. Roll the head instead; this is the normal path once a
+        // segment fills, not an error.
+        if self.segs.num_segments > 0 {
+            if hot_need > 0 && self.head_needs_roll(true, hot_need) {
+                self.roll_head_async(true, hot_need).await?;
+            }
+            if cold_need > 0 && self.head_needs_roll(false, cold_need) {
+                self.roll_head_async(false, cold_need).await?;
+            }
+        }
+
         let hot_bytes = self
             .log_hot
             .commit_async(
@@ -368,6 +394,13 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
             .add_parity_bytes(hot_bytes.parity_bytes + cold_bytes.parity_bytes);
         self.metrics
             .add_marker_bytes(hot_bytes.marker_bytes + cold_bytes.marker_bytes);
+        // Data pages are whole pages; the part of them not covered by record
+        // bytes is padding. Counting it here is what makes
+        // user + gc + parity + marker + ckpt + padding = bytes programmed hold.
+        let data_pages_total = hot_bytes.data_bytes + cold_bytes.data_bytes;
+        let payload_total = hot_bytes.payload_bytes + cold_bytes.payload_bytes;
+        self.metrics
+            .add_padding_bytes(data_pages_total.saturating_sub(payload_total));
 
         self.engine.acked_seq = seq_max;
 
@@ -434,13 +467,35 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     /// host build allocates 64 KiB batch buffers, which exceed a single
     /// `SEG_BYTES` (49 152 B) segment, so a capacity-based reservation could
     /// never be satisfied and every commit would report `FlashFull`.
+    /// Bytes a head should keep in reserve before rolling to a new segment.
+    ///
+    /// Sized from the largest record this instance has actually written, not
+    /// from `MAX_KEY_LEN + MAX_VAL_LEN`. The worst-case record is 1,324 B, so a
+    /// batch of 8 reserved 11,520 B — 35% of a segment's 32,768 B data area —
+    /// and a head rolled with a third of the segment still erased. The ESP32-C3
+    /// trace shows the cost directly: 14 commits per segment instead of 21,
+    /// 9 segments consumed per 1,000 records instead of 6, and therefore ~50%
+    /// more erases per record than the geometry requires. On a part rated for
+    /// 100k cycles that is a third of the device's life spent on padding.
+    ///
+    /// Reserving too little is safe: `commit_inner_async` re-checks the exact
+    /// pending byte count against the segment's data end and rolls there if the
+    /// batch does not fit. This value only decides how early the roll happens,
+    /// so the floor below is a smoothing term, not a correctness bound.
     fn reserve_headroom(&self) -> u32 {
         let page = self.flash.page_size() as u32;
         let seg = crate::config::SEG_BYTES as u32;
-        let rec = (REC_OVERHEAD + MAX_KEY_LEN + MAX_VAL_LEN) as u32;
+
+        // Largest record seen so far, falling back to a full page before the
+        // first write. `max_record_bytes` is tracked on the log head, which is
+        // always compiled — `Metrics` is behind an off-by-default feature.
+        let rec = self.log_hot.head.max_record_bytes.max(page);
         let batch = rec.saturating_mul(self.sched.cfg.b_commit.max(1));
         let need = (batch.div_ceil(page) + 3) * page;
-        core::cmp::min(need, seg / 4)
+
+        // Never reserve more than an eighth of a segment: beyond that the
+        // padding costs more than the occasional mid-commit roll it avoids.
+        core::cmp::min(need, seg / 8)
     }
 
     fn pending_bytes(page: u32, log: &Log<'a, F>) -> u32 {
@@ -491,65 +546,262 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
     /// affects only future appends; records already written stay where they are
     /// and the index keeps pointing at them.
     async fn reserve_space_async(&mut self) -> Result<(), Error> {
-        let headroom = self.reserve_headroom();
-
-        // 1. Hot and cold must never share a segment: reclaim erases a whole
-        //    segment, so a shared one cannot be freed without destroying the
-        //    other log's records.
-        if self.segs.num_segments > 0 {
-            let hot_seg = self.segs.seg_of(self.log_hot.head.write_offset);
-            let cold_seg = self.segs.seg_of(self.log_cold.head.write_offset);
-            if hot_seg.is_some() && hot_seg == cold_seg {
-                self.relocate_cold_head_async(headroom).await?;
-            }
-        }
-
-        // 2. Each head must point at erased flash.
-        let cold_off = self.log_cold.head.write_offset;
-        if !self.is_erased_at(cold_off, headroom).await {
-            self.relocate_cold_head_async(headroom).await?;
-        }
-
-        // 3. Reclaim when the frontier approaches the end of the managed area.
         if self.segs.num_segments == 0 {
             return Ok(());
         }
-        let end = self.segs.end_addr();
-        let frontier = self
-            .log_hot
-            .head
-            .write_offset
-            .max(self.log_cold.head.write_offset);
-        if frontier + headroom.saturating_mul(2) < end {
-            return Ok(());
+        let headroom = self.reserve_headroom();
+
+        // 1. Top up the free-segment supply FIRST, so the rolls below have
+        //    somewhere to go and so an ordinary commit never has to wait for a
+        //    full compaction on its latency path.
+        self.refill_free_segments_async().await?;
+
+        // 2. Roll either head that cannot absorb another batch inside its
+        //    current segment. This is the circular allocator: the head moves to
+        //    a free segment, which may sit at a LOWER address than the one it
+        //    is leaving. Before this existed the head could only advance, so a
+        //    device halted with `FlashFull` after one linear pass while nearly
+        //    every segment was free and erased — the defect all five reviewers
+        //    raised as blocking.
+        if self.head_needs_roll(true, headroom) {
+            self.roll_head_async(true, headroom).await?;
+        }
+        if self.head_needs_roll(false, headroom) {
+            self.roll_head_async(false, headroom).await?;
         }
 
-        let in_use = self.live_segments();
-        if self
-            .segs
-            .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
-            .is_none()
-        {
-            // Only seal if a sealed segment is actually waiting to be qualified.
-            // Sealing costs a full checkpoint (33 KiB and 9 erases at default
-            // geometry), and when `Sealed == 0` it cannot produce a victim, so an
-            // unguarded seal here fires on EVERY commit once space runs low: the
-            // observed run burned 13 checkpoints in 112 records and pushed WA
-            // from 2.74 to 3.62 while reclaiming nothing.
-            if self.segs.count_in_state(SegState::Sealed) == 0 {
-                return Ok(());
-            }
-            self.seal_epoch_now_async().await?;
+        // 2. Hot and cold must never share a segment: reclaim erases a whole
+        //    segment, so a shared one cannot be freed without destroying the
+        //    other log's records.
+        let hot_seg = self.segs.seg_of(self.log_hot.head.write_offset);
+        let cold_seg = self.segs.seg_of(self.log_cold.head.write_offset);
+        if hot_seg.is_some() && hot_seg == cold_seg {
+            self.roll_head_async(false, headroom).await?;
         }
-        let in_use = self.live_segments();
-        if self
-            .segs
-            .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
-            .is_some()
-        {
-            crate::gc::compact_one_async(self).await?;
+
+        // 3. Each head must point at erased flash. A head that has just rolled
+        //    satisfies this by construction, but one restored from a checkpoint
+        //    may not.
+        let cold_off = self.log_cold.head.write_offset;
+        if !self.is_erased_at(cold_off, headroom).await {
+            self.roll_head_async(false, headroom).await?;
+        }
+        let hot_off = self.log_hot.head.write_offset;
+        if !self.is_erased_at(hot_off, headroom).await {
+            self.roll_head_async(true, headroom).await?;
+        }
+
+        // 5. Leave the supply topped up for the next commit.
+        self.refill_free_segments_async().await
+    }
+
+    /// Opens `seg_id` for `state`, writing its on-flash header, and points the
+    /// named head at the first byte above that header.
+    ///
+    /// Every segment the log enters goes through here. The header is what makes
+    /// the log orderable by allocation number instead of by address, which is
+    /// the precondition for wrapping: after a wrap the oldest live segment sits
+    /// at a *higher* address than the newest, so an address-ordered recovery
+    /// would replay the log backwards.
+    async fn open_segment_async(&mut self, seg_id: u32, hot: bool) -> Result<(), Error> {
+        let seg_base = self.segs.seg_base(seg_id);
+
+        // The segment must be genuinely erased before we stamp a header on it:
+        // programming over live data fails `ProgramWithoutErase` on NOR, and
+        // succeeding would mean we had just handed out a segment holding
+        // records the index still points at.
+        let page = self.flash.page_size() as u32;
+        if !self.is_erased_at(seg_base, page).await {
+            return Err(Error::FlashFull);
+        }
+
+        let seg_seq = self.segs.next_seg_seq;
+        let acked = self.engine.acked_seq;
+        let epoch = self.engine.epoch;
+
+        // The header MAC binds the header to this volume's key hierarchy, so a
+        // header lifted from another device (or another epoch) does not
+        // authenticate. `commit_marker` is reused as the MAC primitive rather
+        // than adding a second one to the Sealer trait.
+        let mac_src = self
+            .sealer
+            .commit_marker(seg_seq, epoch, 0, &self.engine.chain.chi);
+        let mut hdr_mac = [0u8; 32];
+        let n = core::cmp::min(32, mac_src.len());
+        hdr_mac[..n].copy_from_slice(&mac_src[..n]);
+
+        let first =
+            crate::segment::write_header(&mut self.flash, seg_base, seg_seq, epoch, acked, hdr_mac)
+                .await?;
+
+        let state = if hot {
+            SegState::OpenHot
+        } else {
+            SegState::OpenCold
+        };
+        self.segs.open_at(first, seg_seq, acked, state);
+
+        if hot {
+            self.log_hot.head.write_offset = first;
+            self.log_hot.head.seg_seq = seg_seq;
+            self.log_hot.head.block_idx = first / self.flash.block_size() as u32;
+        } else {
+            self.log_cold.head.write_offset = first;
+            self.log_cold.head.seg_seq = seg_seq;
+            self.log_cold.head.block_idx = first / self.flash.block_size() as u32;
         }
         Ok(())
+    }
+
+    /// Rolls a head into a fresh segment when its current one cannot hold
+    /// `need` more bytes. This is the circular allocator.
+    ///
+    /// The head may move to a *lower* address than it currently occupies. That
+    /// is the whole point: the region is a ring of segments, and the engine's
+    /// lifetime is bounded by flash endurance rather than by the linear
+    /// distance to the end of the partition. Before this existed, the head
+    /// advanced monotonically and every device halted with `FlashFull` after a
+    /// single pass while nearly all of its segments sat free and erased.
+    ///
+    /// When no segment is free, one reclaim is attempted before giving up, so
+    /// `FlashFull` now means "the live set genuinely fills the volume" rather
+    /// than "the head reached the end of the address space".
+    /// Allocation only: takes a free segment if one exists, and never
+    /// compacts.
+    ///
+    /// The no-compaction rule is a hard structural constraint, not a
+    /// preference. This is reachable from `commit_inner_async`, and
+    /// `compact_one_async` calls `commit_inner_async` back to flush relocated
+    /// records — so a compacting roll here makes the future type infinitely
+    /// sized (`commit → roll → compact → commit`) and rustc rejects the crate
+    /// outright. Reclaim therefore happens in `reserve_space_async`, which runs
+    /// after each commit and keeps free segments in reserve so this call has
+    /// supply to draw on.
+    async fn roll_head_async(&mut self, hot: bool, _need: u32) -> Result<(), Error> {
+        // Program buffered records before the head moves: their index offsets
+        // were computed against the head's current position and would otherwise
+        // point into the wrong segment.
+        self.flush_before_roll_async(hot).await?;
+
+        let in_use = self.live_segments();
+        match self.segs.pick_free_excluding(&in_use) {
+            Some(id) => self.open_segment_async(id, hot).await,
+            // Genuinely out of space: every segment is either live, or holds
+            // data the newest checkpoint still depends on.
+            None => Err(Error::FlashFull),
+        }
+    }
+
+    /// Reclaims until at least one segment is free, or nothing more can be
+    /// reclaimed.
+    ///
+    /// Only ever called from `reserve_space_async`, i.e. outside the commit
+    /// future, so it may compact freely.
+    async fn refill_free_segments_async(&mut self) -> Result<(), Error> {
+        for _ in 0..2 {
+            if self.segs.free_count() > 1 {
+                return Ok(());
+            }
+            // Refuse to reclaim when reclaiming cannot help.
+            //
+            // Compaction frees a segment by relocating the live records out of
+            // it. When the live set approaches the capacity of the log area
+            // there is nowhere for them to go, so each pass copies almost
+            // everything it reads and frees almost nothing — and because the
+            // engine never says no, it does this forever. Measured on a 10
+            // segment region with a live set 2.8x the log area: 321,871
+            // relocations to place 8,000 keys (40 per key), 3,366 segment
+            // reclaims (337 full passes of the region), 67,887 erases, and a
+            // write amplification of 229 with checkpoint traffic at 120x the
+            // user data. A device doing that has spent a meaningful fraction of
+            // its flash endurance in minutes, while reporting success.
+            //
+            // This is the u -> 1 limit of Theorem 19 (WA_gc = 1/(1-u)) crossing
+            // into the region where the theorem no longer applies: above u = 1
+            // the data simply does not fit, and the honest answer is
+            // `FlashFull`. The guard is deliberately conservative — it triggers
+            // only once the live set exceeds `GC_FUTILE_UTILIZATION` of the log
+            // area — so ordinary high-utilization operation still compacts.
+            if self.gc_is_futile(GC_FUTILE_RELOCATION_PCT) {
+                return Err(Error::FlashFull);
+            }
+            let in_use = self.live_segments();
+            if self
+                .segs
+                .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
+                .is_none()
+            {
+                // Qualifying a victim costs a checkpoint (33 KiB and 9 erases at
+                // default geometry) and cannot produce one when nothing is
+                // sealed, so guard before paying for it. Unguarded, this fired
+                // on every commit once space ran low: the pre-fix run burned 13
+                // checkpoints in 112 records and pushed WA from 2.74 to 3.62
+                // while reclaiming nothing.
+                if self.segs.count_in_state(SegState::Sealed) == 0 {
+                    return Ok(());
+                }
+                // A reclaim watermark needs a checkpoint, not a new epoch:
+                // sealing here would spend a hardware monotonic-counter
+                // increment on storage housekeeping.
+                self.checkpoint_for_reclaim_async().await?;
+            }
+            let in_use = self.live_segments();
+            match self
+                .segs
+                .pick_victim_excluding(self.ckpt_seg_seq, &in_use)
+                .is_some()
+            {
+                true => crate::gc::compact_one_async(self).await?,
+                false => return Ok(()),
+            }
+        }
+        Ok(())
+    }
+
+    /// True when compaction is relocating nearly everything it reads, i.e. the
+    /// live set no longer leaves room to work in.
+    ///
+    /// Measured from the most recent compaction rather than estimated from the
+    /// index: `last_gc_relocated / last_gc_scanned` is the fraction of records
+    /// that were still live when the last victim segment was walked. The
+    /// counters live on `SegTable` rather than `Metrics` because `Metrics` sits
+    /// behind an off-by-default feature, and a correctness guard must not
+    /// depend on whether telemetry was compiled in. A healthy workload leaves
+    /// most records dead by the time their segment is reclaimed, so this ratio
+    /// stays low; as the live set approaches the capacity of the log area it
+    /// climbs toward 1, and every pass copies everything and frees nothing.
+    ///
+    /// Only meaningful once enough segments have been walked to be
+    /// representative, hence the sample floor.
+    ///
+    /// Integer arithmetic throughout — the crate denies floating point so the
+    /// same code runs on cores without an FPU.
+    fn gc_is_futile(&self, pct: u32) -> bool {
+        // Enough records for the ratio to mean something. A segment holding
+        // only a handful of large records can legitimately be all-live.
+        const MIN_SAMPLE: u32 = 64;
+        let scanned = self.segs.last_gc_scanned;
+        if scanned < MIN_SAMPLE {
+            return false;
+        }
+        self.segs.last_gc_relocated.saturating_mul(100) > scanned.saturating_mul(pct)
+    }
+
+    /// True when the head named by `hot` cannot absorb `need` more bytes inside
+    /// its current segment.
+    fn head_needs_roll(&self, hot: bool, need: u32) -> bool {
+        if need == 0 || self.segs.num_segments == 0 {
+            return false;
+        }
+        let off = if hot {
+            self.log_hot.head.write_offset
+        } else {
+            self.log_cold.head.write_offset
+        };
+        // A head outside the managed area (a fresh volume, or one mounted from
+        // a checkpoint written before segments were materialized) must roll
+        // into a real segment before it can be used.
+        !self.segs.fits_in_segment(off, need)
     }
 
     /// Moves the cold head to a segment where it can actually program: a free
@@ -595,11 +847,145 @@ impl<'a, F: slate_kv_hal::AsyncFlash, C: slate_kv_hal::AsyncMonotonicCounter, S:
         Ok(())
     }
 
+    /// Programs any buffered records whose offsets a head roll would
+    /// invalidate.
+    ///
+    /// `Log::append` hands back `head.write_offset + batch.offset` and the
+    /// index stores that immediately, so every offset issued since the last
+    /// commit is relative to the head's CURRENT position. Moving the head while
+    /// the batch is non-empty silently relocates the bytes those offsets refer
+    /// to: the probe found the index pointing at page 111 of a segment where
+    /// only 6 pages had ever been programmed, and all 16 keys read back as
+    /// `None` after a remount even though the checkpoint had restored them.
+    ///
+    /// Must be called before any head roll, not merely before a checkpoint.
+    async fn flush_before_roll_async(&mut self, hot: bool) -> Result<(), Error> {
+        let empty = if hot {
+            self.log_hot.batch.is_empty()
+        } else {
+            self.log_cold.batch.is_empty()
+        };
+        if empty {
+            return Ok(());
+        }
+        self.flush_pending_batches_async().await
+    }
+
+    /// Programs whatever is sitting in the hot and cold batch buffers.
+    ///
+    /// The write half of `commit_inner_async` with none of the space
+    /// management. Checkpoint paths need exactly this: the index they are about
+    /// to serialize refers to offsets that only become real once the batch is
+    /// programmed, but they cannot call the full commit path because they are
+    /// reachable from inside it.
+    async fn flush_pending_batches_async(&mut self) -> Result<(), Error> {
+        let epoch = self.engine.epoch;
+        let seq_max = self.engine.acked_seq;
+
+        if !self.log_hot.batch.is_empty() {
+            let bytes = self
+                .log_hot
+                .commit_async(
+                    &mut self.flash,
+                    &mut self.sealer,
+                    &self.engine.chain,
+                    epoch,
+                    seq_max,
+                )
+                .await?;
+            self.metrics.add_parity_bytes(bytes.parity_bytes);
+            self.metrics.add_marker_bytes(bytes.marker_bytes);
+            self.metrics
+                .add_padding_bytes(bytes.data_bytes.saturating_sub(bytes.payload_bytes));
+            self.metrics.add_commit();
+        }
+        if !self.log_cold.batch.is_empty() {
+            let bytes = self
+                .log_cold
+                .commit_async(
+                    &mut self.flash,
+                    &mut self.sealer,
+                    &self.engine.chain,
+                    epoch,
+                    seq_max,
+                )
+                .await?;
+            self.metrics.add_parity_bytes(bytes.parity_bytes);
+            self.metrics.add_marker_bytes(bytes.marker_bytes);
+            self.metrics
+                .add_padding_bytes(bytes.data_bytes.saturating_sub(bytes.payload_bytes));
+            self.metrics.add_commit();
+        }
+        Ok(())
+    }
+
+    /// Publishes a checkpoint so garbage collection can advance its reclaim
+    /// watermark, WITHOUT advancing the epoch or the hardware counter.
+    ///
+    /// GC needs a durable record of the index that supersedes a sealed segment
+    /// before that segment is eligible for reclaim. It does not need a fresh
+    /// epoch. Every reclaim used to go through `seal_epoch_now_async`, so each
+    /// one consumed a hardware monotonic-counter increment — on an eFuse-backed
+    /// part, a few-thousand-increment lifetime budget being spent on storage
+    /// housekeeping rather than on rollback protection.
+    pub async fn checkpoint_for_reclaim_async(&mut self) -> Result<(), Error> {
+        // Flush the pending batch FIRST.
+        //
+        // `append_hot` returns the offset the record *will* occupy and the
+        // index stores it immediately, but the bytes live in the batch buffer
+        // until a commit programs them. Checkpointing the index before that
+        // commit persists offsets that address erased flash — and because the
+        // checkpoint is what a later mount trusts, every one of those keys
+        // comes back as `None` from a database that reported them present
+        // before the restart. That is silent data loss across a remount, which
+        // is precisely the failure mode SLATE exists to prevent.
+        //
+        // Program the batch directly rather than calling `commit_inner_async`:
+        // this path is reachable from inside that function (commit -> reserve
+        // -> refill -> reclaim checkpoint), and re-entering it would make the
+        // future's type infinitely sized.
+        self.flush_pending_batches_async().await?;
+
+        let index_len = self
+            .index
+            .serialize(&mut self.ckpt_buf[crate::config::CKPT_HDR_LEN..]);
+        let seg_seq = self.log_hot.head.seg_seq;
+        let write_offset = self.log_hot.head.write_offset;
+        let n_keys = self.index.len() as u16;
+
+        let cost = crate::epoch::checkpoint_only_async(
+            &mut self.engine,
+            &mut self.flash,
+            &mut self.sealer,
+            seg_seq,
+            write_offset,
+            n_keys,
+            self.ckpt_buf,
+            index_len,
+            &mut self.scratch_buf.page_buf,
+        )
+        .await?;
+        self.metrics.add_ckpt_bytes(cost.bytes);
+        for _ in 0..cost.erases {
+            self.metrics.add_erase();
+        }
+
+        self.ckpt_seg_seq = self.segs.current_seg_seq() + 1;
+        Ok(())
+    }
+
     /// Writes a checkpoint and opens the next epoch, regardless of how many
     /// records the current epoch holds. `commit` calls this on the Θ trigger;
     /// it is also public so an application can force a checkpoint before a
     /// planned shutdown (bounding the work a later mount has to replay).
     pub async fn seal_epoch_now_async(&mut self) -> Result<(), Error> {
+        // Flush the pending batch before capturing the index — see
+        // `checkpoint_for_reclaim_async` for why. `append_hot` records the
+        // offset a record *will* occupy, so an index serialized while the batch
+        // is unflushed persists offsets that address erased flash, and every
+        // affected key returns `None` after a remount.
+        self.flush_pending_batches_async().await?;
+
         let index_len = self
             .index
             .serialize(&mut self.ckpt_buf[crate::config::CKPT_HDR_LEN..]);

@@ -44,6 +44,7 @@ fn main() -> ! {
         seg_seq: 0,
         write_offset: 0,
         block_idx: 0,
+            ..Default::default()
     };
 
     let mut mount_status = "OK";
@@ -149,6 +150,7 @@ fn main() -> ! {
                 // it matches this head's own `seg_seq: 1`.
                 write_offset: cold_write_offset + slate_kv_core::config::SEG_BYTES as u32,
                 block_idx: cold_block_idx,
+            ..Default::default()
             },
         ),
         index: Index::new(INDEX_SLOTS.take(), 2048),

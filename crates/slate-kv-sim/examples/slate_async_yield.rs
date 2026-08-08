@@ -225,6 +225,7 @@ fn build<'a>(
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: data_base / BLOCK as u32,
+            ..Default::default()
             },
         ),
         log_cold: Log::new(
@@ -233,6 +234,7 @@ fn build<'a>(
                 seg_seq: 2,
                 write_offset: data_base,
                 block_idx: data_base / BLOCK as u32,
+            ..Default::default()
             },
         ),
         index: Index::new(slots, N_BUCKETS),

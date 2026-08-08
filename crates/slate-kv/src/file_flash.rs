@@ -6,8 +6,33 @@ use std::os::unix::io::AsRawFd;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durability {
+    /// Force every program and erase to stable media before returning.
+    ///
+    /// This is what the engine's crash-consistency argument assumes and the
+    /// only setting appropriate for a deployment.
     Full,
+    /// Flush to the operating system, but do not force the drive cache.
+    ///
+    /// NOTE on macOS this is **not** cheaper than [`Durability::Full`]: Rust's
+    /// `File::sync_data()` maps onto the same full barrier as `F_FULLFSYNC`,
+    /// and both measure around 8 ms per call. Choose it for semantics, never
+    /// as a speed optimisation.
     OsCache,
+    /// No barrier at all — writes land in the page cache and are ordered only
+    /// by the filesystem.
+    ///
+    /// **Tests and benchmarks only; never a deployment setting.** A crash under
+    /// this mode can lose or reorder acknowledged writes, which is exactly what
+    /// SLATE exists to prevent.
+    ///
+    /// It exists because the barrier fires on every *page program*, not every
+    /// commit, so a workload of a few thousand records issues tens of thousands
+    /// of barriers: one such test held a core for over 20 minutes on macOS and
+    /// over 24 minutes on a Raspberry Pi's SD card. Tests whose subject is
+    /// allocation, indexing, or reclaim get nothing from that cost — and the
+    /// tests that *do* need a real barrier (crash injection, power-loss
+    /// recovery) must keep using [`Durability::Full`].
+    None,
 }
 
 #[cfg(target_os = "macos")]
@@ -24,12 +49,16 @@ fn flush_durable(f: &File, durability: Durability) -> std::io::Result<()> {
             }
         }
         Durability::OsCache => f.sync_data(),
+        Durability::None => Ok(()),
     }
 }
 
 #[cfg(not(target_os = "macos"))]
-fn flush_durable(f: &File, _durability: Durability) -> std::io::Result<()> {
-    f.sync_data()
+fn flush_durable(f: &File, durability: Durability) -> std::io::Result<()> {
+    match durability {
+        Durability::Full | Durability::OsCache => f.sync_data(),
+        Durability::None => Ok(()),
+    }
 }
 
 #[derive(Debug)]

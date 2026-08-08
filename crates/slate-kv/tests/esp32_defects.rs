@@ -42,6 +42,34 @@ fn fresh(path: &str, capacity: u32) -> Db {
     Db::open(p, KeySource::Bytes([0x24; 32]), opts(capacity)).unwrap()
 }
 
+/// Options for tests whose subject is allocation rather than durability.
+///
+/// The durability barrier fires on every *page program*, not every commit, so
+/// a few thousand records issue tens of thousands of barriers. At roughly 8 ms
+/// each that dominates everything: a 20 000-op run measured 19m34s wall against
+/// 0.6s of user CPU. `Durability::OsCache` does not help on macOS, where Rust's
+/// `sync_data()` maps onto the same `F_FULLFSYNC`.
+///
+/// Dropping the barrier entirely is sound *for these tests specifically*: they
+/// assert segment allocation, reclaim, reuse and index correctness, none of
+/// which depend on whether a write reached stable media. Crash consistency is
+/// what needs `Full`, and it is covered by the crash-injection suite in
+/// `slate-kv-sim`, which simulates power loss directly rather than relying on
+/// the host filesystem.
+fn opts_fast(capacity: u32) -> Options {
+    Options {
+        durability: slate_kv::file_flash::Durability::None,
+        ..opts(capacity)
+    }
+}
+
+fn fresh_fast(path: &str, capacity: u32) -> Db {
+    let p = std::path::Path::new(path);
+    let _ = std::fs::remove_dir_all(p);
+    std::fs::create_dir_all(p).unwrap();
+    Db::open(p, KeySource::Bytes([0x24; 32]), opts_fast(capacity)).unwrap()
+}
+
 /// Defect 1: a value must be readable immediately after `put`, before any
 /// commit, because the record is in the batch and the index points at where it
 /// *will* land.
@@ -82,14 +110,37 @@ fn get_before_commit_returns_value() {
 /// segment-aware log head, which the current on-flash format does not support.
 #[test]
 fn log_exhaustion_is_diagnosable_and_lossless() {
+    // The region cannot usefully be made smaller: `data_base_offset` reserves
+    // 528 KiB for checkpoint slots before the first log byte, so 1 MiB already
+    // leaves only 10 segments and 768 KiB leaves 5. Cost is controlled through
+    // the durability mode instead — what this test asserts is how exhaustion is
+    // reported, not whether the write reached stable media.
     let capacity = 1024 * 1024;
-    let db = fresh("./test_db_esp_wrap", capacity);
+    // Every key here is distinct, so the cuckoo index grows with the run. At
+    // the default `n_keys` the index fills first and the engine reports
+    // `IndexFull` — a correct diagnosis, but a different one from the exhaustion
+    // this test is about. Size the index past what the region can hold so the
+    // flash is what runs out.
+    let db = Db::open(
+        {
+            let p = std::path::Path::new("./test_db_esp_wrap");
+            let _ = std::fs::remove_dir_all(p);
+            std::fs::create_dir_all(p).unwrap();
+            p
+        },
+        KeySource::Bytes([0x24; 32]),
+        Options {
+            n_keys: 8192,
+            ..opts_fast(capacity)
+        },
+    )
+    .unwrap();
 
     let val = [b'v'; 64];
     let mut written = Vec::new();
     let mut err = None;
 
-    for i in 0..20000u32 {
+    for i in 0..8000u32 {
         let key = format!("key{i:05}");
         match db.put(key.as_bytes(), &val) {
             Ok(()) => written.push(key),
@@ -106,9 +157,21 @@ fn log_exhaustion_is_diagnosable_and_lossless() {
         }
     }
 
-    // The region is 1 MiB and each record costs ~192 B of flash, so this must
-    // have hit the end rather than completing.
-    let err = err.expect("20 000 records cannot fit in a 1 MiB region");
+    // Every key here is distinct, so nothing is ever garbage and reclaim cannot
+    // free anything: the region genuinely fills. That is the post-fix meaning of
+    // `FlashFull` — the live set does not fit — rather than the pre-fix meaning,
+    // which was merely that the head had reached the end of the address space.
+    let err = err.unwrap_or_else(|| {
+        let st = db.stats();
+        panic!(
+            "expected exhaustion, but all {} distinct records were accepted \
+             into a log area of {} segments. Before the futile-reclaim guard \
+             the engine answered this workload by relocating live data \
+             forever rather than reporting FlashFull: {st:?}",
+            written.len(),
+            st.segments
+        )
+    });
     let msg = format!("{err:?}");
     assert!(
         msg.contains("FlashFull"),
@@ -148,11 +211,11 @@ fn log_exhaustion_is_diagnosable_and_lossless() {
 /// nothing.
 #[test]
 fn no_epoch_seal_thrash_near_exhaustion() {
-    let db = fresh("./test_db_esp_thrash", 2 * 1024 * 1024);
+    let db = fresh_fast("./test_db_esp_thrash", 2 * 1024 * 1024);
     let val = [b'v'; 16];
 
     let mut epochs = Vec::new();
-    for i in 0..20000u32 {
+    for i in 0..4000u32 {
         if db.put(b"async_test_key", &val).is_err() {
             break;
         }
@@ -182,29 +245,34 @@ fn no_epoch_seal_thrash_near_exhaustion() {
     );
 }
 
-/// The space freed by reclaim is not yet reusable by the append head.
+/// Space freed by reclaim must be reusable by the append head.
 ///
+/// This is the property every ESP32-C3 run failed and that all five IoT-J
+/// reviewers raised as blocking: the engine halted with `FlashFull` while 29 of
+/// 31 segments were free and erased. Garbage collection worked; the append head
+/// simply had no way to move back into the space it freed, so the device's
+/// usable lifetime was one linear pass of the region.
+///
+/// Two format-level causes had to be closed before this could pass:
 /// `SEG_BYTES` is 12 erase blocks (49 152 B) of which only the first 8 are data
-/// (32 768 B), and `Log::program_batch_pages` advances the head straight through
-/// both the parity blocks and the next segment boundary. Records therefore
-/// straddle segments, so a reclaimed segment's first byte is mid-ciphertext and
-/// `compact_one`'s scan — which starts at the segment base and stops at the
-/// first erased byte — cannot walk it. Reusing reclaimed space requires the
-/// segment-aware head roll that doc 002 §2.2 specifies ("head roll if segment
-/// full: seal via doc 006, open next") and the segment headers doc 002 §2.1
-/// specifies, neither of which the implementation writes.
-///
-/// Ignored rather than deleted: this is the acceptance test for that work.
+/// (32 768 B), and the writer ran the head straight through both the parity
+/// blocks and the next segment boundary — so records straddled segments and a
+/// reclaimed segment's first byte was mid-ciphertext. And nothing wrote the
+/// on-flash segment headers that let recovery order a wrapped log by `seg_seq`
+/// rather than by address (doc 002 §2.1-2.2).
 #[test]
-#[ignore = "requires segment-aware head roll + on-flash segment headers (doc 002 §2.1-2.2)"]
 fn space_reuse_after_reclaim() {
     let capacity = 1024 * 1024;
-    let db = fresh("./test_db_esp_reuse", capacity);
+    let db = fresh_fast("./test_db_esp_reuse", capacity);
     let val = [b'v'; 64];
 
     // Overwrite a tiny key set: the live set stays ~1 KiB while total traffic
     // far exceeds the region, so only reuse of reclaimed space can sustain it.
-    for i in 0..20000u32 {
+    // Enough to cross a 1 MiB region several times over. The exhaustive
+    // hundred-pass version runs against the in-memory device in
+    // `slate-kv-sim/tests/log_wrap.rs`; what this adds is that reuse also works
+    // through a real file, which is worth a few thousand commits and no more.
+    for i in 0..4000u32 {
         let key = format!("key{:05}", i % 16);
         db.put(key.as_bytes(), &val)
             .unwrap_or_else(|e| panic!("put #{i} failed: {e:?} — reclaimed space not reused"));
@@ -214,6 +282,67 @@ fn space_reuse_after_reclaim() {
     }
     db.commit().unwrap();
     assert_eq!(db.get(b"key00000").unwrap().as_deref(), Some(&val[..]));
+}
+
+/// The long multi-cycle wrap tests live in `slate-kv-sim`, not here.
+///
+/// `wrap_survives_many_capacity_cycles` and its companions drive hundreds of
+/// thousands of commits. Through `FileFlash` each of those commits pays a
+/// durability barrier — ~8 ms on macOS, where `Durability::Full` and
+/// `OsCache` are indistinguishable because Rust's `sync_data()` maps onto the
+/// same `F_FULLFSYNC`, and far worse on a Raspberry Pi's SD card, where one
+/// such run held a core for over 24 minutes without finishing. What those
+/// tests assert — segment allocation, reclaim, reuse, index correctness — does
+/// not involve the filesystem at all, so they run against the in-memory
+/// `SimFlash` in `slate-kv-sim/tests/log_wrap.rs` and complete in well under a
+/// second.
+///
+/// What stays here is the part that genuinely needs a real file: that a
+/// wrapped log survives being closed and reopened from bytes on disk.
+
+/// Data written before a wrap must survive a remount.
+///
+/// Recovery replays forward from the checkpoint head to the first erased page.
+/// Once the head can wrap to a lower address, "forward" is no longer the same
+/// as "ascending address", so a wrapped log is only replayable if recovery
+/// orders segments by allocation number. This test fails against an
+/// address-ordered recovery even when the allocator itself is correct.
+#[test]
+fn wrapped_log_survives_remount() {
+    let path = "./test_db_esp_wrap_remount";
+    let capacity = 1024 * 1024;
+    let val = [b'v'; 64];
+    const KEYS: u32 = 16;
+
+    {
+        let db = fresh_fast(path, capacity);
+        // Enough traffic to wrap the region several times over.
+        for i in 0..3_000u32 {
+            let key = format!("key{:05}", i % KEYS);
+            db.put(key.as_bytes(), &val).unwrap();
+            if i % 256 == 0 {
+                db.commit().unwrap();
+            }
+        }
+        db.commit().unwrap();
+    }
+
+    // Reopen from flash alone: index rebuilt from checkpoint plus tail replay.
+    let db = Db::open(
+        std::path::Path::new(path),
+        KeySource::Bytes([0x24; 32]),
+        opts_fast(capacity),
+    )
+    .expect("a wrapped log must remount");
+
+    for k in 0..KEYS {
+        let key = format!("key{k:05}");
+        assert_eq!(
+            db.get(key.as_bytes()).unwrap().as_deref(),
+            Some(&val[..]),
+            "key {key} did not survive a remount after the log wrapped"
+        );
+    }
 }
 
 /// Defect 3: write amplification must be measurable and strictly greater than

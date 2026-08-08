@@ -1,9 +1,13 @@
 //! slate-kv-core
 
-#![no_std]
+#![cfg_attr(not(feature = "dbgtrace"), no_std)]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 #![deny(clippy::float_arithmetic)]
+
+#[cfg(feature = "dbgtrace")]
+extern crate std;
+
 
 pub mod chain;
 pub mod checkpoint;

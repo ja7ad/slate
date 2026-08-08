@@ -286,6 +286,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
+            ..Default::default()
             },
         );
         let log_cold = Log::new(
@@ -294,6 +295,7 @@ impl Db {
                 seg_seq: 1,
                 write_offset: data_base,
                 block_idx: 0,
+            ..Default::default()
             },
         );
 
@@ -685,6 +687,7 @@ impl Db {
 
     pub fn stats(&self) -> Stats {
         let mut inner_guard = self.inner.lock().unwrap();
+        let segments = inner_guard.as_ref().unwrap().slate.segs.num_segments;
         let m = &inner_guard.as_mut().unwrap().slate.metrics;
         Stats {
             commits: m.commits,
@@ -692,8 +695,11 @@ impl Db {
             user_bytes: m.user_bytes,
             gc_bytes: m.gc_bytes,
             parity_bytes: m.parity_bytes,
+            marker_bytes: m.marker_bytes,
             ckpt_bytes: m.ckpt_bytes,
             erases: m.erases,
+            segments,
+            gc_open_failed: m.gc_open_failed,
         }
     }
 

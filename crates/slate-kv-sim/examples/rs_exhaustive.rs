@@ -56,6 +56,7 @@ fn build_stripe(sealer: &mut CryptoSealer) -> ([[u8; PAGE_SIZE]; RS_N], usize) {
             seg_seq: 1,
             write_offset: 0,
             block_idx: 0,
+            ..Default::default()
         },
     );
 

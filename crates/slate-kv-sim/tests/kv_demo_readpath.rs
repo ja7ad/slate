@@ -71,6 +71,7 @@ fn make_slate(b: &mut Bufs) -> Slate<'_, SimFlash, SimCounter, CryptoSealer> {
             seg_seq: 0,
             write_offset: data_base,
             block_idx: data_base / BLOCK as u32,
+            ..Default::default()
         },
     );
     let log_cold = Log::new(
@@ -79,6 +80,7 @@ fn make_slate(b: &mut Bufs) -> Slate<'_, SimFlash, SimCounter, CryptoSealer> {
             seg_seq: 1,
             write_offset: data_base,
             block_idx: data_base / BLOCK as u32,
+            ..Default::default()
         },
     );
 
