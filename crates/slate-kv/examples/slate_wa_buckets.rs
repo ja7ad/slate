@@ -46,6 +46,7 @@ fn main() {
             n_keys: 2048,
             profile: Profile::Esp32,
             durability: slate_kv::file_flash::Durability::Full,
+            ..Default::default()
         };
         let db = Db::open(&dir, KeySource::Bytes([0x42; 32]), opts).unwrap();
 

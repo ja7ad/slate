@@ -1,0 +1,11 @@
+chip,arch,wokwi_board,build,wokwi_result,detected_flash_bytes,acked_seqs,all_pass_blocks,write_amplification,evidence
+esp32,xtensa,board-esp32-devkit-c-v4,PASS,FAIL (board image),0,,0,,esp-storage could not decode the flash-size nibble -> capacity 0 -> every write rejected by its own bounds check
+esp32c2,riscv,(no Wokwi board),PASS,SKIP,,,,,build-verified only
+esp32c3,riscv,board-esp32-c3-devkitm-1,PASS,PASS,4194304,"1,2,4",2,202.8415,put/commit/get + tombstone + epoch seal + 7 health invariants
+esp32c5,riscv,(no Wokwi board),PASS,SKIP,,,,,build-verified only
+esp32c6,riscv,board-esp32-c6-devkitc-1,PASS,PASS,4194304,"1,2,4",2,202.8415,put/commit/get + tombstone + epoch seal + 7 health invariants
+esp32c61,riscv,(no Wokwi board),PASS,SKIP,,,,,build-verified only
+esp32h2,riscv,board-esp32-h2-devkitm-1,PASS,PASS,4194304,"1,2,4",2,202.8415,put/commit/get + tombstone + epoch seal + 7 health invariants
+esp32s2,xtensa,board-esp32-s2-devkitm-1,PASS,PASS,4194304,"1,2,4",2,202.8415,put/commit/get + tombstone + epoch seal + 7 health invariants
+esp32s3,xtensa,board-esp32-s3-devkitc-1,PASS,PASS,4194304,"1,2,4",2,202.8415,put/commit/get + tombstone + epoch seal + 7 health invariants
+rp2040,arm-cm0+,(not emulated here),PASS,not run,,,,,firmware links for thumbv6m-none-eabi; QSPI NOR backend via ROM routines

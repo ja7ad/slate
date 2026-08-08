@@ -292,7 +292,18 @@ impl<'a, F: slate_kv_hal::AsyncFlash> Log<'a, F> {
     async fn program_page(&mut self, flash: &mut F, data: &[u8]) -> Result<(), Error> {
         let page_size = flash.page_size();
         let mut page_buf = [0xFF; MAX_PAGE_SIZE];
-        let len = core::cmp::min(data.len(), page_size);
+        // A page smaller than the payload cannot hold it, and silently writing
+        // the first `page_size` bytes is the worst possible response: the
+        // commit marker (`CM_LEN` = 83 B) is written through here, so on a
+        // device with word-granularity programming the marker was truncated to
+        // 4 bytes, `program` returned Ok, and the loss surfaced only as
+        // unreplayable records after the next power cycle. Fail loudly instead;
+        // `Db::open` rejects such a geometry up front so this is unreachable
+        // from the supported configurations.
+        if data.len() > page_size || page_size > MAX_PAGE_SIZE {
+            return Err(Error::FormatError);
+        }
+        let len = data.len();
         page_buf[..len].copy_from_slice(&data[..len]);
         flash
             .program(self.head.write_offset, &page_buf[..page_size])

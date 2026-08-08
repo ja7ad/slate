@@ -20,6 +20,7 @@ fn opts() -> Options {
         n_keys: 256,
         profile: Profile::Pi,
         durability: slate_kv::file_flash::Durability::None,
+        ..Default::default()
     }
 }
 

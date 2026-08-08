@@ -1,0 +1,22 @@
+family,chip,arch,rust_target,cores,sram_kb,flash_kind,erase_block_b,program_page_b,wokwi,verdict,blocker
+ESP32,ESP32,xtensa,xtensa-esp32-none-elf,2,320,ext SPI NOR,4096,256,yes,supported,Xtensa toolchain via espup
+ESP32,ESP32-S2,xtensa,xtensa-esp32s2-none-elf,1,320,ext SPI NOR,4096,256,yes,supported,Xtensa toolchain via espup
+ESP32,ESP32-S3,xtensa,xtensa-esp32s3-none-elf,2,512,ext SPI NOR,4096,256,yes,supported,Xtensa toolchain via espup
+ESP32,ESP32-C2,riscv,riscv32imc-unknown-none-elf,1,186,ext SPI NOR,4096,256,no,supported,
+ESP32,ESP32-C3,riscv,riscv32imc-unknown-none-elf,1,313,ext SPI NOR,4096,256,yes,shipping,
+ESP32,ESP32-C5,riscv,riscv32imac-unknown-none-elf,1,384,ext SPI NOR,4096,256,alpha,supported,
+ESP32,ESP32-C6,riscv,riscv32imac-unknown-none-elf,1,451,ext SPI NOR,4096,256,yes,supported,
+ESP32,ESP32-C61,riscv,riscv32imac-unknown-none-elf,1,320,ext SPI NOR,4096,256,yes,supported,
+ESP32,ESP32-H2,riscv,riscv32imac-unknown-none-elf,1,251,ext SPI NOR,4096,256,yes,supported,
+RP2,RP2040,arm-cm0+,thumbv6m-none-eabi,2,264,ext QSPI NOR,4096,256,yes,portable,XIP-disable during write
+RP2,RP2350,arm-cm33,thumbv8m.main-none-eabihf,2,520,ext QSPI NOR,4096,256,no,portable,XIP-disable during write
+STM32,STM32C031,arm-cm0+,thumbv6m-none-eabi,1,12,internal,2048,8,yes,infeasible,SRAM 12KB < 14.8KB tiny floor
+STM32,STM32L031,arm-cm0+,thumbv6m-none-eabi,1,8,internal,128,4,yes,infeasible,SRAM 8KB < 14.8KB tiny floor
+STM32,STM32F103C8,arm-cm3,thumbv7m-none-eabi,1,20,internal,1024,2,yes,needs-shim+tiny,page 2B < CM_LEN 83; needs tiny profile
+STM32,STM32F407 (repr F4),arm-cm4f,thumbv7em-none-eabihf,1,192,internal,16384,4,no,needs-shim,page 4B < CM_LEN 83
+STM32,STM32H743 (repr H7),arm-cm7,thumbv7em-none-eabihf,1,1024,internal,131072,32,no,needs-shim,page 32B < CM_LEN 83; 128KiB erase fails compact
+Arduino/AVR,ATmega328P (Uno/Nano),avr,avr-unknown-gnu-atmega328,1,2,none (EEPROM only),0,0,yes,infeasible,2KB SRAM; 7x below tiny floor; no NOR
+Arduino/AVR,ATmega2560 (Mega),avr,avr-unknown-gnu-atmega2560,1,8,none (EEPROM only),0,0,yes,infeasible,8KB SRAM below tiny floor; no NOR
+Arduino/AVR,ATtiny85,avr,avr-unknown-gnu-attiny85,1,1,none (EEPROM only),0,0,yes,infeasible,512B-1KB SRAM
+Arduino/ARM,Nano 33 BLE (nRF52840),arm-cm4f,thumbv7em-none-eabihf,1,256,internal + ext QSPI,4096,4,no,portable,use ext QSPI NOR path
+Arduino/ARM,Uno R4 (RA4M1),arm-cm4,thumbv7em-none-eabihf,1,32,internal,2048,8,no,needs-shim+tiny,page 8B < CM_LEN; needs tiny profile

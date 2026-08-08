@@ -39,3 +39,8 @@ qemu/
 # FFI and Binding test binaries
 /crates/slate-kv-ffi/tests/ffi_smoke
 /bind/go/conformance
+
+# Multi-MCU port scratch: downloaded toolchains, per-chip ELFs, Wokwi logs
+/.portwork/
+targets/esp32/build_logs/
+targets/esp32/wokwi_logs/

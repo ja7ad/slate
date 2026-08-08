@@ -1,0 +1,23 @@
+{
+  "probe": "remount_index_skew",
+  "status": "OPEN — root cause identified, fix not yet implemented",
+  "severity": "data loss across remount",
+  "found": "2026-08-08, by wrapped_log_survives_remount after the circular allocator landed",
+  "symptom": "All 16 keys readable before close; 0 of 16 readable after reopening from flash. The checkpoint restores the index correctly (index_len=16) and tail replay applies 0 records, so the index is intact — but every offset in it addresses erased flash.",
+  "evidence": {
+    "scan_offsets_in_segment_7": [884992, 885108, 885224],
+    "index_candidate_offsets": [814848, 814964, 815080],
+    "constant_delta_bytes": 70144,
+    "delta_in_segments": 1.4271,
+    "note": "Delta is constant across records but is NOT a whole number of segments, so it is not a simple segment-base rebase. The same logical records exist at both addresses; the index tracks the older copy."
+  },
+  "reclaim_trace": "Every compaction reports relocated=0 while 16 keys are live. Segment 7 holds the newest copies and is erased anyway, because the liveness test compares the scanned record offset against the index candidates and they never match.",
+  "ruled_out": [
+    "Scan starting on the segment header — compact_one_async already skips the header page when read_header succeeds (has_header=true in the trace).",
+    "Append/program offset mismatch — traced APPEND offset=913500 head=913152 batch_off=348 against PROGRAM addr=913408, i.e. the byte does land inside the programmed page.",
+    "Checkpoint capturing unflushed batch offsets — flush_pending_batches_async was added to both checkpoint paths; symptom unchanged.",
+    "Head roll invalidating buffered offsets — flush_before_roll_async was added to roll_head_async; symptom unchanged."
+  ],
+  "likely_cause": "Records relocated by compaction are re-appended to the cold log, but the index is not updated to the new offset, or is updated against a head position that later moves. The index then names a location that a subsequent reclaim erases.",
+  "next_step": "Instrument reappend_cold and the index upsert that follows it: confirm whether the post-relocation index_update_offset runs, and whether the offset it stores is computed before or after the cold head rolls."
+}

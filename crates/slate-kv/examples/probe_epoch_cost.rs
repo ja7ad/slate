@@ -20,6 +20,7 @@ fn main() {
         n_keys: 4096,
         profile: Profile::Pi,
         durability: Durability::OsCache,
+        ..Default::default()
     };
 
     let t0 = std::time::Instant::now();

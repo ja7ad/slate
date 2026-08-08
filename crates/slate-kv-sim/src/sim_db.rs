@@ -162,6 +162,29 @@ impl Db {
     ) -> Result<Self, Box<(DbError, SimFlash, SimCounter)>> {
         let KeySource::Bytes(root_key) = key;
 
+        // Layout geometry comes from the DEVICE, not from a constant: the
+        // reserved checkpoint region is `data_base_offset(block_size)`, so
+        // assuming 4096 here while the caller handed us a SimFlash with some
+        // other erase size put the log heads at the wrong base entirely.
+        let block_size = slate_kv_hal::Flash::block_size(&flash);
+        let page_size = slate_kv_hal::Flash::page_size(&flash);
+        // The commit marker is written by a single `program` call, so a page
+        // below CM_LEN truncates it and the volume cannot be replayed.
+        if !(slate_kv_core::config::CM_LEN..=slate_kv_core::config::MAX_PAGE_SIZE)
+            .contains(&page_size)
+        {
+            return Err(Box::new((
+                DbError::Config(format!(
+                    "page_size={} is outside the supported range {}..={}",
+                    page_size,
+                    slate_kv_core::config::CM_LEN,
+                    slate_kv_core::config::MAX_PAGE_SIZE
+                )),
+                flash,
+                counter,
+            )));
+        }
+
         use slate_kv_core::log::Sealer;
         let device_key = slate_kv_crypto::keys::DeviceKey(root_key);
         let keyset = slate_kv_crypto::keys::KeySet::derive(&device_key, 1);
@@ -211,7 +234,7 @@ impl Db {
         // the newest checkpoint, or the base of the log for a freshly formatted
         // volume. Everything below it is already captured in the checkpointed
         // index.
-        let data_base = slate_kv_core::config::data_base_offset(4096);
+        let data_base = slate_kv_core::config::data_base_offset(block_size);
         let (engine_state, plain_len, replay_from, ckpt_seg_seq) =
             match slate_kv_core::epoch::mount(&mut flash, &mut counter, &mut sealer, ckpt_slice) {
                 Ok(mi) => (
@@ -279,7 +302,7 @@ impl Db {
         // would put the first records on top of the live checkpoint slots: the
         // hot head is repositioned by recovery below, but the cold head is not,
         // so a cold write would program still-live checkpoint pages.
-        let data_base = slate_kv_core::config::data_base_offset(4096);
+        let data_base = slate_kv_core::config::data_base_offset(block_size);
         let log_hot = Log::new(
             hot_slice,
             HeadState {
@@ -346,6 +369,52 @@ impl Db {
             );
         }
 
+        // Reconstruct segment state from the on-flash headers before anything
+        // else touches the table, exactly as `slate_kv::Db::open` does. Without
+        // this the table calls every segment `Free` on a volume that already
+        // holds data, and the allocator's first head roll erases live records.
+        let segments_in_use =
+            slate_kv_core::task::block_on(slate.segs.rebuild_from_flash(&mut slate.flash));
+
+        // Replay in ALLOCATION order across segment spans, not as one flat
+        // forward scan. This harness used the flat `recover()` while the real
+        // engine used `recover_spans()`, and the difference was not cosmetic:
+        // the log is confined to each segment's 8 data blocks, so the 4 parity
+        // blocks above them read as erased. A flat scan stops at that first
+        // erased byte, which capped recovery at exactly SEG_DATA_BYTES —
+        // measured as 16/48 records surviving a remount at page=512, 32/96 at
+        // page=256. Every study number this harness produced past one segment
+        // of data was therefore measuring the harness, not the engine.
+        let mut spans: Vec<(u32, u32)> = Vec::new();
+        if segments_in_use > 0 {
+            let page = slate_kv_hal::Flash::page_size(&slate.flash.0) as u32;
+            let anchor = slate
+                .segs
+                .seg_of(replay_from)
+                .filter(|&id| replay_from < slate.segs.seg_data_end(id))
+                .map(|id| (id, replay_from))
+                .or_else(|| {
+                    slate
+                        .segs
+                        .next_in_seq_order(ckpt_seg_seq.saturating_sub(1))
+                        .map(|id| (id, slate.segs.seg_base(id) + page))
+                });
+            if let Some((start_seg, start_off)) = anchor {
+                spans.push((start_off, slate.segs.seg_data_end(start_seg)));
+                let mut seq = slate.segs.entries[start_seg as usize].seg_seq;
+                while let Some(next) = slate.segs.next_in_seq_order(seq) {
+                    let base = slate.segs.seg_base(next);
+                    spans.push((base + page, slate.segs.seg_data_end(next)));
+                    seq = slate.segs.entries[next as usize].seg_seq;
+                }
+            }
+        }
+        if spans.is_empty() {
+            // No segment headers (fresh volume, or one written by an older
+            // build): fall back to the flat forward scan.
+            spans.push((replay_from, opts.capacity));
+        }
+
         let mut index_upsert_error = false;
         let mut rng = slate_kv_core::index::XorShift64::new(42);
         let mut workspace = Box::new(slate_kv_core::recover::RecoverWorkspace::new());
@@ -354,12 +423,13 @@ impl Db {
         // `replay_from`, so rescanning from the base of the log would both cost
         // O(log length) and fail to validate — those older batches' commit
         // markers belong to earlier epochs.
-        let rec_info = slate_kv_core::recover::recover(
+        let rec_info = slate_kv_core::recover::recover_spans(
             &mut slate.flash,
             &mut slate.sealer,
             &mut slate.engine.chain,
             slate.engine.epoch,
             replay_from,
+            &spans,
             &mut workspace,
             |flash, sealer, _seq, off, op, key| {
                 // Replay in seq order, deduplicating by the full key so repeated

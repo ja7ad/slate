@@ -50,6 +50,7 @@ fn opts() -> Options {
         n_keys: 4096,
         profile: Profile::Pi,
         durability: Durability::OsCache,
+        ..Default::default()
     }
 }
 

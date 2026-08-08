@@ -17,10 +17,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup toolchain install stable --profile minimal -c rustfmt
       - run: cargo fmt --all --check
-      # targets/esp32 is `exclude`d from the workspace, so `--all` above does
-      # not reach it. Without this it was never format-checked.
+      # Both firmware trees are outside the workspace (targets/esp32 is an
+      # explicit `exclude`; targets/rp2 has its own `[workspace]` table), so
+      # `--all` above does not reach either. Without these they were never
+      # format-checked.
       - name: Format check (esp32 firmware)
         run: cd targets/esp32 && cargo fmt --all --check
+      - name: Format check (rp2040 firmware)
+        run: cd targets/rp2 && cargo fmt --all --check
 
   clippy:
     name: Clippy
@@ -30,22 +34,37 @@ jobs:
       - run: rustup toolchain install stable --profile minimal -c clippy
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
-  clippy-esp32:
-    name: Clippy (esp32 firmware)
+  clippy-firmware:
+    name: Clippy (firmware)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # The firmware is outside the workspace and was therefore never linted.
-      # Its warnings surfaced only as build noise inside the QEMU and Wokwi
-      # jobs — an `unused_mut` in kv_demo.rs shipped that way. Lint it here so
-      # a warning fails fast in its own job instead of being missed.
-      - run: rustup toolchain install stable --profile minimal -c clippy --target riscv32imc-unknown-none-elf
-      - name: Clippy
+      # Both firmware trees are outside the workspace and were therefore never
+      # linted. Their warnings surfaced only as build noise inside the QEMU and
+      # Wokwi jobs — an `unused_mut` in kv_demo.rs shipped that way. Lint them
+      # here so a warning fails fast in its own job instead of being missed.
+      #
+      # This is also the only per-commit compile check on either tree: the
+      # release-artifact builds live in release.yml, so without this step an
+      # RP2040 or ESP32 break would not surface until a tag was pushed. Clippy
+      # type-checks and codegens the binaries, so it catches that.
+      - run: |
+          rustup toolchain install stable --profile minimal -c clippy \
+            --target riscv32imc-unknown-none-elf --target thumbv6m-none-eabi
+      - name: Clippy (ESP32-C3)
         run: |
           cd targets/esp32
           cargo clippy --release --target riscv32imc-unknown-none-elf \
             --no-default-features --features chip-esp32c3,counter-flash,metrics \
             --bins -- -D warnings
+      # The C3 leg covers the RISC-V chips; a chip-specific break on another
+      # chip or on Xtensa is caught by the release build matrix, which is the
+      # only place the espup toolchain is installed.
+      - name: Clippy (RP2040)
+        run: |
+          cd targets/rp2
+          cargo clippy --release --target thumbv6m-none-eabi \
+            --bins --lib -- -D warnings
 
   test:
     name: Test

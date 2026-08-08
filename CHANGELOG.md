@@ -7,6 +7,70 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 The on-flash format carries its own version (`FORMAT_VERSION`), which is
 independent of the crate version and is called out explicitly whenever it moves.
 
+## [0.6.1] — 2026-08-08
+
+Multi-MCU port. The engine ran on one chip (ESP32-C3); it now builds for all
+nine ESP32 chips and for the RP2040, and the hardware compatibility of every
+other family is settled by measurement rather than by reading datasheets.
+
+The on-flash format is unchanged (`FORMAT_VERSION` stays at 2). Volumes written
+by 0.6.0 mount without migration.
+
+### Fixed
+
+- **Commit markers were silently truncated on word-programmed flash.**
+  `Log::program_page` wrote `min(data.len(), page_size)` bytes. The commit
+  marker is 83 bytes (`CM_LEN`) and is written through that function, so on any
+  device programming in 2–8 byte words the marker was cut short, `program`
+  returned `Ok`, and the loss appeared only as unreplayable records after the
+  next power cycle. It is now a hard error, and `Db::open` rejects a page size
+  outside `CM_LEN..=MAX_PAGE_SIZE` before touching the volume. No shipped
+  configuration was affected — the ESP32 and RP2040 both program 256 B pages —
+  but it made every STM32-class part silently unsafe.
+- **The ESP32 flash region ignored the board's actual flash size.**
+  `SLATE_FLASH_BASE`/`SLATE_FLASH_LEN` are compile-time constants sized for a
+  4 MiB module, while `esp-storage` detects capacity at runtime from the flash
+  image header — and capacity varies by *board*, not by chip. On a smaller part
+  the region ran past the end: boot succeeded, all health invariants passed,
+  and the first commit failed with an opaque `Io`. The demo now sizes the
+  region from the detected capacity via `slate_region_for_capacity`, and
+  reports an undecodable flash header at boot instead of as an I/O error.
+- **The simulation harness capped recovery at one segment.** `sim_db` used the
+  flat `recover()` and never rebuilt segment state from flash, while the real
+  `Db` used the segment-aware `recover_spans()`. Since the log is confined to
+  each segment's data blocks, the parity blocks read as erased and a flat scan
+  stopped there — 16 of 48 records surviving a remount at `page=512`, 32 of 96
+  at `page=256`. The engine itself was correct (96 of 96 under the same
+  workload), but any harness-derived result spanning more than one segment was
+  measuring the harness.
+
+### Added
+
+- **All nine ESP32 chips**: esp32, c2, c3, c5, c6, c61, h2, s2, s3 — the
+  intersection of `esp-hal` and `esp-storage` support. Xtensa parts need the
+  `espup` toolchain and `-Z build-std=core,alloc`. `scripts/build_matrix.sh`
+  builds each chip against its correct target triple.
+- **`targets/rp2`**: bare-metal Raspberry Pi Pico (RP2040) port. The external
+  QSPI NOR is 4 KiB sector / 256 B page — the geometry the format was designed
+  around — so no format change was needed. Flash writes run from RAM with XIP
+  disabled and interrupts masked via the ROM routines.
+- **Per-board hardware validation**: `scripts/wokwi_matrix.sh` runs the demo
+  scenario on each emulated board. Five of six pass with identical evidence
+  (acks 1/2/4, tombstone, epoch seal, seven health invariants, WA 202.84);
+  results in `docs/data/wokwi_matrix.csv`.
+- **Release artifacts for every chip**: the release workflow now publishes a
+  flash image per ESP32 chip and a drag-and-drop `.uf2` for the Pico.
+- Configurable flash geometry: `slate_kv::Options` gains `page_size` and
+  `block_size`, defaulting to the existing 256 B / 4 KiB layout.
+
+### Changed
+
+- **Breaking (source, not format)**: the two new `Options` fields break struct
+  literals that do not use `..Default::default()`. The defaults preserve the
+  on-flash layout exactly.
+- The hardcoded `data_base_offset(4096)` call sites in both database layers now
+  use the configured or device-reported block size.
+
 ## [0.6.0] — 2026-08-08
 
 The log head is now circular: space freed by reclamation is reusable, and a
@@ -146,4 +210,5 @@ the coder rather than exercised end-to-end.
 Not recorded here. This file starts at 0.6.0; earlier history is in the commit
 log and in `docs/specification.md`.
 
+[0.6.1]: https://github.com/ja7ad/slate/releases/tag/v0.6.1
 [0.6.0]: https://github.com/ja7ad/slate/releases/tag/v0.6.0

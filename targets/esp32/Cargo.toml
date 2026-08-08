@@ -1,6 +1,6 @@
 [package]
 name = "slate-esp32"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Bare-metal ESP32 port of SLATE: esp-hal flash/counter backends, demo and benchmark firmware"
 license = "MIT OR Apache-2.0"
@@ -35,7 +35,27 @@ embassy-time = { version = "0.5.1", features = ["generic-queue-8"] }
 
 [features]
 default = []
+
+# One feature per chip that BOTH esp-hal 1.1.1 and esp-storage 0.9.0 support --
+# the intersection is what bounds the port, since SLATE needs the flash backend
+# and not just the HAL. Exactly one must be enabled; the build fails with a
+# named error otherwise (see src/lib.rs).
+#
+# Three Rust targets are involved, so `--features` alone is not enough -- the
+# matching `--target` must be passed too (scripts/build_matrix.sh does this):
+#
+#   riscv32imc-unknown-none-elf    c2, c3
+#   riscv32imac-unknown-none-elf   c5, c6, c61, h2
+#   xtensa-esp32{,s2,s3}-none-elf  esp32, s2, s3   (needs the espup fork)
+chip-esp32 = ["esp-hal/esp32", "esp-hal/rt", "esp-backtrace/esp32", "esp-println/esp32", "esp-storage/esp32", "esp-bootloader-esp-idf/esp32"]
+chip-esp32c2 = ["esp-hal/esp32c2", "esp-hal/rt", "esp-backtrace/esp32c2", "esp-println/esp32c2", "esp-storage/esp32c2", "esp-bootloader-esp-idf/esp32c2"]
 chip-esp32c3 = ["esp-hal/esp32c3", "esp-hal/rt", "esp-backtrace/esp32c3", "esp-println/esp32c3", "esp-storage/esp32c3", "esp-bootloader-esp-idf/esp32c3"]
+chip-esp32c5 = ["esp-hal/esp32c5", "esp-hal/rt", "esp-backtrace/esp32c5", "esp-println/esp32c5", "esp-storage/esp32c5", "esp-bootloader-esp-idf/esp32c5"]
+chip-esp32c6 = ["esp-hal/esp32c6", "esp-hal/rt", "esp-backtrace/esp32c6", "esp-println/esp32c6", "esp-storage/esp32c6", "esp-bootloader-esp-idf/esp32c6"]
+chip-esp32c61 = ["esp-hal/esp32c61", "esp-hal/rt", "esp-backtrace/esp32c61", "esp-println/esp32c61", "esp-storage/esp32c61", "esp-bootloader-esp-idf/esp32c61"]
+chip-esp32h2 = ["esp-hal/esp32h2", "esp-hal/rt", "esp-backtrace/esp32h2", "esp-println/esp32h2", "esp-storage/esp32h2", "esp-bootloader-esp-idf/esp32h2"]
+chip-esp32s2 = ["esp-hal/esp32s2", "esp-hal/rt", "esp-backtrace/esp32s2", "esp-println/esp32s2", "esp-storage/esp32s2", "esp-bootloader-esp-idf/esp32s2"]
+chip-esp32s3 = ["esp-hal/esp32s3", "esp-hal/rt", "esp-backtrace/esp32s3", "esp-println/esp32s3", "esp-storage/esp32s3", "esp-bootloader-esp-idf/esp32s3"]
 counter-flash = []
 counter-efuse = []
 counter-none = []

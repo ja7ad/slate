@@ -1,0 +1,38 @@
+[package]
+name = "slate-rp2"
+version = "0.6.1"
+edition = "2021"
+description = "Bare-metal Raspberry Pi Pico (RP2040) port of SLATE: QSPI NOR flash backend, best-effort counter, demo firmware"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ja7ad/slate"
+homepage = "https://github.com/ja7ad/slate"
+# Firmware, not a library: built from this directory with an ARM target and its
+# own `.cargo/config.toml`, so it is excluded from the root workspace -- the
+# same arrangement as targets/esp32.
+publish = false
+
+[dependencies]
+slate-kv-core = { path = "../../crates/slate-kv-core" }
+slate-kv-hal = { path = "../../crates/slate-kv-hal" }
+slate-kv-crypto = { path = "../../crates/slate-kv-crypto" }
+
+rp2040-hal = { version = "0.12.0", features = ["rt", "critical-section-impl"] }
+rp2040-boot2 = "0.3.0"
+cortex-m = "0.7.8"
+cortex-m-rt = "0.7.6"
+critical-section = "1.2.0"
+panic-halt = "1.0.0"
+
+[features]
+default = ["chip-rp2040"]
+chip-rp2040 = []
+# Off by default so the bare-metal build pays nothing.
+metrics = ["slate-kv-core/metrics"]
+
+[profile.release]
+# Keep debug info: the RAM-resident flash routines are easy to break with
+# inlining across the RAM/flash boundary, and a fault address needs resolving.
+debug = 2
+opt-level = "s"
+
+[workspace]

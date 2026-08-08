@@ -1,0 +1,45 @@
+page_size,block_size,capacity,data_base,seg_stride_ok,min_volume,stage,detail
+1,256,1048576,525312,false,918528,open,Config("page_size=1 is outside the supported range 83..=512")
+4,256,1048576,525312,false,918528,open,Config("page_size=4 is outside the supported range 83..=512")
+8,256,1048576,525312,false,918528,open,Config("page_size=8 is outside the supported range 83..=512")
+256,256,1048576,525312,false,918528,ok,
+1,512,1048576,526336,false,919552,open,Config("page_size=1 is outside the supported range 83..=512")
+4,512,1048576,526336,false,919552,open,Config("page_size=4 is outside the supported range 83..=512")
+8,512,1048576,526336,false,919552,open,Config("page_size=8 is outside the supported range 83..=512")
+256,512,1048576,526336,false,919552,ok,
+512,512,1048576,526336,false,919552,ok,
+1,1024,1048576,528384,false,921600,open,Config("page_size=1 is outside the supported range 83..=512")
+4,1024,1048576,528384,false,921600,open,Config("page_size=4 is outside the supported range 83..=512")
+8,1024,1048576,528384,false,921600,open,Config("page_size=8 is outside the supported range 83..=512")
+256,1024,1048576,528384,false,921600,ok,
+512,1024,1048576,528384,false,921600,ok,
+1,2048,1048576,532480,false,925696,open,Config("page_size=1 is outside the supported range 83..=512")
+4,2048,1048576,532480,false,925696,open,Config("page_size=4 is outside the supported range 83..=512")
+8,2048,1048576,532480,false,925696,open,Config("page_size=8 is outside the supported range 83..=512")
+256,2048,1048576,532480,false,925696,ok,
+512,2048,1048576,532480,false,925696,ok,
+1,4096,1048576,540672,true,933888,open,Config("page_size=1 is outside the supported range 83..=512")
+4,4096,1048576,540672,true,933888,open,Config("page_size=4 is outside the supported range 83..=512")
+8,4096,1048576,540672,true,933888,open,Config("page_size=8 is outside the supported range 83..=512")
+256,4096,1048576,540672,true,933888,ok,
+512,4096,1048576,540672,true,933888,ok,
+1,8192,1048576,557056,false,950272,open,Config("page_size=1 is outside the supported range 83..=512")
+4,8192,1048576,557056,false,950272,open,Config("page_size=4 is outside the supported range 83..=512")
+8,8192,1048576,557056,false,950272,open,Config("page_size=8 is outside the supported range 83..=512")
+256,8192,1048576,557056,false,950272,ok,
+512,8192,1048576,557056,false,950272,ok,
+1,16384,1048576,589824,false,983040,open,Config("page_size=1 is outside the supported range 83..=512")
+4,16384,1048576,589824,false,983040,open,Config("page_size=4 is outside the supported range 83..=512")
+8,16384,1048576,589824,false,983040,open,Config("page_size=8 is outside the supported range 83..=512")
+256,16384,1048576,589824,false,983040,ok,
+512,16384,1048576,589824,false,983040,ok,
+1,65536,2097152,786432,false,1179648,open,Config("page_size=1 is outside the supported range 83..=512")
+4,65536,2097152,786432,false,1179648,open,Config("page_size=4 is outside the supported range 83..=512")
+8,65536,2097152,786432,false,1179648,open,Config("page_size=8 is outside the supported range 83..=512")
+256,65536,2097152,786432,false,1179648,ok,
+512,65536,2097152,786432,false,1179648,compact,Core(Io)
+1,131072,2097152,1048576,false,1441792,open,Config("page_size=1 is outside the supported range 83..=512")
+4,131072,2097152,1048576,false,1441792,open,Config("page_size=4 is outside the supported range 83..=512")
+8,131072,2097152,1048576,false,1441792,open,Config("page_size=8 is outside the supported range 83..=512")
+256,131072,2097152,1048576,false,1441792,ok,
+512,131072,2097152,1048576,false,1441792,compact,Core(Io)

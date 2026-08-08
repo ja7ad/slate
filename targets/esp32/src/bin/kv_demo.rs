@@ -23,17 +23,79 @@ static COLD_BUF: SyncBuffer<[u8; 4096]> = SyncBuffer::new("COLD_BUF", [0; 4096])
 static INDEX_SLOTS: SyncBuffer<[u32; 2048 * 4]> = SyncBuffer::new("INDEX_SLOTS", [0; 2048 * 4]);
 static CKPT_BUF: SyncBuffer<[u8; 35000]> = SyncBuffer::new("CKPT_BUF", [0; 35000]);
 
+/// Halts forever on a fatal misconfiguration.
+///
+/// A bare `loop {}` spins the core at full clock. `esp_hal::riscv`/`xtensa_lx`
+/// expose the wait-for-interrupt instruction portably; inline `asm!("wfi")`
+/// does NOT work here, because inline assembly is still unstable on the Xtensa
+/// targets and three of the nine chips are Xtensa.
+fn halt() -> ! {
+    loop {
+        #[cfg(target_arch = "riscv32")]
+        unsafe {
+            core::arch::asm!("wfi")
+        };
+        #[cfg(target_arch = "xtensa")]
+        {
+            // No stable inline asm on Xtensa; a volatile no-op read keeps the
+            // loop from being optimised away without spinning on a branch.
+            core::hint::spin_loop();
+        }
+    }
+}
+
 #[esp_hal::main]
 fn main() -> ! {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     let mut uart = Uart::new(peripherals.UART0, esp_hal::uart::Config::default()).unwrap();
     println!("kv_demo main started");
 
-    let mut flash = EspFlash::new(
+    // Size the region against the flash this BOARD actually has rather than
+    // the 4 MiB the constants assume. Flash size varies by board, not by chip:
+    // the Wokwi ESP32 DevKit reports a smaller part than the C3 board, and the
+    // fixed 1 MiB base + 2 MiB length ran past its end. Every layout check
+    // still passed and all seven health invariants reported PASS -- the only
+    // symptom was `err commit Io` on the first commit.
+    let detected = EspFlash::detect_capacity(&peripherals.FLASH);
+    let region_len =
+        slate_esp32::slate_region_for_capacity(slate_esp32::SLATE_FLASH_BASE, detected);
+    println!(
+        "flash: detected={} B, slate region=[{}, {}) ({} segments)",
+        detected,
         slate_esp32::SLATE_FLASH_BASE,
-        slate_esp32::SLATE_FLASH_LEN,
-        peripherals.FLASH,
+        slate_esp32::SLATE_FLASH_BASE + region_len,
+        slate_esp32::slate_segment_capacity(region_len)
     );
+    if detected == 0 {
+        // `esp-storage` derives capacity from the flash image header and maps
+        // an unrecognised size nibble to 0 (common.rs: `_ => 0`). Its own
+        // `check_bounds` then rejects EVERY write, so no volume is possible on
+        // this board no matter how the region is configured -- there is no
+        // public setter for the capacity field.
+        //
+        // This is what the Wokwi ESP32 DevKit image does, and it is the true
+        // root cause of the `OutOfBounds` at the first commit: the region was
+        // never the problem. The Wokwi C3/C6 images detect correctly.
+        println!(
+            "FATAL: esp-storage could not detect this board's flash size (header size \
+             nibble unrecognised), so every write is rejected by its bounds check. \
+             This is a board-image limitation, not a SLATE configuration error."
+        );
+        halt();
+    }
+    if region_len == 0 {
+        println!(
+            "FATAL: {} B flash cannot host a SLATE volume at base {} (format reserves {} B \
+             before the first log byte, plus {} B per segment)",
+            detected,
+            slate_esp32::SLATE_FLASH_BASE,
+            slate_kv_core::config::data_base_offset(4096),
+            slate_kv_core::config::SEG_BYTES
+        );
+        halt();
+    }
+
+    let mut flash = EspFlash::new(slate_esp32::SLATE_FLASH_BASE, region_len, peripherals.FLASH);
     let mut counter = EspCounter::new();
 
     let dev_key = slate_kv_crypto::keys::DeviceKey([0u8; 32]);
@@ -158,10 +220,7 @@ fn main() -> ! {
         // superblock/checkpoint region. With base 0, segment 0's address range
         // covers the live checkpoint slots and a reclaim erase would destroy
         // them.
-        segs: SegTable::with_base(
-            data_base,
-            slate_esp32::slate_segment_capacity(slate_esp32::SLATE_FLASH_LEN),
-        ),
+        segs: SegTable::with_base(data_base, slate_esp32::slate_segment_capacity(region_len)),
         ckpt_seg_seq: 0,
         sched: Scheduler::new(sched_cfg),
         metrics: Metrics::default(),
@@ -182,7 +241,7 @@ fn main() -> ! {
             if ch == b'\n' || ch == b'\r' {
                 if line_idx > 0 {
                     if let Ok(s) = core::str::from_utf8(&line_buf[..line_idx]) {
-                        handle_cmd(&mut slate, s, mount_status);
+                        handle_cmd(&mut slate, s, mount_status, region_len);
                     }
                     line_idx = 0;
                 }
@@ -196,8 +255,14 @@ fn main() -> ! {
     }
 }
 
-fn handle_cmd<F, C, S>(slate: &mut Slate<F, C, S>, cmd: &str, mount_status: &str)
-where
+fn handle_cmd<F, C, S>(
+    slate: &mut Slate<F, C, S>,
+    cmd: &str,
+    mount_status: &str,
+    // Runtime region length: the health invariants must describe the volume
+    // that was actually mapped, not the compile-time constant.
+    region_len: u32,
+) where
     F: slate_kv_hal::AsyncFlash,
     C: slate_kv_hal::AsyncMonotonicCounter,
     S: slate_kv_core::log::Sealer,
@@ -474,7 +539,7 @@ where
                 "both heads must lie inside the mapped region",
             );
 
-            let ok = slate_esp32::slate_region_ok(slate_esp32::SLATE_FLASH_LEN, 1);
+            let ok = slate_esp32::slate_region_ok(region_len, 1);
             if !ok {
                 fails += 1;
             }

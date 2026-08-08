@@ -29,20 +29,70 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   build-esp32:
-    name: Build ESP32 Firmware
+    name: Build ${{ matrix.chip }} Firmware
     runs-on: ubuntu-latest
     needs: [verify-version]
+    # One leg per chip SLATE supports, replacing the single ESP32-C3 build.
+    # The chip list is the intersection of esp-hal and esp-storage support:
+    # SLATE needs the flash backend, so a chip the HAL alone covers is not
+    # enough. espflash 4.5.0 can `save-image` for all nine.
+    #
+    # `fail-fast: false` so one chip's failure does not cancel the other eight
+    # and leave a release with a partial artifact set.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - chip: esp32c2
+            target: riscv32imc-unknown-none-elf
+            arch: riscv
+          - chip: esp32c3
+            target: riscv32imc-unknown-none-elf
+            arch: riscv
+          - chip: esp32c5
+            target: riscv32imac-unknown-none-elf
+            arch: riscv
+          - chip: esp32c6
+            target: riscv32imac-unknown-none-elf
+            arch: riscv
+          - chip: esp32c61
+            target: riscv32imac-unknown-none-elf
+            arch: riscv
+          - chip: esp32h2
+            target: riscv32imac-unknown-none-elf
+            arch: riscv
+          - chip: esp32
+            target: xtensa-esp32-none-elf
+            arch: xtensa
+          - chip: esp32s2
+            target: xtensa-esp32s2-none-elf
+            arch: xtensa
+          - chip: esp32s3
+            target: xtensa-esp32s3-none-elf
+            arch: xtensa
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust target
-        run: rustup toolchain install stable --profile minimal --target riscv32imc-unknown-none-elf
+      - name: Install Rust target (RISC-V)
+        if: matrix.arch == 'riscv'
+        run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      # Xtensa has no upstream rustc target: it needs the espup fork. Note the
+      # release assets are BARE BINARIES, not archives -- fetching a .tar.xz
+      # name that does not exist yields a 9-byte error page that tar rejects.
+      - name: Install Xtensa toolchain
+        if: matrix.arch == 'xtensa'
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/espup \
+            https://github.com/esp-rs/espup/releases/latest/download/espup-x86_64-unknown-linux-gnu
+          chmod +x /tmp/espup
+          /tmp/espup install --targets ${{ matrix.chip }} --export-file "$HOME/export-esp.sh"
       # Prebuilt binary: `cargo install espflash` compiles from source and cost
       # minutes on every release.
       - name: Install espflash (prebuilt)
         uses: taiki-e/install-action@v2
         with:
           tool: espflash
-      - name: Build ESP32-C3 Firmware
+      - name: Build ${{ matrix.chip }} Firmware
         run: |
           set -euo pipefail
           # Portable SHA-256. No single tool is present on all three runner
@@ -69,44 +119,164 @@ jobs:
           " "$1"
             fi
           }
+          CHIP="${{ matrix.chip }}"
+          TARGET_TRIPLE="${{ matrix.target }}"
+          IMG="slate-${CHIP}-flash.img"
+
           cd targets/esp32
-          cargo build --release --bin kv_demo --no-default-features \
-            --features chip-esp32c3,counter-flash --target riscv32imc-unknown-none-elf
-          espflash save-image --ignore-app-descriptor --merge --chip esp32c3 \
-            target/riscv32imc-unknown-none-elf/release/kv_demo slate-esp32c3-flash.img
-          # Pad to 4 MiB with 0xFF, the NOR erased state. `truncate` pads with
-          # 0x00, which EspFlash::program() rejects as ProgramWithoutErase — so
-          # the previously released image failed on the first write past the
-          # firmware. scripts/qemu_run.sh documents exactly this trap.
-          CURRENT=$(wc -c < slate-esp32c3-flash.img | tr -d ' ')
-          TARGET=4194304
-          if [ "$CURRENT" -gt "$TARGET" ]; then
+          # Xtensa needs the espup toolchain and `-Z build-std=core,alloc`: the
+          # fork ships rust-src but no precompiled `core` for xtensa-*-none-elf,
+          # so a plain build dies with `can't find crate for core` on the first
+          # no_std dependency.
+          if [ "${{ matrix.arch }}" = "xtensa" ]; then
+            . "$HOME/export-esp.sh"
+            rustup run esp cargo build --release --bin kv_demo --no-default-features \
+              --features "chip-${CHIP},counter-flash" --target "$TARGET_TRIPLE" \
+              -Z build-std=core,alloc
+          else
+            cargo build --release --bin kv_demo --no-default-features \
+              --features "chip-${CHIP},counter-flash" --target "$TARGET_TRIPLE"
+          fi
+
+          espflash save-image --ignore-app-descriptor --merge --chip "$CHIP" \
+            "target/${TARGET_TRIPLE}/release/kv_demo" "$IMG"
+
+          # The image must be exactly 4 MiB and padded with 0xFF, the NOR erased
+          # state. `truncate` pads with 0x00, which EspFlash::program() rejects
+          # as ProgramWithoutErase — a previously released image failed on the
+          # first write past the firmware for exactly that reason, and
+          # scripts/qemu_run.sh documents the trap.
+          #
+          # espflash 4.5.0's `--merge` already emits a full 4 MiB with 0xFF
+          # padding (verified locally for esp32, esp32c6 and esp32s3), so this
+          # is normally a no-op. It is kept because the guarantee is espflash's,
+          # not ours: a version that stops padding must fail the release rather
+          # than ship an image that bricks on first write.
+          CURRENT=$(wc -c < "$IMG" | tr -d ' ')
+          TARGET_SIZE=4194304
+          if [ "$CURRENT" -gt "$TARGET_SIZE" ]; then
             echo "::error::image is $CURRENT B, larger than the 4 MiB flash"
             exit 1
           fi
-          python3 -c "import sys; sys.stdout.buffer.write(b'\xff' * ($TARGET - $CURRENT))" \
-            >> slate-esp32c3-flash.img
+          if [ "$CURRENT" -lt "$TARGET_SIZE" ]; then
+            python3 -c "import sys; sys.stdout.buffer.write(b'\xff' * ($TARGET_SIZE - $CURRENT))" \
+              >> "$IMG"
+          fi
           # Assert the padding really is 0xFF before shipping it.
-          python3 - <<'PY'
-          data = open("slate-esp32c3-flash.img", "rb").read()
+          IMG="$IMG" python3 - <<'PY'
+          import os
+          path = os.environ["IMG"]
+          data = open(path, "rb").read()
           assert len(data) == 4194304, len(data)
           tail = data[-4096:]
           assert set(tail) == {0xFF}, f"padding is not 0xFF: {sorted(set(tail))[:8]}"
-          print("image OK: 4 MiB, tail padded with 0xFF")
+          print(f"{path} OK: 4 MiB, tail padded with 0xFF")
           PY
+
           cp ../../LICENSE-MIT ../../LICENSE-APACHE .
-          tar -czf "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
-            slate-esp32c3-flash.img \
-            target/riscv32imc-unknown-none-elf/release/kv_demo \
+          tar -czf "slate-${CHIP}-${{ github.ref_name }}.tar.gz" \
+            "$IMG" \
+            "target/${TARGET_TRIPLE}/release/kv_demo" \
             LICENSE-MIT LICENSE-APACHE
-          sha256_of "slate-esp32c3-${{ github.ref_name }}.tar.gz" \
-            > "slate-esp32c3-${{ github.ref_name }}.tar.gz.sha256"
+          sha256_of "slate-${CHIP}-${{ github.ref_name }}.tar.gz" \
+            > "slate-${CHIP}-${{ github.ref_name }}.tar.gz.sha256"
       - name: Upload ESP32 Release Asset
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            targets/esp32/slate-esp32c3-${{ github.ref_name }}.tar.gz
-            targets/esp32/slate-esp32c3-${{ github.ref_name }}.tar.gz.sha256
+            targets/esp32/slate-${{ matrix.chip }}-${{ github.ref_name }}.tar.gz
+            targets/esp32/slate-${{ matrix.chip }}-${{ github.ref_name }}.tar.gz.sha256
+
+  build-rp2040:
+    name: Build RP2040 Firmware
+    runs-on: ubuntu-latest
+    needs: [verify-version]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust target
+        run: rustup toolchain install stable --profile minimal --target thumbv6m-none-eabi
+      # UF2 is the artifact a Pico user actually wants: hold BOOTSEL, drag the
+      # file onto the RPI-RP2 mass-storage volume, done. Shipping only an ELF
+      # would make every user install a converter first.
+      - name: Install elf2uf2-rs (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: elf2uf2-rs
+      - name: Build and package RP2040 firmware
+        run: |
+          set -euo pipefail
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            elif command -v shasum >/dev/null 2>&1; then
+              shasum -a 256 "$1"
+            else
+              python3 -c "
+          import hashlib, sys
+          h = hashlib.sha256()
+          with open(sys.argv[1], 'rb') as f:
+              for chunk in iter(lambda: f.read(1 << 20), b''):
+                  h.update(chunk)
+          print(h.hexdigest() + '  ' + sys.argv[1])
+          " "$1"
+            fi
+          }
+          cd targets/rp2
+          cargo build --release --bin kv_demo
+          ELF=target/thumbv6m-none-eabi/release/kv_demo
+          elf2uf2-rs "$ELF" slate-rp2040.uf2
+
+          # Verify the UF2 rather than trusting the converter's exit code: a
+          # malformed file fails silently at drag-and-drop time with no
+          # diagnostic on the board.
+          python3 - <<'PY'
+          import struct
+          d = open("slate-rp2040.uf2", "rb").read()
+          assert len(d) % 512 == 0, f"UF2 must be whole 512 B blocks, got {len(d)}"
+          magic0, magic1 = struct.unpack("<II", d[:8])
+          final = struct.unpack("<I", d[508:512])[0]
+          family = struct.unpack("<I", d[28:32])[0]
+          assert magic0 == 0x0A324655, hex(magic0)
+          assert magic1 == 0x9E5D5157, hex(magic1)
+          assert final == 0x0AB16F30, hex(final)
+          # 0xE48BFF56 is the RP2040 family id. A wrong id makes the bootloader
+          # reject the drop without saying why.
+          assert family == 0xE48BFF56, f"family {family:#x} is not RP2040"
+          print(f"UF2 OK: {len(d)//512} blocks, family {family:#x}")
+          PY
+
+          cp ../../LICENSE-MIT ../../LICENSE-APACHE .
+          cat > README.txt <<'EOF'
+          SLATE RP2040 (Raspberry Pi Pico) firmware
+          =========================================
+          slate-rp2040.uf2   drag-and-drop image: hold BOOTSEL while plugging the
+                             board in, then copy this onto the RPI-RP2 volume
+          kv_demo            the ELF, for probe-rs / gdb / picotool
+
+          The demo speaks a UART shell on GP0 (TX) / GP1 (RX) at 115200 8N1, with
+          the same command set as the ESP32 firmware: put, get, del, commit,
+          seal, compact, stats, health, mode, selftest.
+
+          The SLATE region defaults to 1 MiB at flash offset 0x100000, clearing
+          the program image. The rollback counter is BestEffort: it survives
+          reboot, but the RP2040 has no hardware monotonic counter, so an
+          attacker with physical flash access can roll it back. Treat
+          SLATE_ERR_TAMPERED and SLATE_ERR_ROLLBACK as distinct security
+          failures — never retry or flatten them into a generic I/O error.
+
+          Full specification: docs/specification.md in the source repository,
+          https://github.com/ja7ad/slate
+          EOF
+          tar -czf "slate-rp2040-${{ github.ref_name }}.tar.gz" \
+            slate-rp2040.uf2 "$ELF" README.txt LICENSE-MIT LICENSE-APACHE
+          sha256_of "slate-rp2040-${{ github.ref_name }}.tar.gz" \
+            > "slate-rp2040-${{ github.ref_name }}.tar.gz.sha256"
+      - name: Upload RP2040 Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            targets/rp2/slate-rp2040-${{ github.ref_name }}.tar.gz
+            targets/rp2/slate-rp2040-${{ github.ref_name }}.tar.gz.sha256
 
   build-ffi:
     name: Build C FFI (${{ matrix.asset_name }})
@@ -264,7 +434,10 @@ jobs:
     # Publishing is irreversible — a crates.io version can be yanked but never
     # replaced. Gate it on the tag/manifest check and on the artifacts actually
     # building, so a broken release fails before anything is published.
-    needs: [verify-version, build-ffi, build-esp32]
+    # `build-esp32` is now a 9-leg matrix and `build-rp2040` is new; both are
+    # gates. Publishing is irreversible, so a firmware that no longer builds
+    # must stop the release before anything reaches crates.io.
+    needs: [verify-version, build-ffi, build-esp32, build-rp2040]
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust

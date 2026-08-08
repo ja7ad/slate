@@ -155,6 +155,7 @@ pub extern "C" fn slate_open(
                 Profile::Esp32
             },
             durability: slate_kv::file_flash::Durability::Full,
+            ..Default::default()
         };
 
         let db = match Db::open(Path::new(path_str), KeySource::Bytes(root_key), rs_opts) {

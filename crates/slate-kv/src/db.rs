@@ -102,6 +102,21 @@ pub struct Options {
     pub n_keys: usize,
     pub profile: Profile,
     pub durability: crate::file_flash::Durability,
+    /// Program granularity of the backing device, in bytes.
+    ///
+    /// Must be at least [`slate_kv_core::config::CM_LEN`] (83) and at most
+    /// [`slate_kv_core::config::MAX_PAGE_SIZE`]: the commit marker is written
+    /// by a single `program` call, so a smaller page would truncate it and
+    /// leave a volume whose commits cannot be verified on replay. `Db::open`
+    /// rejects an out-of-range value rather than letting it corrupt a volume.
+    pub page_size: usize,
+    /// Erase granularity of the backing device, in bytes. Must be a multiple
+    /// of `page_size`.
+    ///
+    /// This is a *layout* parameter: it sets the size of the reserved
+    /// checkpoint region via [`slate_kv_core::config::data_base_offset`], so a
+    /// volume created with one value cannot be reopened with another.
+    pub block_size: usize,
 }
 
 impl Default for Options {
@@ -114,6 +129,11 @@ impl Default for Options {
             n_keys: 8192,
             profile: Profile::Pi,
             durability: crate::file_flash::Durability::Full,
+            // The geometry every existing volume was created with: 256 B SPI
+            // NOR page programming, 4 KiB sector erase. Changing the default
+            // would silently move `data_base_offset` and orphan those volumes.
+            page_size: 256,
+            block_size: 4096,
         }
     }
 }
@@ -336,8 +356,40 @@ impl Db {
             .truncate(false)
             .open(counter_path)?;
 
-        let mut flash = FileFlash::new(flash_file, opts.capacity, 256, 4096, opts.durability)
-            .map_err(|e| DbError::Config(e.to_string()))?;
+        // Geometry validation BEFORE the volume is touched. Both of these are
+        // silent-corruption bugs if allowed through: a page below `CM_LEN`
+        // truncates the commit marker inside `Log::program_page` (the write
+        // still returns Ok, and the loss only surfaces as unreplayable records
+        // after the next power cycle), and a block that is not a whole number
+        // of pages makes the erase and program grids disagree.
+        if !(slate_kv_core::config::CM_LEN..=slate_kv_core::config::MAX_PAGE_SIZE)
+            .contains(&opts.page_size)
+        {
+            return Err(DbError::Config(format!(
+                "page_size={} is outside the supported range {}..={}: the {}-byte commit marker \
+                 is written by one `program` call, so a smaller page truncates it and the \
+                 volume cannot be replayed",
+                opts.page_size,
+                slate_kv_core::config::CM_LEN,
+                slate_kv_core::config::MAX_PAGE_SIZE,
+                slate_kv_core::config::CM_LEN,
+            )));
+        }
+        if opts.block_size == 0 || !opts.block_size.is_multiple_of(opts.page_size) {
+            return Err(DbError::Config(format!(
+                "block_size={} must be a non-zero multiple of page_size={}",
+                opts.block_size, opts.page_size
+            )));
+        }
+
+        let mut flash = FileFlash::new(
+            flash_file,
+            opts.capacity,
+            opts.page_size,
+            opts.block_size,
+            opts.durability,
+        )
+        .map_err(|e| DbError::Config(e.to_string()))?;
         let device_key = slate_kv_crypto::keys::DeviceKey(root_key);
         let keyset = slate_kv_crypto::keys::KeySet::derive(&device_key, 1);
         let k_ctr = keyset.k_ctr;
@@ -395,7 +447,7 @@ impl Db {
         // the newest checkpoint, or the base of the log for a freshly formatted
         // volume. Everything below it is already captured in the checkpointed
         // index.
-        let data_base = slate_kv_core::config::data_base_offset(4096);
+        let data_base = slate_kv_core::config::data_base_offset(opts.block_size);
         let mut had_checkpoint = true;
         let mut ckpt_slots_verified = 0u8;
         let (engine_state, plain_len, replay_from, ckpt_seg_seq) =
@@ -467,7 +519,7 @@ impl Db {
         // would put the first records on top of the live checkpoint slots: the
         // hot head is repositioned by recovery below, but the cold head is not,
         // so a cold write would program still-live checkpoint pages.
-        let data_base = slate_kv_core::config::data_base_offset(4096);
+        let data_base = slate_kv_core::config::data_base_offset(opts.block_size);
         let log_hot = Log::new(
             hot_slice,
             HeadState {

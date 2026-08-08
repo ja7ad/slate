@@ -78,6 +78,7 @@ fn opts() -> Options {
         // measured mount cost; `OsCache` only makes the multi-40k-record setup
         // phase finish in minutes rather than hours.
         durability: slate_kv::file_flash::Durability::OsCache,
+        ..Default::default()
     }
 }
 

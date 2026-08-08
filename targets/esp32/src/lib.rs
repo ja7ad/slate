@@ -1,5 +1,96 @@
 #![no_std]
 
+/// Exactly one `chip-*` feature must be selected.
+///
+/// Without this guard the failure modes are both unhelpful: with none selected,
+/// `esp-hal` compiles to an empty peripheral set and the error is a wall of
+/// missing-item messages from the demo binaries; with two selected, the two
+/// chips' linker scripts and peripheral definitions collide somewhere deep in a
+/// dependency. Naming the problem here costs nothing at runtime.
+#[cfg(not(any(
+    feature = "chip-esp32",
+    feature = "chip-esp32c2",
+    feature = "chip-esp32c3",
+    feature = "chip-esp32c5",
+    feature = "chip-esp32c6",
+    feature = "chip-esp32c61",
+    feature = "chip-esp32h2",
+    feature = "chip-esp32s2",
+    feature = "chip-esp32s3",
+)))]
+compile_error!(
+    "no chip selected: pass exactly one of --features chip-esp32, chip-esp32c2, \
+     chip-esp32c3, chip-esp32c5, chip-esp32c6, chip-esp32c61, chip-esp32h2, \
+     chip-esp32s2, chip-esp32s3 (and the matching --target; see .cargo/config.toml)"
+);
+
+/// Rejects a second chip feature. Listed pairwise against the first enabled
+/// feature in declaration order, which is enough to catch any two.
+macro_rules! reject_second_chip {
+    ($first:literal, $($rest:literal),+ $(,)?) => {
+        $(
+            #[cfg(all(feature = $first, feature = $rest))]
+            compile_error!(concat!(
+                "two chips selected (", $first, " and ", $rest,
+                "): the chip features are mutually exclusive"
+            ));
+        )+
+    };
+}
+reject_second_chip!(
+    "chip-esp32",
+    "chip-esp32c2",
+    "chip-esp32c3",
+    "chip-esp32c5",
+    "chip-esp32c6",
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!(
+    "chip-esp32c2",
+    "chip-esp32c3",
+    "chip-esp32c5",
+    "chip-esp32c6",
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!(
+    "chip-esp32c3",
+    "chip-esp32c5",
+    "chip-esp32c6",
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!(
+    "chip-esp32c5",
+    "chip-esp32c6",
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!(
+    "chip-esp32c6",
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!(
+    "chip-esp32c61",
+    "chip-esp32h2",
+    "chip-esp32s2",
+    "chip-esp32s3"
+);
+reject_second_chip!("chip-esp32h2", "chip-esp32s2", "chip-esp32s3");
+reject_second_chip!("chip-esp32s2", "chip-esp32s3");
+
 use core::cell::{Cell, UnsafeCell};
 use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 use esp_storage::FlashStorage;
@@ -72,6 +163,35 @@ pub const SLATE_FLASH_BASE: u32 = 0x100000;
 /// trusting this constant to stay in sync with the format.
 pub const SLATE_FLASH_LEN: u32 = 0x200000;
 
+/// Largest SLATE region that fits on a part of `capacity` bytes, given `base`.
+///
+/// Prefer this over the [`SLATE_FLASH_LEN`] constant on any board whose flash
+/// size is not known at build time. The constants above assume a 4 MiB module;
+/// `esp-storage` detects the true size at runtime from the flash image header,
+/// and it varies by BOARD rather than by chip — the Wokwi ESP32 DevKit reports
+/// a smaller part than the C3 board, which is how the mismatch was found.
+///
+/// One erase block is held back for the rollback counter so it never shares a
+/// sector with log data. Returns 0 if nothing usable is left, which the caller
+/// should treat as "this board cannot host a volume at this base".
+pub fn slate_region_for_capacity(base: u32, capacity: u32) -> u32 {
+    let counter_reserve = FLASH_BLOCK_SIZE as u32;
+    let Some(avail) = capacity.checked_sub(base + counter_reserve) else {
+        return 0;
+    };
+    // Trim to a whole number of segments above the reserved layout: a partial
+    // segment at the top is unusable and only invites off-by-one errors in GC.
+    let data_base = slate_kv_core::config::data_base_offset(FLASH_BLOCK_SIZE);
+    if avail <= data_base {
+        return 0;
+    }
+    let segs = (avail - data_base) / slate_kv_core::config::SEG_BYTES as u32;
+    if segs == 0 {
+        return 0;
+    }
+    data_base + segs * slate_kv_core::config::SEG_BYTES as u32
+}
+
 /// Returns `true` if a region of `len` bytes with 4 KiB blocks can hold the
 /// reserved checkpoint layout plus at least `min_segments` GC segments.
 ///
@@ -133,11 +253,49 @@ impl<'a> EspFlash<'a> {
             base + len <= COUNTER_FLASH_ADDR,
             "SLATE data region overlaps the rollback-counter sector"
         );
-        Self {
-            base,
-            len,
-            inner: FlashStorage::new(flash),
+
+        let inner = FlashStorage::new(flash);
+
+        // Does the region actually FIT on this part? `SLATE_FLASH_BASE` and
+        // `SLATE_FLASH_LEN` are compile-time constants sized for a 4 MiB
+        // module, but `esp-storage` derives the true capacity at runtime from
+        // the flash image header (`common.rs`: byte 3 of the header maps to
+        // 1/2/4/8/16/32 MiB), and it varies by BOARD, not by chip family.
+        //
+        // Found on emulated hardware: the Wokwi ESP32 DevKit reports a smaller
+        // part than the C3 board, so `base + len` ran past the end. Every check
+        // in this file passed -- the region is well-formed, all seven health
+        // invariants reported PASS, and `get` worked -- and the first `commit`
+        // failed with `EspFlash write error at 540672: OutOfBounds` -> `err
+        // commit Io`, which points at the log rather than at the region size.
+        // Checking here turns that into a boot-time message naming the fix.
+        // `ReadNorFlash` (already imported) provides `capacity()`.
+        let capacity = inner.capacity() as u64;
+        if base as u64 + len as u64 > capacity {
+            esp_println::println!(
+                "EspFlash: region [{}, {}) does not fit this board's {} B flash. \
+                 Lower SLATE_FLASH_BASE/SLATE_FLASH_LEN, or build for a larger module.",
+                base,
+                base as u64 + len as u64,
+                capacity
+            );
+            panic!("EspFlash region exceeds the detected flash capacity");
         }
+
+        Self { base, len, inner }
+    }
+
+    /// Flash capacity of this board in bytes, as detected by `esp-storage` from
+    /// the flash image header.
+    ///
+    /// Pair with [`slate_region_for_capacity`] to size a region that fits the
+    /// actual part rather than assuming the 4 MiB module the constants target.
+    pub fn detect_capacity(flash: &esp_hal::peripherals::FLASH<'_>) -> u32 {
+        // `FlashStorage::new` takes the peripheral by value, so borrow it via a
+        // fresh handle; the detection is a header read with no side effects.
+        let _ = flash;
+        let probe = FlashStorage::new(unsafe { esp_hal::peripherals::FLASH::steal() });
+        probe.capacity() as u32
     }
 }
 

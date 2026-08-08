@@ -5,12 +5,13 @@ members = [
 ]
 exclude = [
     "targets/esp32",
+    "targets/rp2",
     "bind",
 ]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 # Per-crate `description`, `readme`, `keywords` and `categories` are set in each
 # crate manifest: crates.io renders them per crate, so a shared blurb and the
@@ -20,14 +21,14 @@ repository = "https://github.com/ja7ad/slate"
 homepage = "https://github.com/ja7ad/slate"
 
 [workspace.dependencies]
-slate-kv-core = { version = "0.6.0", path = "crates/slate-kv-core" }
-slate-kv-crypto = { version = "0.6.0", path = "crates/slate-kv-crypto" }
-slate-kv-erasure = { version = "0.6.0", path = "crates/slate-kv-erasure" }
-slate-kv-hal = { version = "0.6.0", path = "crates/slate-kv-hal" }
-slate-kv = { version = "0.6.0", path = "crates/slate-kv" }
-slate-kv-ffi = { version = "0.6.0", path = "crates/slate-kv-ffi" }
-slate-kv-sim = { version = "0.6.0", path = "crates/slate-kv-sim" }
-slate-kv-cli = { version = "0.6.0", path = "crates/slate-kv-cli" }
+slate-kv-core = { version = "0.6.1", path = "crates/slate-kv-core" }
+slate-kv-crypto = { version = "0.6.1", path = "crates/slate-kv-crypto" }
+slate-kv-erasure = { version = "0.6.1", path = "crates/slate-kv-erasure" }
+slate-kv-hal = { version = "0.6.1", path = "crates/slate-kv-hal" }
+slate-kv = { version = "0.6.1", path = "crates/slate-kv" }
+slate-kv-ffi = { version = "0.6.1", path = "crates/slate-kv-ffi" }
+slate-kv-sim = { version = "0.6.1", path = "crates/slate-kv-sim" }
+slate-kv-cli = { version = "0.6.1", path = "crates/slate-kv-cli" }
 
 [workspace.lints.clippy]
 all = "deny"

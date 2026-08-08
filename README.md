@@ -158,21 +158,49 @@ cargo build --release --bin kv_demo \
 
 `counter-efuse` selects the hardware monotonic counter (full rollback protection); `counter-flash` keeps it in a flash sector (best-effort). `metrics` wires the write-amplification counters. The `scripts/` directory holds the QEMU crash suite and the Wokwi scenario used in CI.
 
+`scripts/build_matrix.sh` builds every supported chip against its correct target triple, and `scripts/wokwi_matrix.sh` runs the demo scenario on each board Wokwi emulates.
+
+### 5. Bare-metal Raspberry Pi Pico firmware
+
+```bash
+cd targets/rp2
+cargo build --release --bin kv_demo   # thumbv6m-none-eabi
+```
+
+The Pico's external QSPI NOR is 4 KiB sector / 256 B page — the geometry the on-flash format was designed around — so no format change is needed. Flash writes run from RAM with XIP disabled and interrupts masked, via the RP2040 ROM routines.
+
+## Hardware compatibility
+
+Verdicts are measured, not inferred from datasheets: geometry by driving the real engine across synthetic flash parameters (`docs/data/geometry_probe.csv`), and boot behaviour on emulated hardware (`docs/data/wokwi_matrix.csv`).
+
+| Family                    | Parts                                  | Status                           | Notes                                                                             |
+|---------------------------|----------------------------------------|----------------------------------|-----------------------------------------------------------------------------------|
+| **ESP32**                 | esp32, c2, c3, c5, c6, c61, h2, s2, s3 | **Supported — all 9 build**      | c3/c6/h2/s2/s3 verified booting on Wokwi; Xtensa parts need the `espup` toolchain |
+| **RP2**                   | RP2040, RP2350                         | **Supported**                    | RP2040 firmware builds; external QSPI NOR needs no format change                  |
+| **Arduino (ARM)**         | Nano 33 BLE (nRF52840)                 | Portable                         | via its external QSPI NOR                                                         |
+| **STM32** (≥64 KB SRAM)   | F4, F7, H7                             | Needs a page shim                | programs 4–32 B per write, below the 83-byte commit marker                        |
+| **STM32** (20–32 KB SRAM) | F103C8, Arduino Uno R4                 | Needs shim + small-index profile | also below the 14.8 KB RAM floor at default sizing                                |
+| **STM32** (<16 KB SRAM)   | C031, L031                             | Not feasible                     | 8–12 KB SRAM against a 14.8 KB floor                                              |
+| **Arduino (AVR)**         | Uno, Nano, Mega, ATtiny                | **Not feasible**                 | 1–8 KB SRAM, and EEPROM rather than NOR                                           |
+
+Two numbers govern the table. The engine needs a **program page of at least 83 bytes**, because the commit marker is written by a single `program` call — that is what separates external SPI/QSPI NOR (256 B pages: fine) from STM32 internal flash (word writes: needs a RAM page-buffer shim). And the shipping firmware needs **82.9 KB of RAM**, of which most is the index and its checkpoint buffer; a minimum-index profile reaches 14.8 KB, which is still above every AVR Arduino.
+
 ## Repository layout
 
-| Path                      | Contents                                                   |
-|---------------------------|------------------------------------------------------------|
-| `crates/slate-kv-core`    | Heapless `no_std` engine: log, index, epochs, GC, recovery |
-| `crates/slate-kv`         | `std` wrapper: `Db`, file-backed flash, POSIX durability   |
-| `crates/slate-kv-crypto`  | AEAD sealer and key derivation                             |
-| `crates/slate-kv-erasure` | Reed–Solomon over GF(2⁸)                                   |
-| `crates/slate-kv-hal`     | Flash / counter traits and blocking↔async adapters         |
-| `crates/slate-kv-ffi`     | Stable C ABI and generated `slate.h`                       |
-| `crates/slate-kv-sim`     | Simulated flash, crash injection, study harnesses          |
-| `crates/slate-kv-cli`     | Command-line tool                                          |
-| `targets/esp32`           | Bare-metal `esp-hal` firmware, QEMU and Wokwi harnesses    |
-| `bind/go`                 | Go / TinyGo binding over the C ABI                         |
-| `docs/specification.md`   | Normative format, semantics and conformance data           |
+| Path                      | Contents                                                          |
+|---------------------------|-------------------------------------------------------------------|
+| `crates/slate-kv-core`    | Heapless `no_std` engine: log, index, epochs, GC, recovery        |
+| `crates/slate-kv`         | `std` wrapper: `Db`, file-backed flash, POSIX durability          |
+| `crates/slate-kv-crypto`  | AEAD sealer and key derivation                                    |
+| `crates/slate-kv-erasure` | Reed–Solomon over GF(2⁸)                                          |
+| `crates/slate-kv-hal`     | Flash / counter traits and blocking↔async adapters                |
+| `crates/slate-kv-ffi`     | Stable C ABI and generated `slate.h`                              |
+| `crates/slate-kv-sim`     | Simulated flash, crash injection, study harnesses                 |
+| `crates/slate-kv-cli`     | Command-line tool                                                 |
+| `targets/esp32`           | Bare-metal `esp-hal` firmware (9 chips), QEMU and Wokwi harnesses |
+| `targets/rp2`             | Bare-metal Raspberry Pi Pico (RP2040) firmware                    |
+| `bind/go`                 | Go / TinyGo binding over the C ABI                                |
+| `docs/specification.md`   | Normative format, semantics and conformance data                  |
 
 ## Development
 
@@ -195,6 +223,3 @@ Dual-licensed under either of:
 - **Apache License, Version 2.0** ([`LICENSE-APACHE`](LICENSE-APACHE))
 
 at your option.
-
----
-

@@ -171,6 +171,7 @@ fn main() {
                     n_keys: 2048,
                     profile: Profile::Pi,
                     durability: dur,
+                    ..Default::default()
                 };
                 let db = Db::open(&dir, KeySource::Bytes([0x42; 32]), opts).unwrap();
 
